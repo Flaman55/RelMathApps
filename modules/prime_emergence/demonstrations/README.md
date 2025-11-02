@@ -1,0 +1,1 @@
+expressive visualization of structural emergence — a symbolic rendering of prime dynamics through relational coherence
