@@ -48,6 +48,23 @@ are shadows of stable relational configurations projected onto an additive grid.
 
 ---
 
+License and Code Categories
+
+This repository contains both educational and potentially commercial algorithms.
+All code is distributed under the PolyForm Noncommercial 1.0.0 License,
+which allows free use for research and educational purposes.
+
+Some modules (such as geometry/trigonometry/fixed_point/)
+implement algorithms that may have commercial potential.
+For any commercial use or integration, please contact the author for individual licensing.
+
+Attribution format:
+
+"Source: Relational Mathematics Project by Artur Flamandzki (Flaman55)"
+
+See NOTICE.md for attribution and licensing details.
+
+
 ## Learn More  
 
 Full theoretical background and ongoing publications are available at:  
@@ -109,6 +126,22 @@ jest jedynie cieniem stabilnych konfiguracji relacyjnych
 rzutowanych na siatkę addytywną.  
 
 ---
+
+Licencja i typy kodu
+
+Repozytorium zawiera zarówno algorytmy o charakterze edukacyjnym,
+jak i potencjalnie komercyjnym.
+Całość objęta jest licencją PolyForm Noncommercial 1.0.0,
+zezwalającą na swobodne użycie w celach badawczych i dydaktycznych.
+
+Niektóre moduły (np. geometry/trigonometry/fixed_point/)
+mogą mieć zastosowanie komercyjne.
+W przypadku zamiaru takiego użycia należy skontaktować się z autorem
+w celu uzyskania indywidualnej licencji.
+
+Format atrybucji:
+
+„Źródło: Relational Mathematics Project — Artur Flamandzki (Flaman55)”
 
 ## Więcej informacji  
 

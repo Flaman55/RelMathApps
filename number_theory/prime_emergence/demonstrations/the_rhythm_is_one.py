@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2025 Artur Flamandzki
 # The Rythm is one, the numbers are many
 import random
 import time
