@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright (c) 2025 Artur Flamandzki
 
-import random
 from typing import List
 
 # -------------------------------------------------------------
