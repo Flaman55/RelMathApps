@@ -3,7 +3,7 @@ def window_sieve(N):
     primes = [2]
     P_max = 2
 
-    print(f"Start: baza = {primes}, okno = ({P_max}, {P_min * P_max}]")
+    print(f"Start: base = {primes}, window = ({P_max}, {P_min * P_max}]")
 
     while True:
         L = P_max + 1
@@ -12,43 +12,42 @@ def window_sieve(N):
         if L > N:
             break
 
-        # przycinamy okno do N
+        # cut the window to N
         real_R = min(R, N)
 
-        # oznaczamy liczby jako potencjalnie pierwsze
+        # mark numbers as potentially prime
         window = {n: True for n in range(L, real_R + 1)}
 
-        # eliminacja wielokrotności z istniejącej bazy
+        # eliminate multiples from the existing base
         for p in primes:
             start = ((L + p - 1) // p) * p
             for x in range(start, real_R + 1, p):
                 window[x] = False
 
-        # wszystkie liczby, które przeżyły – to nowa generacja liczb pierwszych
+        # all numbers that survived – the new generation of primes
         new_primes = [n for n, ok in window.items() if ok]
 
         if not new_primes:
-            # Brak nowych liczb pierwszych <= N
+            # no new primes ≤ N
             break
 
-        print(f"W oknie ({P_max}, {real_R}] nowe liczby pierwsze: {new_primes}")
+        print(f"In the window ({P_max}, {real_R}] new primes: {new_primes}")
 
-        # aktualizacja bazy
+        # update the base
         primes.extend(new_primes)
-        new_P_max = new_primes[-1]   # największa pierwsza z okna
+        new_P_max = new_primes[-1]   # largest prime in the window
 
-        # jeśli przekroczyła N – koniec
+        # if it exceeded N – stop
         if new_P_max > N:
             break
 
         P_max = new_P_max
 
-        print(f"Nowe okno: ({P_max}, {P_min * P_max}]")
+        print(f"New window: ({P_max}, {P_min * P_max}]")
 
-    print(f"\nZakończono. Pierwsze do {N}, Len: {len(primes)}: {sorted(primes)}")
-
+    print(f"\nFinished. Primes up to {N}, Len: {len(primes)}: {sorted(primes)}")
 
 
 if __name__ == "__main__":
-    N = int(input("Podaj górną granicę N: "))
+    N = int(input("Enter the upper bound N: "))
     window_sieve(N)
