@@ -1,6 +1,6 @@
 def window_sieve_amputated(N, P_min):
     # Wszystkie prime < P_min usuwamy
-    removed_primes = [p for p in [2,3,5,7,11,13,17,19,23,29] if p < P_min]
+    removed_primes = [p for p in [2,3,5,7,11,13,17,19,23,29,31,37,41] if p < P_min]
 
     # przestrzeń liczb, które W OGÓLE istnieją
     exists = {n: True for n in range(2, N+1)}
