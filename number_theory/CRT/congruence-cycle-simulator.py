@@ -1,6 +1,16 @@
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 from matplotlib import animation
+from matplotlib.animation import FFMpegWriter, PillowWriter
+import os
+
+from matplotlib.animation import FFMpegWriter
+print(FFMpegWriter)
+
+
+
+EXPORT_DIR = "exported_data"
+os.makedirs(EXPORT_DIR, exist_ok=True)
 
 # Parameters
 bar_width = 0.8
@@ -105,24 +115,60 @@ def run_interface():
 
     prepare_states(max_n)
 
-    print("\nChoose an option:")
+    print("\nWhat do you want to do?")
     print("1 - Save animation as GIF")
     print("2 - Save animation as MP4")
-    print("3 - Manual control with buttons")
+    print("3 - Export all frames as EPS")
+    print("4 - Export a single frame as EPS")
+    print("5 - Manual control with buttons")
 
-    choice = input("Option (1/2/3): ")
+    choice = input("Choose option (1/2/3/4/5): ")
+
+
+    os.makedirs("exported_data", exist_ok=True)
 
     if choice == '1':
+        outfile = os.path.join("exported_data", "cycles_animation.gif")
+        writer = PillowWriter(fps=fps)
         ani = animation.FuncAnimation(fig, lambda f: draw_state(f),
-                                      frames=len(states), blit=False)
-        ani.save("cycles_animation.gif", writer="pillow", fps=fps)
-        print("Saved: cycles_animation.gif")
+                                    frames=len(states), blit=False)
+        ani.save(outfile, writer=writer)
+        print(f"✅ Saved: {outfile}")
 
     elif choice == '2':
+        outfile = os.path.join("exported_data", "cycles_animation.mp4")
+        try:
+            writer = FFMpegWriter(fps=fps)
+        except Exception as e:
+            print("❌ FFMpegWriter not available. Is ffmpeg installed and in PATH?")
+            print(e)
+            return
+
         ani = animation.FuncAnimation(fig, lambda f: draw_state(f),
-                                      frames=len(states), blit=False)
-        ani.save("cycles_animation.mp4", writer="ffmpeg", fps=fps)
-        print("Saved: cycles_animation.mp4")
+                                    frames=len(states), blit=False)
+        ani.save(outfile, writer=writer)
+        print(f"✅ Saved: {outfile}")
+
+    elif choice == '3':
+        # Save each frame as EPS
+        for idx in range(len(states)):
+            draw_state(idx)
+            outfile = os.path.join(EXPORT_DIR, f"frame_{idx:03d}.eps")
+            fig.savefig(outfile, format='eps')
+        print(f"✅ Saved EPS frames to folder: {EXPORT_DIR}")
+
+    elif choice == '4':
+        try:
+            frame = int(input(f"Frame index 0..{len(states)-1}: "))
+            if 0 <= frame < len(states):
+                draw_state(frame)
+                outfile = os.path.join(EXPORT_DIR, f"frame_{frame:03d}.eps")
+                fig.savefig(outfile, format='eps')
+                print(f"✅ Saved: {outfile}")
+            else:
+                print("Invalid frame index.")
+        except ValueError:
+            print("Invalid number.")
 
     else:
         axprev = plt.axes([0.1, 0.05, 0.15, 0.075])
