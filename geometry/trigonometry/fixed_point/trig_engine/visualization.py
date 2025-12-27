@@ -6,7 +6,7 @@ import math
 import matplotlib.pyplot as plt
 from .constants import FACTOR_SCALE
 
-def plot_with_accum_ref(xs_fixed, ys_fixed, accums_fixed):
+def plot_with_accum_ref(xs_fixed, ys_fixed, accums_fixed, title=None):
     xs = [x / FACTOR_SCALE for x in xs_fixed]
     ys = [y / FACTOR_SCALE for y in ys_fixed]
     thetas = [a / FACTOR_SCALE for a in accums_fixed]
@@ -19,10 +19,15 @@ def plot_with_accum_ref(xs_fixed, ys_fixed, accums_fixed):
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlim(-1.1, 1.1)
     ax.set_ylim(-1.1, 1.1)
-    ax.set_title("Pełne kółko — referencja wg fazy (accum)")
+
+    if title:
+        ax.set_title(title)
+    else:
+        ax.set_title("Pełne kółko — referencja wg fazy")
+
     ax.grid(True); ax.legend(); fig.tight_layout(); plt.show()
 
-def plot_benchmark(rows):
+def plot_benchmark(rows, title=None):
     steps = [r[0] for r in rows]
     max_err = [r[1] for r in rows]
     rms_err = [r[2] for r in rows]
@@ -38,5 +43,32 @@ def plot_benchmark(rows):
     plt.figure()
     plt.plot(steps, t_ns, marker="o")
     plt.xlabel("Liczba kroków na 2π"); plt.ylabel("ns/krok")
-    plt.title("Czas generowania vs kroki")
+
+    if title:
+        plt.title(title)
+    else:
+        plt.title("Czas generowania vs kroki")
     plt.grid(True); plt.tight_layout(); plt.show()
+
+
+def plot_drift(series, title="Drift over time"):
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(10,4))
+    plt.plot(series)
+    plt.title(title)
+    plt.xlabel("step")
+    plt.ylabel("error")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+def plot_boundary_errors(boundary_errs):
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(10,4))
+    plt.plot([e / FACTOR_SCALE for e in boundary_errs])
+    plt.title("Boundary phase error |y| per turn")
+    plt.xlabel("turn")
+    plt.ylabel("|y|")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
