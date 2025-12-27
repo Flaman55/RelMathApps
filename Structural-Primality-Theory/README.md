@@ -30,5 +30,18 @@ By focusing on the **Structural Tail ($T^*$)**, the code demonstrates how the st
 Clone the repository directly to your local machine:
 
 ```bash
+# Clone the repository
+git clone https://github.com/Flaman55/RelMathApps.git
+# Navigate to the algorithm directory
+cd RelMathApps/Structural-Primality-Theory
+# Run the Ramanujan Unified Radicals solver
+python Ramanujan-Unified-Radicals.py
+
+## Quick Start
+
+To explore the structural identities of Ramanujan radicals on your local machine, run:
+
+```bash
 git clone [https://github.com/Flaman55/RelMathApps.git](https://github.com/Flaman55/RelMathApps.git)
-cd RelMathApps
+cd RelMathApps/Structural-Primality-Theory
+python Ramanujan-Unified-Radicals.py
