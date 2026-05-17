@@ -1,0 +1,10 @@
+name = "LinearQ"
+version = "0.1.0"
+defaultTargets = ["linearq"]
+
+[[lean_lib]]
+name = "LinearQ"
+
+[[lean_exe]]
+name = "linearq"
+root = "Main"
