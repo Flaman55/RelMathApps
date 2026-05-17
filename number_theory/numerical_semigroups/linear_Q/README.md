@@ -16,6 +16,7 @@ Verification and computation scripts accompanying the paper:
 | `incremental_windows.py` | `IncrementalWindowBuilder` class + verification vs naive O(2ⁿ) | — |
 | `appendix_verify.py` | Density data (n ≤ 18) and K⁽ⁿ⁾(d) table | A.4, A.5 |
 | `density_parallel.py` | Parallel density computation for large n (19–30) | A.4 (large n) |
+| `conjecture_sequences.py` | Conjecture 6.1 verification across 11 generator sequences (prime + random) | A.6 |
 
 ## Requirements
 
@@ -25,7 +26,7 @@ numpy
 ```
 
 ```bash
-pip install numpy
+pip install numpy sympy
 ```
 
 ## Usage
@@ -61,3 +62,10 @@ The active windows are computable incrementally in O(n · σₙ).
 **Theorem 1.5** (density asymptotics).  
 For generators satisfying log pₙ = o(n):  
 w(n) / (2ⁿ − 1) = o(∏ᵢ (1 − 1/pᵢ)), equivalently δ(n)/P(n) → 1.
+
+```bash
+# Verify Conjecture 6.1 across multiple sequences (Table A.6)
+python conjecture_sequences.py                      # n=25, summary
+python conjecture_sequences.py --n-end 300          # full paper run (~60s)
+python conjecture_sequences.py --n-end 25 --no-random
+```
