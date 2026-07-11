@@ -1,0 +1,21 @@
+StructuralBertrand
+Copyright 2026 Artur Flamandzki
+
+Licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+This product includes and depends on Mathlib
+(https://github.com/leanprover-community/mathlib4), which is licensed under the
+Apache License, Version 2.0.
+
+Portions of the following file are adapted from Mathlib, and their proofs are the
+work of the Mathlib authors (in particular Patrick Stevens and Bolton Bailey):
+
+  - StructuralBertrand/Threshold.lean
+      `real_threshold_inequality` and `threshold_inequality` adapt the proofs of
+      `Bertrand.real_main_inequality` and `bertrand_main_inequality` from
+      Mathlib.NumberTheory.Bertrand. They are prime-free size inequalities; the
+      file is placed here so that the main theorem's import closure does not include
+      Mathlib.NumberTheory.Bertrand.
+
+All other files in `StructuralBertrand/` are original to this development and depend
+on Mathlib only as a library.
