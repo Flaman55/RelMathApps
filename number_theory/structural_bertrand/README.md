@@ -1,7 +1,8 @@
 # StructuralBertrand — Lean 4 formalization
 
 Machine-checked formalization accompanying the paper
-**"A Structural Reduction of Bertrand's Postulate"** (A. Flamandzki).
+**"A Structural Sieve for Bertrand's Postulate: The Deterministic Reach of the
+Prime Base and its Newton Closure"** (A. Flamandzki).
 
 **Status: fully verified — zero `sorry`, no extra axioms beyond Mathlib.**
 The entire chain, from the definition of the complete generative base (Def. 2.1)
@@ -16,16 +17,21 @@ self-contained binomial certificate (`binomial_contradiction`). See
 
 The starting observation is **not** Bertrand's. Bertrand (1845) conjectured, from
 tables, that every window `(n, 2n]` contains a prime. This project starts from a
-different, structural observation: **the reach of a complete prime base
-`𝒫 = {2, …, P_max}` is deterministic exactly up to `2·P_max`** — inside
+different, structural observation, and it involves **two distinct determinisms**
+that must not be conflated. **Base determinism (self-containment): the base
+`𝒫 = {2, …, P_max}` builds every composite exactly up to `2·P_max`** — inside
 `(P_max, 2·P_max]` every composite is fully built from the base (all its prime
 factors lie in the base: `window_composite_smooth`), so an uncovered position can
-only be a new prime. Beyond `2·P_max` this determinism provably breaks: multiples
-of primes *outside* the base appear alongside the new primes
-(`determinism_breaks_above`: `q²` for the next prime `q > P_max` is uncovered yet
-composite). The window and its width are therefore not an assumption borrowed from
-Bertrand's statement — they are *derived* as the maximal self-contained territory
-of the base (`SelfContained.lean`, `window_self_contained`). The object is thus a
+only be a new prime. Just beyond `2·P_max` self-containment breaks: the first
+composite requiring a prime *outside* the base appears (`2·nextprime(P_max)`), so a
+new prime becomes **necessary** — this is how far the base generates the integers
+on its own. Distinct from it, **generative determinism (the sieve's decision,
+uncovered ⟺ prime) reaches further**, throughout the deterministic zone
+`(P_max, P_max²)` (`void_iff_prime_in_deterministic_zone`), and breaks only at the
+square of the anchor (`determinism_breaks_above` exhibits the composite void `q²`).
+The window and its width are therefore not an assumption borrowed from Bertrand's
+statement — they are *derived* as the maximal self-contained territory of the base
+(`SelfContained.lean`, `window_self_contained`). The object is thus a
 single locked triple **(base, window, width)** in which `P_max` is at once the
 largest element of the base, the start of the window, and the window's width; the
 base is the complete run of consecutive primes up to `P_max` (no prime missing),
