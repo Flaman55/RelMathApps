@@ -1,0 +1,23 @@
+# Lake / Lean build artifacts
+/.lake/
+/build/
+/lake-packages/
+*.olean
+*.ilean
+*.trace
+
+# Dependency-graph intermediates (regenerate with scripts/dependency_graph.py).
+# The committed artifacts are docs/dependency_graph.svg and .png.
+*.gv
+*.gexf
+docs/dependency_graph
+docs/dependency_graph.pdf
+
+# Editor / OS
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# VS Code multi-root workspace files
+*.code-workspace
