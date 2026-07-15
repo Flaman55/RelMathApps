@@ -12,6 +12,7 @@ import StructuralWindow.WidthLaw
 import StructuralWindow.Legendre
 import StructuralWindow.GeneralLaw
 import StructuralWindow.Certificate
+import StructuralWindow.Bridge
 
 /-!
 # StructuralWindow — the coupled-window mechanism
@@ -60,6 +61,8 @@ two settings of these coupled sliders.
                  windows including the crossover `n = 42`.
 * `Certificate` — the generalized forcing `WindowForcing A W` (free position and width) with
                  Bertrand and Legendre as two evaluations; Legendre is a by-product, not the aim.
+* `Bridge`     — the existential entry point: `prime ⟹ void` and `generalLaw_of_shortInterval`.
+                 Plug in any short-interval prime-existence result and the whole mechanism closes.
 
 ## Plan (development)
 

@@ -262,7 +262,8 @@ structural_window/                       ← Lean 4 / Mathlib project (builds cl
         ├── WidthLaw.lean     — the family by width law; Bertrand's law closed to infinity
         ├── GeneralLaw.lean   — the target GeneralLaw; Bertrand & Legendre as its corollaries
         ├── Legendre.lean     — LegendreVoid, prime-between-squares, the instances
-        └── Certificate.lean  — generalized WindowForcing; Bertrand & Legendre as evaluations
+        ├── Certificate.lean  — generalized WindowForcing; Bertrand & Legendre as evaluations
+        └── Bridge.lean       — existential entry point: generalLaw_of_shortInterval (plug-in)
 ```
 
 The development is a **generalization of the coupled-window mechanism**, not an attempt on
