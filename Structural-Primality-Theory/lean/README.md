@@ -52,6 +52,10 @@ next section.
   satisfies the admissibility constraints of Lemma 1" is made an explicit,
   checkable inequality (`α ≤ 1/r*(1+α)`) and discharged concretely at
   `α = 1/10`.
+- **Arbitrary root order** (`NthRootChain.lean`): Section 4.1's boundedness,
+  monotonicity and convergence result, generalized from `Real.sqrt` to
+  `R_k = (1+a_k R_{k+1})^{1/n}` for any fixed `n ≥ 2`, for any bounded
+  sequence `0 ≤ a_k ≤ A`.
 
 ## Errors this formalization caught (now fixed in v2 of the paper)
 
@@ -157,11 +161,21 @@ for `a_k = p_k` remains open, as it does in the paper itself.
   possible for every `m` in `(0,1]`, `L ≤ N+s(m)`, matching `L ≤ N` exactly at
   `m=1`. Together with `LinearChain.lean`, this closes the entire
   positive-slope range with no remaining gap and the best bound available at
-  every slope. (Uses `Real.sq_sqrt`/`linear_combination`, not yet
-  build-confirmed as of this writing.)
+  every slope.
 
-**Not attempted:** the higher-order-root variants (Section 5.2) and the
-complex-valued extension mentioned in the paper's conclusion.
+- **`NthRootChain.lean`** — a different axis of generalization: instead of
+  the coefficients, the root order. `rollUpN n a T d` is the recursion
+  `R_k = (1+a_k R_{k+1})^{1/n}` for any fixed root order `n ≥ 2`, and
+  `truncRadicalN_converges` gives boundedness, monotonicity and convergence
+  for ANY `n ≥ 2` together with ANY bounded sequence `0 ≤ a_k ≤ A` — the
+  `Convergence.lean` conclusion, now for every root order at once. Mitra
+  (arXiv:2404.04051) states a general-`n` identity schematically but proves
+  convergence only for `n = 3` (cube roots); this covers arbitrary `n` for
+  the bounded-coefficient case. The first file in this project to use
+  `Real.rpow` instead of `Real.sqrt`; confirmed building.
+
+**Not attempted:** the complex-valued extension mentioned in the paper's
+conclusion.
 
 ## Repository structure
 
@@ -183,6 +197,7 @@ RamanujanNested/
   LinearChain.lean                    -- existence for any slope m >= 1
   LinearChainGeneral.lean              -- existence for any slope m > 0
   LinearChainTight.lean                 -- tight bound for 0 < m <= 1
+  NthRootChain.lean                       -- bounded coeffs, any root order n >= 2
 ```
 
 ## Building

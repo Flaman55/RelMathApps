@@ -13,6 +13,7 @@ import RamanujanNested.PrimeChain
 import RamanujanNested.LinearChain
 import RamanujanNested.LinearChainGeneral
 import RamanujanNested.LinearChainTight
+import RamanujanNested.NthRootChain
 
 /-!
 # RamanujanNested — Lean 4 formalization
@@ -28,10 +29,10 @@ bear on, and `README.md` for a top-level summary.
 ## Status
 
 Builds cleanly (`lake build`), zero `sorry`, confirmed — including
-`PrimeChain.lean`, `LinearChain.lean`, and `LinearChainGeneral.lean`.
-`LinearChainTight.lean` added and pending build confirmation (uses
-`Real.sq_sqrt` / `linear_combination`, less battle-tested in this project
-than the earlier files' tactics).
+`PrimeChain.lean`, `LinearChain.lean`, `LinearChainGeneral.lean`,
+`LinearChainTight.lean`, and `NthRootChain.lean` (the first file in this
+project to use `Real.rpow` instead of `Real.sqrt`; needed one fix-up round
+for `rw`/`rpow` notation mismatches, now clean).
 
 ## What's covered, file by file
 
@@ -150,6 +151,16 @@ than the earlier files' tactics).
   positive-slope range with the tightest available bound at every point —
   no gap remains for existence of a limit across `m > 0`.
 
+* `NthRootChain.lean` — generalizes Section 4.1 itself along a different
+  axis: instead of the coefficients, the root order. `rollUpN n a T d` is the
+  recursion `R_k = (1+a_k R_{k+1})^{1/n}` for any fixed `n ≥ 2`, and
+  `truncRadicalN_converges` proves boundedness, monotonicity and convergence
+  for ANY `n ≥ 2` together with ANY bounded sequence `0 ≤ a_k ≤ A` — the same
+  conclusion `Convergence.lean` gives at `n = 2`, now for every root order at
+  once. Mitra (arXiv:2404.04051) states a general-`n` identity schematically
+  but proves convergence only for `n = 3`; this covers arbitrary `n` for the
+  bounded-coefficient case.
+
 ## Known gap in the paper itself (largely resolved here)
 
 Section 5.1 claims the classical Ramanujan radical (`a_k = k`) converges "by
@@ -179,6 +190,5 @@ construction itself.
 
 ## Not attempted
 
-The higher-order-root variants (Section 5.2, a different nonlinear operator)
-and the complex-valued extension mentioned in the Conclusion.
+The complex-valued extension mentioned in the Conclusion.
 -/
