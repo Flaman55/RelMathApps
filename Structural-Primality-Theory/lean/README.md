@@ -129,6 +129,37 @@ With `PrimeChain.lean`, every coefficient family the paper mentions by name
 now has at least an existence-of-convergence result; only the *exact value*
 for `a_k = p_k` remains open, as it does in the paper itself.
 
+- **`LinearChain.lean`** — generalizes `UnboundedChain.lean` from slope
+  exactly `1` (`a_k = N+k-2`) to any slope `m ≥ 1`
+  (`linearCoeff m N k = N+m(k-2)`), reusing the same moving-ceiling technique
+  with a ceiling that shifts by `m` per layer instead of by a fixed `1`.
+  `HerschfeldClosure.lean`'s exact-value argument only balances at `m² = 1`,
+  so slope `1` remains the only slope with a known closed-form limit;
+  `linearRadical_converges` gives existence only for general `m ≥ 1`, the
+  same weaker guarantee as `PrimeChain.lean`. Motivation: not from the paper
+  itself, but from checking whether a literature family with a *different*
+  linear slope — Kusniec's difference-of-oblongs Radiciatory, coefficients
+  linear in depth with slope `q-1` — reduces to the paper's framework. It
+  does, for every `q ≥ 2`, with no new proof needed per value of `q`.
+
+- **`LinearChainGeneral.lean`** — closes the remaining `0 < m < 1` range
+  (i.e. `1 < q < 2` for the oblong family), and in fact covers all `m > 0`
+  in one argument, via a looser ceiling `C(N) = N+1` in place of `C(N) = N`.
+  The key inequality reduces to `0 ≤ N+m+m²`, unconditionally true for
+  `m > 0` — no case split needed. Bound is weaker (`L ≤ N+1` instead of
+  `L ≤ N`); use `LinearChain.lean` instead whenever `m ≥ 1` for the tight
+  bound. Existence of a limit is now known across the entire positive-slope
+  range, and Kusniec's oblong family is covered for every `q > 1`.
+
+- **`LinearChainTight.lean`** — replaces `LinearChainGeneral.lean`'s loose
+  `+1` slack with the exact minimal shift `s(m) = (√(5m²+4)-3m)/2`, the
+  positive root of the equality case `s²+3ms+m²=1`. Gives the tightest bound
+  possible for every `m` in `(0,1]`, `L ≤ N+s(m)`, matching `L ≤ N` exactly at
+  `m=1`. Together with `LinearChain.lean`, this closes the entire
+  positive-slope range with no remaining gap and the best bound available at
+  every slope. (Uses `Real.sq_sqrt`/`linear_combination`, not yet
+  build-confirmed as of this writing.)
+
 **Not attempted:** the higher-order-root variants (Section 5.2) and the
 complex-valued extension mentioned in the paper's conclusion.
 
@@ -149,6 +180,9 @@ RamanujanNested/
   UnboundedChain.lean                -- moving-ceiling existence for a_k = N+k-2
   HerschfeldClosure.lean              -- exact-value closure, L(N) = N
   PrimeChain.lean                     -- existence of a limit for a_k = p_k
+  LinearChain.lean                    -- existence for any slope m >= 1
+  LinearChainGeneral.lean              -- existence for any slope m > 0
+  LinearChainTight.lean                 -- tight bound for 0 < m <= 1
 ```
 
 ## Building

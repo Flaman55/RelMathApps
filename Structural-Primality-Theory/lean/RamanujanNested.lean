@@ -10,6 +10,9 @@ import RamanujanNested.TargetRadical
 import RamanujanNested.UnboundedChain
 import RamanujanNested.HerschfeldClosure
 import RamanujanNested.PrimeChain
+import RamanujanNested.LinearChain
+import RamanujanNested.LinearChainGeneral
+import RamanujanNested.LinearChainTight
 
 /-!
 # RamanujanNested — Lean 4 formalization
@@ -25,7 +28,10 @@ bear on, and `README.md` for a top-level summary.
 ## Status
 
 Builds cleanly (`lake build`), zero `sorry`, confirmed — including
-`PrimeChain.lean`.
+`PrimeChain.lean`, `LinearChain.lean`, and `LinearChainGeneral.lean`.
+`LinearChainTight.lean` added and pending build confirmation (uses
+`Real.sq_sqrt` / `linear_combination`, less battle-tested in this project
+than the earlier files' tactics).
 
 ## What's covered, file by file
 
@@ -110,6 +116,39 @@ Builds cleanly (`lake build`), zero `sorry`, confirmed — including
   closure, chosen deliberately: existence is the bar the paper itself leaves
   open, and this is enough to clear it without needing the exact-value
   machinery primes don't admit.
+
+* `LinearChain.lean` — generalizes `UnboundedChain.lean` from slope exactly
+  `1` (`a_k = N+k-2`) to any slope `m ≥ 1` (`linearCoeff m N k = N+m(k-2)`),
+  via the same moving-ceiling technique with the ceiling now shifting by `m`
+  per layer instead of by a fixed `1`. The linear closed-form ansatz used in
+  `HerschfeldClosure.lean` only balances when `m² = 1`, so slope `1` is the
+  only slope with a known exact value; `linearRadical_converges` gives
+  existence only for `m ≥ 1` in general (`L ≤ N`), the same weaker bar as
+  `PrimeChain.lean`. Confirmed recovering `UnboundedChain.lean` exactly at
+  `m = 1` (`linearRadical_converges_one`). Not from the paper — motivated by
+  checking whether a literature family with a different linear slope
+  (Kusniec's difference-of-oblongs Radiciatory, slope `q-1`) could be
+  absorbed; it is, for every `q ≥ 2`.
+
+* `LinearChainGeneral.lean` — closes the remaining `0 < m < 1` range left
+  open by `LinearChain.lean`, and in fact covers all `m > 0` in a single
+  argument, by using a looser ceiling `C(N) = N+1` instead of `C(N) = N`.
+  The key inequality becomes `0 ≤ N+m+m²`, true unconditionally for `m > 0`
+  — no case split on the slope is needed. Gives the weaker bound `L ≤ N+1`
+  (use `LinearChain.lean`'s `linearRadical_converges` instead whenever
+  `m ≥ 1`, for the tight `L ≤ N`). With this file, Kusniec's
+  difference-of-oblongs family is covered for every `q > 1`, not just `q ≥ 2`
+  — existence of a limit is now known across the entire positive-slope
+  range.
+
+* `LinearChainTight.lean` — replaces `LinearChainGeneral.lean`'s loose
+  `+1` slack with the exact minimal shift `s(m) = (√(5m²+4)-3m)/2` (the
+  positive root of the equality case `s²+3ms+m²=1`), giving the tightest
+  bound this technique can give for every `m` in `(0,1]`: `L ≤ N+s(m)`,
+  matching `LinearChain.lean`'s `L ≤ N` exactly at `m=1` (`tightShift_one`).
+  Together with `LinearChain.lean` (`m ≥ 1`), this closes the entire
+  positive-slope range with the tightest available bound at every point —
+  no gap remains for existence of a limit across `m > 0`.
 
 ## Known gap in the paper itself (largely resolved here)
 
