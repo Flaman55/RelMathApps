@@ -52,6 +52,7 @@ theorem targetCoeffN_two_eq (t : ℝ) : targetCoeffN 2 t = targetCoeff t := by
   rcases eq_or_ne t 0 with h0 | h0
   · simp [h0]
   · field_simp
+    ring
 
 /-- The defining fixed-point identity: `1 + a\cdot t = t^n`. -/
 theorem targetCoeffN_key {n : ℕ} {t : ℝ} (ht0 : t ≠ 0) :
@@ -107,8 +108,8 @@ theorem targetRadicalN_step_pow {n : ℕ} (hn : 2 ≤ n) {t T : ℝ} (ht : 1 ≤
   have hstep_eq : rollUpN n (fun _ => targetCoeffN n t) T (d + 1) =
       (1 + targetCoeffN n t * rollUpN n (fun _ => targetCoeffN n t) T d) ^ (1 / (n : ℝ)) :=
     rollUpN_succ n (fun _ => targetCoeffN n t) T d
-  rw [hstep_eq, ← Real.rpow_natCast _ n, ← Real.rpow_mul hrad_nonneg, mul_one_div,
-    div_self hn_ne, Real.rpow_one]
+  have hexp1 : (1 / (n : ℝ)) * (n : ℝ) = 1 := by field_simp [hn_ne]
+  rw [hstep_eq, ← Real.rpow_natCast _ n, ← Real.rpow_mul hrad_nonneg, hexp1, Real.rpow_one]
 
 /-- **One contraction step, generalized.** The gap to the target `t` shrinks
 by the factor `\rho_n = a/t^{n-1} = 1-1/t^n` at every layer. -/

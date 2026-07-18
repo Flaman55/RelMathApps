@@ -225,7 +225,10 @@ for `a_k = p_k` remains open, as it does in the paper itself.
   `targetRadicalN_tendsto` proves convergence to `t` exactly via a
   generalized contraction rate `ρ_n=1-1/t^n` (numerically checked against
   the true asymptotic rate `(1-1/t^n)/n`; this bound is valid but not tight,
-  same as the `n=2` case). Pending build confirmation.
+  same as the `n=2` case). Confirmed building (needed one fix-up round: an
+  exponent product appeared as `(1/n)*n` rather than `n*(1/n)`, so
+  `mul_one_div` didn't match — replaced with an explicit
+  `field_simp`-proved fact, direction-agnostic).
 
 **Not attempted:** the complex-valued extension mentioned in the paper's
 conclusion.

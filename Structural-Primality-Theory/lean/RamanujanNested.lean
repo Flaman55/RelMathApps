@@ -40,8 +40,10 @@ Builds cleanly (`lake build`), zero `sorry`, confirmed — including
 to use `Real.rpow` instead of `Real.sqrt`; needed one fix-up round for
 `rw`/`rpow` notation mismatches, now clean), `LinearChainNthRoot.lean`,
 `LinearChainGeneralNthRoot.lean`, `LinearChainTightNthRoot.lean`,
-`PrimeChainNthRoot.lean`, and `OscillatoryNthRoot.lean`.
-`TargetRadicalNthRoot.lean` added and pending build confirmation.
+`PrimeChainNthRoot.lean`, `OscillatoryNthRoot.lean`, and
+`TargetRadicalNthRoot.lean` (needed one fix-up round: an exponent product
+appeared as `(1/n)*n` rather than `n*(1/n)`, so `mul_one_div` didn't match —
+replaced with an explicit `field_simp`-proved fact, direction-agnostic).
 
 ## What's covered, file by file
 
