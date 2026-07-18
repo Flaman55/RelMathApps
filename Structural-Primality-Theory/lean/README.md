@@ -56,6 +56,10 @@ next section.
   monotonicity and convergence result, generalized from `Real.sqrt` to
   `R_k = (1+a_k R_{k+1})^{1/n}` for any fixed `n ≥ 2`, for any bounded
   sequence `0 ≤ a_k ≤ A`.
+- **Unbounded linear family, any root order** (`LinearChainNthRoot.lean`):
+  existence of a limit for `linearCoeff m N` (slope `m ≥ 1`), at any root
+  order `n ≥ 2`, combining `LinearChain.lean`'s moving-ceiling technique with
+  `NthRootChain.lean`'s `rollUpN`.
 
 ## Errors this formalization caught (now fixed in v2 of the paper)
 
@@ -174,6 +178,13 @@ for `a_k = p_k` remains open, as it does in the paper itself.
   the bounded-coefficient case. The first file in this project to use
   `Real.rpow` instead of `Real.sqrt`; confirmed building.
 
+- **`LinearChainNthRoot.lean`** — combines `LinearChain.lean` with
+  `NthRootChain.lean`: existence of a limit for the unbounded linear family
+  `linearCoeff m N` (slope `m ≥ 1`), at any root order `n ≥ 2`, via the same
+  moving-ceiling technique, run against `rollUpN`. `n = 2` recovers
+  `LinearChain.lean`'s own key inequality exactly, with no case split needed
+  on `n`. Confirmed building.
+
 **Not attempted:** the complex-valued extension mentioned in the paper's
 conclusion.
 
@@ -198,6 +209,7 @@ RamanujanNested/
   LinearChainGeneral.lean              -- existence for any slope m > 0
   LinearChainTight.lean                 -- tight bound for 0 < m <= 1
   NthRootChain.lean                       -- bounded coeffs, any root order n >= 2
+  LinearChainNthRoot.lean                    -- unbounded linear family, any n >= 2
 ```
 
 ## Building

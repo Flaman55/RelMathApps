@@ -14,6 +14,7 @@ import RamanujanNested.LinearChain
 import RamanujanNested.LinearChainGeneral
 import RamanujanNested.LinearChainTight
 import RamanujanNested.NthRootChain
+import RamanujanNested.LinearChainNthRoot
 
 /-!
 # RamanujanNested — Lean 4 formalization
@@ -30,9 +31,9 @@ bear on, and `README.md` for a top-level summary.
 
 Builds cleanly (`lake build`), zero `sorry`, confirmed — including
 `PrimeChain.lean`, `LinearChain.lean`, `LinearChainGeneral.lean`,
-`LinearChainTight.lean`, and `NthRootChain.lean` (the first file in this
-project to use `Real.rpow` instead of `Real.sqrt`; needed one fix-up round
-for `rw`/`rpow` notation mismatches, now clean).
+`LinearChainTight.lean`, `NthRootChain.lean` (the first file in this project
+to use `Real.rpow` instead of `Real.sqrt`; needed one fix-up round for
+`rw`/`rpow` notation mismatches, now clean), and `LinearChainNthRoot.lean`.
 
 ## What's covered, file by file
 
@@ -160,6 +161,13 @@ for `rw`/`rpow` notation mismatches, now clean).
   once. Mitra (arXiv:2404.04051) states a general-`n` identity schematically
   but proves convergence only for `n = 3`; this covers arbitrary `n` for the
   bounded-coefficient case.
+
+* `LinearChainNthRoot.lean` — combines `LinearChain.lean` with
+  `NthRootChain.lean`: existence of a limit for the unbounded linear family
+  `linearCoeff m N` (slope `m ≥ 1`), at any root order `n ≥ 2`, via the same
+  moving-ceiling technique, now run against `rollUpN`. `linearRadicalN_converges`
+  gives `L ≤ N`; `n = 2` recovers `LinearChain.lean`'s own inequality exactly,
+  with no case split needed on `n`.
 
 ## Known gap in the paper itself (largely resolved here)
 
