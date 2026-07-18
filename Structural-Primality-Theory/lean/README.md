@@ -74,6 +74,14 @@ next section.
   prescribed target `t` exactly generalizes to any root order `n ≥ 2`, via
   `targetCoeffN n t = (t^n-1)/t` and a generalized contraction rate
   `1-1/t^n` — unlike `IdentityChain.lean`, no `n=2`-specific obstruction.
+- **The classical unbounded family, any root order** (`IdentityChainNthRoot.lean`):
+  `IdentityChain.lean`, `UnboundedChain.lean` and `HerschfeldClosure.lean`
+  generalized to any `n ≥ 2` in one file, since the even/odd cases differ
+  only by a sign: `x=-1` is a root of exactly one of `x^n-1`, `x^n+1`
+  depending on parity, giving one coefficient polynomial `altSum n x` and
+  one identity valid for every `n`. Existence of a limit holds for every
+  `n ≥ 2`; the exact value `L(N) = N` is proven for every EVEN `n`, by the
+  same deficit-growth argument as `HerschfeldClosure.lean`.
 
 ## Errors this formalization caught (now fixed in v2 of the paper)
 
@@ -230,6 +238,30 @@ for `a_k = p_k` remains open, as it does in the paper itself.
   `mul_one_div` didn't match — replaced with an explicit
   `field_simp`-proved fact, direction-agnostic).
 
+- **`IdentityChainNthRoot.lean`** — generalizes the classical unbounded
+  family `R_k = N+k-1` from `n=2` to any root order `n ≥ 2`. The even and
+  odd cases turn out to differ only by a sign, not by structure: `x=-1` is a
+  root of exactly one of `x^n-1` (even `n`) or `x^n+1` (odd `n`), giving a
+  single alternating-sign coefficient polynomial `altSum n x` and a single
+  identity `R_k^n = (-1)^n + altSum n R_k · R_{k+1}` valid for every `n`.
+  Existence of a finite limit `L(N) ∈ [1,N]` (`truncRadicalNS_converges`) is
+  proven for every `n ≥ 2`, both parities — note the canonical seed here is
+  `1`, not `0`: for odd `n` the seed `0` genuinely makes the radicand go
+  negative, which is exactly why the earlier exploration of this family (for
+  the linear/unbounded cases) needed a different starting point. The exact
+  value `L(N) = N` (`limitValNS_eq_self_even`) is proven for every EVEN `n`,
+  by the same deficit-growth telescoping argument as `HerschfeldClosure.lean`
+  — it transfers essentially unchanged because, for even `n`, `altSum n N`'s
+  numerator matches exactly the bound the factorization
+  `N^n-L(N)^n=(N-L(N))·S` gives from `L(N) ≥ 1` alone. For odd `n` the two
+  numerators differ by a constant, so existence is proven but the exact
+  value is not (yet) pinned down by this argument. Confirmed building
+  (needed one fix-up round: the same `mul_one_div` exponent-order issue seen
+  in `TargetRadicalNthRoot.lean` recurring in a new spot, a
+  `ContinuousAt.comp` higher-order-unification mismatch fixed via the direct
+  `ContinuousAt.rpow_const` combinator, and a stray `.symm` flipping an
+  equality the wrong way in the final contradiction).
+
 **Not attempted:** the complex-valued extension mentioned in the paper's
 conclusion.
 
@@ -260,6 +292,7 @@ RamanujanNested/
   PrimeChainNthRoot.lean                             -- a_k=p_k, any root order n >= 2
   OscillatoryNthRoot.lean                              -- oscillatory family, any n >= 2
   TargetRadicalNthRoot.lean                               -- exact-target radical, any n >= 2
+  IdentityChainNthRoot.lean                                  -- classical unbounded family, any n >= 2
 ```
 
 ## Building

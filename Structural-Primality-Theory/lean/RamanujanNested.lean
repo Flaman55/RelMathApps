@@ -20,6 +20,7 @@ import RamanujanNested.LinearChainTightNthRoot
 import RamanujanNested.PrimeChainNthRoot
 import RamanujanNested.OscillatoryNthRoot
 import RamanujanNested.TargetRadicalNthRoot
+import RamanujanNested.IdentityChainNthRoot
 
 /-!
 # RamanujanNested — Lean 4 formalization
@@ -43,7 +44,12 @@ to use `Real.rpow` instead of `Real.sqrt`; needed one fix-up round for
 `PrimeChainNthRoot.lean`, `OscillatoryNthRoot.lean`, and
 `TargetRadicalNthRoot.lean` (needed one fix-up round: an exponent product
 appeared as `(1/n)*n` rather than `n*(1/n)`, so `mul_one_div` didn't match —
-replaced with an explicit `field_simp`-proved fact, direction-agnostic).
+replaced with an explicit `field_simp`-proved fact, direction-agnostic), and
+`IdentityChainNthRoot.lean` (needed one fix-up round: the same `mul_one_div`
+exponent-order issue recurring in a new spot, a `ContinuousAt.comp`
+higher-order-unification mismatch fixed via the direct `ContinuousAt.rpow_const`
+combinator, and a stray `.symm` flipping an equality the wrong way in the
+final contradiction — now clean).
 
 ## What's covered, file by file
 
@@ -207,6 +213,23 @@ replaced with an explicit `field_simp`-proved fact, direction-agnostic).
   `IdentityChain.lean`, this construction only ever solves for a single
   constant `a`, not a whole coefficient sequence, so it has no `n=2`-specific
   obstruction.
+
+* `IdentityChainNthRoot.lean` — generalizes `IdentityChain.lean`,
+  `UnboundedChain.lean` and `HerschfeldClosure.lean` (the classical unbounded
+  family `R_k = N+k-1`) from `n = 2` to any root order, in one file, since
+  the two root parities differ only by a sign: `x = -1` is a root of exactly
+  one of `x^n-1` or `x^n+1`, depending on whether `n` is even or odd, giving
+  a single alternating-sign coefficient polynomial `altSum n x` and a single
+  identity `R_k^n = (-1)^n + altSum n R_k · R_{k+1}` valid for every `n ≥ 2`
+  (`chainS_satisfies_recursion`). Existence of a finite limit `L(N) ∈ [1,N]`
+  (`truncRadicalNS_converges`) is proven for every `n ≥ 2`, both parities.
+  The exact value `L(N) = N` (`limitValNS_eq_self_even`) is proven for every
+  EVEN `n`, by the same deficit-growth telescoping argument as
+  `HerschfeldClosure.lean` — the bound transfers essentially unchanged
+  because `altSum n N`'s numerator matches, for even `n`, the bound the
+  factorization `N^n-L(N)^n=(N-L(N))·S` gives from `L(N) ≥ 1` alone. For odd
+  `n` the two numerators differ by a constant, so the same argument gives
+  existence but not (yet) the exact value.
 
 ## Known gap in the paper itself (largely resolved here)
 
