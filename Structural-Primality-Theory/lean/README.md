@@ -8,10 +8,10 @@ paper itself does not establish.
 Builds cleanly against `lake build`, zero `sorry`.
 
 The paper itself has been revised to a second version incorporating what this
-formalization effort found (see "Errors this formalization caught" below) —
-the source is `Czasopismo/Zenodo_v2/Flamandzki Ramanujan nested v2.tex` in
-the parent repository, and that version's own new "Formal Verification"
-section points back here.
+formalization effort found (see "Errors this formalization caught" below).
+It is published on Zenodo: <https://zenodo.org/records/18071173>
+(DOI: 10.5281/zenodo.18071173), and that version's own new "Formal
+Verification" section points back to this repository.
 
 ## What this repository formally verifies
 
