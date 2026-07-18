@@ -45,3 +45,23 @@ To explore the structural identities of Ramanujan radicals on your local machine
 git clone [https://github.com/Flaman55/RelMathApps.git](https://github.com/Flaman55/RelMathApps.git)
 cd RelMathApps/Structural-Primality-Theory
 python Ramanujan-Unified-Radicals.py
+```
+
+## 4. Formal Verification (Lean 4)
+
+The `lean/` subfolder contains a Lean 4 / Mathlib formalization of the same
+unified nested-radical framework, accompanying the paper *"Nested Radicals of
+Ramanujan's Type with Arbitrary Coefficient Sequences"* (A. Flamandzki). It
+machine-checks boundedness, monotonicity, and convergence for the paper's
+general coefficient-sequence recursion, plus original extensions to
+previously-open cases: an unbounded linearly-growing family with an exact
+limiting value, and existence of convergence for the prime-coefficient case
+(`a_k = p_k`), the latter via a general geometric-growth bound built on
+Bertrand's postulate. Builds cleanly with `lake build`, zero `sorry`. See
+`lean/README.md` for the full breakdown of what is proven, file by file.
+
+```bash
+cd RelMathApps/Structural-Primality-Theory/lean
+lake exe cache get
+lake build
+```
