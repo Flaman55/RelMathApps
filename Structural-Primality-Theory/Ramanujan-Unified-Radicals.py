@@ -100,11 +100,36 @@ def pretty_table_no_plots(N_list=(2,3,4,5), max_depth=10):
     for N in (3,):
         print(f"\n== Convergence Comparison for N={N} ==")
         print("dpth | Tail=0 (Static)      | Rolling (Structural)")
-        r_roll = 0.0
         for d in range(1, max_depth+1):
             from_scratch = nested_value(N, d, 0.0)
-            r_roll = (1.0 + (N + d - 2.0) * r_roll) ** 0.5
+            r_roll = nested_value(N, d, N + d)
             print(f"{d:2d}   | {from_scratch:20.12f} | {r_roll:16.12f}")
+
+    # 4) Tail-independence check: unlike rolling (tail deliberately solved to hit N),
+    # these tail policies are fixed rules that do NOT reference N at all. The point
+    # is that the limit does not care about the tail policy -- only about the
+    # coefficients a_k -- so every column below still converges to the same N.
+    #
+    # Note: the map T -> R_1^(d)(T) is monotone increasing in T, and T = N+d gives
+    # R_1 = N exactly (the identity chain / rolling). So a tail policy stays below
+    # N and approaches it monotonically only if T(d) <= N+d for every d; policies
+    # growing faster than that (e.g. d^2, 2^d) overshoot N before settling back
+    # down. The policies below all satisfy T(d) <= N+d for any N >= 2, so they are
+    # guaranteed to approach N from below without ever exceeding it.
+    for N in (3,):
+        print(f"\n== Tail-Independence Check for N={N} ==")
+        policies = {
+            "T=0":     lambda d: 0.0,
+            "T=1":     lambda d: 1.0,
+            "T=d/2":   lambda d: d / 2.0,
+            "T=sqrtd": lambda d: d ** 0.5,
+            "T=d":     lambda d: float(d),
+        }
+        header = "dpth | " + " | ".join(f"{name:>10}" for name in policies)
+        print(header)
+        for d in range(1, max_depth + 1):
+            vals = [nested_value(N, d, pol(d)) for pol in policies.values()]
+            print(f"{d:4d} | " + " | ".join(f"{v:10.6f}" for v in vals))
 
 if __name__ == "__main__":
     # Execute primary verification tables
