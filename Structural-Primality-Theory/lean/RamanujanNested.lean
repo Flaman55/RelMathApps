@@ -15,6 +15,11 @@ import RamanujanNested.LinearChainGeneral
 import RamanujanNested.LinearChainTight
 import RamanujanNested.NthRootChain
 import RamanujanNested.LinearChainNthRoot
+import RamanujanNested.LinearChainGeneralNthRoot
+import RamanujanNested.LinearChainTightNthRoot
+import RamanujanNested.PrimeChainNthRoot
+import RamanujanNested.OscillatoryNthRoot
+import RamanujanNested.TargetRadicalNthRoot
 
 /-!
 # RamanujanNested — Lean 4 formalization
@@ -33,7 +38,10 @@ Builds cleanly (`lake build`), zero `sorry`, confirmed — including
 `PrimeChain.lean`, `LinearChain.lean`, `LinearChainGeneral.lean`,
 `LinearChainTight.lean`, `NthRootChain.lean` (the first file in this project
 to use `Real.rpow` instead of `Real.sqrt`; needed one fix-up round for
-`rw`/`rpow` notation mismatches, now clean), and `LinearChainNthRoot.lean`.
+`rw`/`rpow` notation mismatches, now clean), `LinearChainNthRoot.lean`,
+`LinearChainGeneralNthRoot.lean`, `LinearChainTightNthRoot.lean`,
+`PrimeChainNthRoot.lean`, and `OscillatoryNthRoot.lean`.
+`TargetRadicalNthRoot.lean` added and pending build confirmation.
 
 ## What's covered, file by file
 
@@ -168,6 +176,35 @@ to use `Real.rpow` instead of `Real.sqrt`; needed one fix-up round for
   moving-ceiling technique, now run against `rollUpN`. `linearRadicalN_converges`
   gives `L ≤ N`; `n = 2` recovers `LinearChain.lean`'s own inequality exactly,
   with no case split needed on `n`.
+
+* `LinearChainGeneralNthRoot.lean` — the same generalization for
+  `LinearChainGeneral.lean`: existence for EVERY slope `m > 0` (not only
+  `m ≥ 1`), at any root order `n ≥ 2`, bound `L ≤ N+1`.
+
+* `LinearChainTightNthRoot.lean` — the same generalization for
+  `LinearChainTight.lean`: existence for `0 < m ≤ 1`, at any root order
+  `n ≥ 2`, with the same tight shift `s(m) = (√(5m²+4)-3m)/2`, bound
+  `L ≤ N+s(m)` (no longer claimed optimal at `n ≥ 3`, only valid).
+
+* `PrimeChainNthRoot.lean` — generalizes `PrimeChain.lean`'s geometric
+  moving-ceiling argument to any root order `n ≥ 2`: existence of a limit for
+  `a_k = p_k` at any root order, same hypotheses and same concrete instance
+  (`r=4, A=17`) as `PrimeChain.lean`.
+
+* `OscillatoryNthRoot.lean` — the small-amplitude oscillatory family
+  (`0 ≤ α ≤ 1`) is a bounded coefficient sequence, so convergence at any root
+  order `n ≥ 2` is a direct corollary of `NthRootChain.lean`'s
+  `truncRadicalN_converges` — no new moving-ceiling argument needed.
+
+* `TargetRadicalNthRoot.lean` — generalizes `TargetRadical.lean`'s
+  constant-coefficient exact-target radical (`a = t-1/t`, converging to `t`
+  exactly at `n=2`) to any root order: `targetCoeffN n t = (t^n-1)/t` is the
+  unique constant coefficient solving the fixed-point equation `1+a·t=t^n`
+  at any `n`, and `targetRadicalN_tendsto` proves convergence to `t` exactly,
+  via a generalized contraction bound `ρ_n = 1-1/t^n`. Unlike
+  `IdentityChain.lean`, this construction only ever solves for a single
+  constant `a`, not a whole coefficient sequence, so it has no `n=2`-specific
+  obstruction.
 
 ## Known gap in the paper itself (largely resolved here)
 

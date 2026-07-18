@@ -60,6 +60,20 @@ next section.
   existence of a limit for `linearCoeff m N` (slope `m ≥ 1`), at any root
   order `n ≥ 2`, combining `LinearChain.lean`'s moving-ceiling technique with
   `NthRootChain.lean`'s `rollUpN`.
+- **The same, every slope and the tight bound** (`LinearChainGeneralNthRoot.lean`,
+  `LinearChainTightNthRoot.lean`): existence for every `m > 0` (`L ≤ N+1`) and,
+  for `0 < m ≤ 1`, the tight shift `L ≤ N+s(m)`, both at any root order `n ≥ 2`.
+- **Primes, any root order** (`PrimeChainNthRoot.lean`): existence of a limit
+  for `a_k = p_k` at any root order `n ≥ 2`, generalizing `PrimeChain.lean`'s
+  geometric moving-ceiling argument.
+- **Oscillatory family, any root order** (`OscillatoryNthRoot.lean`): the
+  small-amplitude case is a direct corollary of `NthRootChain.lean`, no new
+  argument needed.
+- **Exact-target radical, any root order** (`TargetRadicalNthRoot.lean`):
+  the constant-coefficient radical of `TargetRadical.lean` converging to a
+  prescribed target `t` exactly generalizes to any root order `n ≥ 2`, via
+  `targetCoeffN n t = (t^n-1)/t` and a generalized contraction rate
+  `1-1/t^n` — unlike `IdentityChain.lean`, no `n=2`-specific obstruction.
 
 ## Errors this formalization caught (now fixed in v2 of the paper)
 
@@ -185,6 +199,34 @@ for `a_k = p_k` remains open, as it does in the paper itself.
   `LinearChain.lean`'s own key inequality exactly, with no case split needed
   on `n`. Confirmed building.
 
+- **`LinearChainGeneralNthRoot.lean`** — the same generalization for
+  `LinearChainGeneral.lean`: existence for EVERY slope `m > 0`, at any root
+  order `n ≥ 2`, bound `L ≤ N+1`. Confirmed building.
+
+- **`LinearChainTightNthRoot.lean`** — the same generalization for
+  `LinearChainTight.lean`: existence for `0 < m ≤ 1`, at any root order
+  `n ≥ 2`, keeping the same tight shift `s(m) = (√(5m²+4)-3m)/2` (no longer
+  claimed optimal at `n ≥ 3`, only valid). Confirmed building.
+
+- **`PrimeChainNthRoot.lean`** — generalizes `PrimeChain.lean`'s geometric
+  moving-ceiling argument to any root order `n ≥ 2`: existence of a limit for
+  `a_k = p_k`, same hypotheses and concrete instance (`r=4, A=17`) as
+  `PrimeChain.lean`. Confirmed building.
+
+- **`OscillatoryNthRoot.lean`** — the small-amplitude oscillatory family
+  (`0 ≤ α ≤ 1`) is bounded, so this is a one-line corollary of
+  `NthRootChain.lean`'s `truncRadicalN_converges`. Confirmed building.
+
+- **`TargetRadicalNthRoot.lean`** — generalizes `TargetRadical.lean`'s
+  constant-coefficient exact-target radical to any root order `n ≥ 2`.
+  `targetCoeffN n t = (t^n-1)/t` solves the fixed-point equation `1+a·t=t^n`
+  for any `n` (only ever solving for one constant, not a whole sequence, so
+  unlike `IdentityChain.lean` it has no `n=2`-specific obstruction);
+  `targetRadicalN_tendsto` proves convergence to `t` exactly via a
+  generalized contraction rate `ρ_n=1-1/t^n` (numerically checked against
+  the true asymptotic rate `(1-1/t^n)/n`; this bound is valid but not tight,
+  same as the `n=2` case). Pending build confirmation.
+
 **Not attempted:** the complex-valued extension mentioned in the paper's
 conclusion.
 
@@ -210,6 +252,11 @@ RamanujanNested/
   LinearChainTight.lean                 -- tight bound for 0 < m <= 1
   NthRootChain.lean                       -- bounded coeffs, any root order n >= 2
   LinearChainNthRoot.lean                    -- unbounded linear family, any n >= 2
+  LinearChainGeneralNthRoot.lean                 -- unbounded, every slope m>0, any n
+  LinearChainTightNthRoot.lean                     -- unbounded, tight bound 0<m<=1, any n
+  PrimeChainNthRoot.lean                             -- a_k=p_k, any root order n >= 2
+  OscillatoryNthRoot.lean                              -- oscillatory family, any n >= 2
+  TargetRadicalNthRoot.lean                               -- exact-target radical, any n >= 2
 ```
 
 ## Building
