@@ -39,11 +39,13 @@ def print_identity_chain(N: int, depth: int):
         ok &= abs(r - expected) < 1e-12
 
     # Print the result chain from bottom to top (root)
+    # Full float64 precision (17 significant digits) -- the double already
+    # carries this precision internally, so there is no cost to displaying it.
     print(f"\n== Identity Chain (N={N}, depth d={depth}, tail T*={Tstar}) ==")
     for k, val, note in reversed(chain):
-        print(f"R_{k:>2} = {val:.12f}   <- {note}")
-    
-    print("Conclusion: LHS=N = {:.12f}, RHS=R_1 = {:.12f}, Difference = {:.2e} {}".format(
+        print(f"R_{k:>2} = {val:.17f}   <- {note}")
+
+    print("Conclusion: LHS=N = {:.17f}, RHS=R_1 = {:.17f}, Difference = {:.6e} {}".format(
         float(N), chain[1][1], abs(chain[1][1]-N), "[PASSED]" if ok else "[FAILED]")
     )
 
@@ -88,22 +90,23 @@ def pretty_table_no_plots(N_list=(2,3,4,5), max_depth=10):
             print_identity_chain(N, d)
 
     # 2) Solving for the tail and comparing with the N+d theoretical model
+    # (full float64 precision -- 17 significant digits, the double's native precision)
     for N in N_list:
         print(f"\n== N = {N} (Solving for tail T* where RHS == N) ==")
-        print("dpth | Numerical T* | N+d (Formula)   | Computed RHS     | |RHS-N|")
+        print(f"{'dpth':>4} | {'Numerical T*':>22} | {'N+d (Formula)':>22} | {'Computed RHS':>22} | |RHS-N|")
         for d in range(1, max_depth+1):
             T_num = solve_tail_for_equality(N, d, tol=1e-13)
             rhs = nested_value(N, d, T_num)
-            print(f"{d:2d}   | {T_num:16.12f} | {N+d:16.12f} | {rhs:16.12f} | {abs(rhs-N):.2e}")
+            print(f"{d:4d} | {T_num:22.17f} | {float(N+d):22.17f} | {rhs:22.17f} | {abs(rhs-N):.6e}")
 
     # 3) Educational Contrast (Finite Radical vs Structural Rolling)
     for N in (3,):
         print(f"\n== Convergence Comparison for N={N} ==")
-        print("dpth | Tail=0 (Static)      | Rolling (Structural)")
+        print(f"{'dpth':>4} | {'Tail=0 (Static)':>22} | {'Rolling (Structural)':>22}")
         for d in range(1, max_depth+1):
             from_scratch = nested_value(N, d, 0.0)
             r_roll = nested_value(N, d, N + d)
-            print(f"{d:2d}   | {from_scratch:20.12f} | {r_roll:16.12f}")
+            print(f"{d:4d} | {from_scratch:22.17f} | {r_roll:22.17f}")
 
     # 4) Tail-independence check: unlike rolling (tail deliberately solved to hit N),
     # these tail policies are fixed rules that do NOT reference N at all. The point
@@ -125,11 +128,11 @@ def pretty_table_no_plots(N_list=(2,3,4,5), max_depth=10):
             "T=sqrtd": lambda d: d ** 0.5,
             "T=d":     lambda d: float(d),
         }
-        header = "dpth | " + " | ".join(f"{name:>10}" for name in policies)
+        header = f"{'dpth':>4} | " + " | ".join(f"{name:>22}" for name in policies)
         print(header)
         for d in range(1, max_depth + 1):
             vals = [nested_value(N, d, pol(d)) for pol in policies.values()]
-            print(f"{d:4d} | " + " | ".join(f"{v:10.6f}" for v in vals))
+            print(f"{d:4d} | " + " | ".join(f"{v:22.17f}" for v in vals))
 
 if __name__ == "__main__":
     # Execute primary verification tables
