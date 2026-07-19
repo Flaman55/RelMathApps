@@ -57,6 +57,11 @@ bound variable elaborated to `ℝ` instead of `ℕ` from an under-annotated
 cast, and a fraction identity `a/b·(1/2) = a/(2b)` that `ring` cannot in
 fact verify unconditionally — replaced with an `Iff` closed by `linarith`,
 which handles rational-coefficient scaling directly — now clean).
+`Monotone.lean` and `UnboundedChain.lean` were later extended
+(`rollUp_mono_seed`, `rollUp_classicalCoeff_hits_target`,
+`rollUp_classicalCoeff_le_of_tail_le`) to formalize Appendix A.1's Table 3
+"tail-independence" discussion, a claim found unformalized during an audit
+of the paper against the Lean project — clean on the first build attempt.
 
 ## What's covered, file by file
 
@@ -71,7 +76,12 @@ which handles rational-coefficient scaling directly — now clean).
   lower bound on `a_k` at all — see the file docstring.
 
 * `Monotone.lean` — `truncRadical_monotone`: Section 4.1's monotonicity half
-  (`a_k ≥ 0` ⟹ the truncated sequence is nondecreasing in depth).
+  (`a_k ≥ 0` ⟹ the truncated sequence is nondecreasing in depth). Also
+  `rollUp_mono_seed`: the complementary monotonicity in the tail *seed* `T`
+  rather than depth (`a_k ≥ 0` and `T1 ≤ T2` ⟹ `rollUp a T1 d ≤ rollUp a T2 d`)
+  — the fact Appendix A.1's Table 3 invokes informally to argue that any tail
+  policy `T(d) ≤ N+d` approaches `N` from below; see `UnboundedChain.lean`
+  for the specialization that recovers the table's actual claim.
 
 * `Convergence.lean` — `truncRadical_converges`: combines the two above via
   Mathlib's monotone-bounded convergence theorem to get the paper's actual
@@ -111,10 +121,17 @@ which handles rational-coefficient scaling directly — now clean).
   as classical `a_k = k` up to a shift), a *moving-ceiling* induction proves
   the truncated radical converges to a finite limit `L ≤ N`
   (`classicalRadical_converges`) — a family Section 4.1 as stated does not
-  cover at all. Whether `L = N` exactly is still open; the file docstring
+  cover at all. Whether `L = N` exactly is still open by *this* argument
+  (closed instead in `HerschfeldClosure.lean`, below); the file docstring
   records a concrete attempt (a tail-sensitivity/telescoping estimate) that
   was tried and found too lossy, rather than leaving the difficulty
-  unstated.
+  unstated. Also `rollUp_classicalCoeff_hits_target` (the exact identity
+  `rollUp (classicalCoeff N) (N+d) d = N`, at the `rollUp` level rather than
+  `IdentityChain.lean`'s pointwise closed-form recursion) and
+  `rollUp_classicalCoeff_le_of_tail_le` (combining this with
+  `Monotone.lean`'s `rollUp_mono_seed`): any tail policy `T(d) ≤ N+d` gives
+  `rollUp (classicalCoeff N) T d ≤ N` — formalizing Appendix A.1's Table 3
+  "tail-independence" reasoning, which was previously only asserted in prose.
 
 * `HerschfeldClosure.lean` — closes the exact-value half of the gap below.
   `limitVal_functional_eq` derives `L(N) = √(1+(N-1)L(N+1))` by passing the

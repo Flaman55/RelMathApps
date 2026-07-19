@@ -50,4 +50,31 @@ theorem truncRadical_monotone (a : ℕ → ℝ) (ha : ∀ k, 0 ≤ a k) :
   intro N
   exact rollUp_seed_one_step_mono N a ha
 
+/-- **Monotonicity in the seed**, complementing `rollUp_seed_one_step_mono`'s
+monotonicity in depth. For nonnegative coefficients, replacing the tail seed
+`T` by a larger value can only increase (never decrease) every truncation.
+This is the fact Appendix A.1's Table 3 ("tail-independence") invokes
+informally — "the map `T ↦ R_1^{(d)}(T)` is monotone increasing" — made
+precise here; `UnboundedChain.lean`'s `rollUp_classicalCoeff_le_of_tail_le`
+specializes it to the classical family to recover the table's actual claim.
+Stated with `a` quantified inside the induction, same reason as
+`rollUp_seed_one_step_mono`: the inductive step needs the claim for the
+*shifted* coefficient sequence, not just the original `a`. -/
+theorem rollUp_mono_seed :
+    ∀ (d : ℕ) (a : ℕ → ℝ), (∀ k, 0 ≤ a k) → ∀ (T1 T2 : ℝ), T1 ≤ T2 →
+      rollUp a T1 d ≤ rollUp a T2 d := by
+  intro d
+  induction d with
+  | zero => intro a _ T1 T2 hT; exact hT
+  | succ n ih =>
+    intro a ha T1 T2 hT
+    rw [rollUp_succ, rollUp_succ]
+    have ha_shift : ∀ k, 0 ≤ (fun k => a (k + 1)) k := fun k => ha (k + 1)
+    have ih_shift := ih (fun k => a (k + 1)) ha_shift T1 T2 hT
+    have ha1 : 0 ≤ a 1 := ha 1
+    have hmul : a 1 * rollUp (fun k => a (k + 1)) T1 n ≤
+        a 1 * rollUp (fun k => a (k + 1)) T2 n :=
+      mul_le_mul_of_nonneg_left ih_shift ha1
+    exact Real.sqrt_le_sqrt (by linarith [hmul])
+
 end RamanujanNested

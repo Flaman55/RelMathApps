@@ -127,6 +127,15 @@ concerns, but concrete, checkable mistakes:
   family `a_k = N+k-2` (the classical radical is `N=3`; `a_k=k` is `N=2`). A
   *moving-ceiling* induction (the bound at depth `d` is `N` itself, not a
   fixed constant) proves the truncated radical has a finite limit `L ≤ N`.
+  Also formalizes Appendix A.1's Table 3 ("tail-independence") discussion,
+  found unformalized in an audit of the paper against this project:
+  `rollUp_classicalCoeff_hits_target` restates `IdentityChain.lean`'s closed
+  form as the exact `rollUp`-level identity `rollUp (classicalCoeff N) (N+d) d
+  = N`, and `rollUp_classicalCoeff_le_of_tail_le` combines it with
+  `Monotone.lean`'s new `rollUp_mono_seed` (monotonicity in the tail *seed*,
+  complementing the existing monotonicity in depth) to show any tail policy
+  `T(d) ≤ N+d` gives `rollUp (classicalCoeff N) T d ≤ N` — exactly the
+  informal claim the table makes about all five tail policies it tabulates.
 - **`HerschfeldClosure.lean`** — closes the gap for this family. Deriving a
   functional equation `L(N) = √(1+(N-1)·L(N+1))` from the recursion in the
   limit, then a deficit recursion and a global multiplicative growth bound

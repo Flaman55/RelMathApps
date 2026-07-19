@@ -119,6 +119,56 @@ theorem classicalCoeff_bounded {N : ℝ} (hN : 1 ≤ N) (d : ℕ) :
     0 ≤ truncRadical (classicalCoeff N) d ∧ truncRadical (classicalCoeff N) d ≤ N :=
   rollUp_classicalCoeff_bounded d N 1 hN (by norm_num) hN
 
+/-- **The exact rolling identity at the `rollUp` level.** Seeding the tail at
+`T = N+d` (Algorithm 3's `R_{d+1} = N+d`) makes the truncated radical hit `N`
+exactly at every depth `d` — this is `IdentityChain.lean`'s closed form
+restated as a `rollUp`-level equation (rather than the pointwise recursion on
+`chainClosedForm`), so it can be combined with `Monotone.lean`'s
+`rollUp_mono_seed` below. Proved directly by induction on `d`, mirroring
+`rollUp_classicalCoeff_bounded`'s shift trick but for an exact equality. -/
+theorem rollUp_classicalCoeff_hits_target :
+    ∀ (d : ℕ) (N : ℝ), 1 ≤ N → rollUp (classicalCoeff N) (N + (d : ℝ)) d = N := by
+  intro d
+  induction d with
+  | zero =>
+    intro N _
+    have h0 : rollUp (classicalCoeff N) (N + ((0 : ℕ) : ℝ)) 0 = N + ((0 : ℕ) : ℝ) := rfl
+    rw [h0]
+    norm_num
+  | succ n ih =>
+    intro N hN
+    have hN1 : (1 : ℝ) ≤ N + 1 := by linarith
+    have hshift : (fun k => classicalCoeff N (k + 1)) = classicalCoeff (N + 1) := by
+      funext k; unfold classicalCoeff; push_cast; ring
+    have ha1 : classicalCoeff N 1 = N - 1 := by
+      unfold classicalCoeff; push_cast; ring
+    have hcast : N + ((n + 1 : ℕ) : ℝ) = (N + 1) + (n : ℝ) := by push_cast; ring
+    rw [hcast, rollUp_succ, hshift]
+    have hih := ih (N + 1) hN1
+    rw [hih, ha1]
+    have hcore : (1 : ℝ) + (N - 1) * (N + 1) = N ^ 2 := by ring
+    rw [hcore]
+    exact Real.sqrt_sq (by linarith)
+
+/-- **Table 3, "tail-independence", made rigorous.** Any tail policy
+`T(d) ≤ N+d` gives a truncated radical bounded by `N` — combining
+`rollUp_mono_seed` (monotonicity in the seed, `Monotone.lean`) with the exact
+rolling identity above. This is exactly the informal reasoning of Appendix
+A.1's Table 3 ("since the map `T ↦ R_1^{(d)}(T)` is monotone increasing and
+`T=N+d` yields `R_1^{(d)}=N` exactly, any policy satisfying `T(d) ≤ N+d` is
+guaranteed to approach `N` from below without ever exceeding it"), made
+precise: the five concrete tail policies in the table (`T=0`, `T=1`,
+`T=d/2`, `T=√d`, `T=d`) are all instances with `T(d) ≤ N+d` at `N=3`. -/
+theorem rollUp_classicalCoeff_le_of_tail_le {N T : ℝ} (hN : 2 ≤ N) (d : ℕ)
+    (hT : T ≤ N + (d : ℝ)) :
+    rollUp (classicalCoeff N) T d ≤ N := by
+  have hnonneg : ∀ k, 0 ≤ classicalCoeff N k := fun k => by
+    unfold classicalCoeff
+    have hk : (0 : ℝ) ≤ (k : ℝ) := Nat.cast_nonneg k
+    linarith
+  have hmono := rollUp_mono_seed d (classicalCoeff N) hnonneg T (N + (d : ℝ)) hT
+  rwa [rollUp_classicalCoeff_hits_target d N (by linarith)] at hmono
+
 open Filter Topology
 
 /-- **The existence-of-limit result.** For target `N ≥ 2` (matching
