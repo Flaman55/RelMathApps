@@ -49,7 +49,14 @@ replaced with an explicit `field_simp`-proved fact, direction-agnostic), and
 exponent-order issue recurring in a new spot, a `ContinuousAt.comp`
 higher-order-unification mismatch fixed via the direct `ContinuousAt.rpow_const`
 combinator, and a stray `.symm` flipping an equality the wrong way in the
-final contradiction — now clean).
+final contradiction — now clean). `IdentityChainNthRoot.lean` was later
+extended (Part 4) to close the exact-value case for odd `n` too — see its
+entry below for the argument; needed a second round of fix-ups (a `Finset`
+range-cast associativity mismatch defeating `linarith`, a lambda whose
+bound variable elaborated to `ℝ` instead of `ℕ` from an under-annotated
+cast, and a fraction identity `a/b·(1/2) = a/(2b)` that `ring` cannot in
+fact verify unconditionally — replaced with an `Iff` closed by `linarith`,
+which handles rational-coefficient scaling directly — now clean).
 
 ## What's covered, file by file
 
@@ -228,8 +235,18 @@ final contradiction — now clean).
   `HerschfeldClosure.lean` — the bound transfers essentially unchanged
   because `altSum n N`'s numerator matches, for even `n`, the bound the
   factorization `N^n-L(N)^n=(N-L(N))·S` gives from `L(N) ≥ 1` alone. For odd
-  `n` the two numerators differ by a constant, so the same argument gives
-  existence but not (yet) the exact value.
+  `n` the two numerators differ by a constant (`N^n+1` vs `N^n-1`), so the
+  clean ratio `(N+1)/(N-1)` picks up an extra shrink factor
+  `shrinkFactor n N = (N^n-1)/(N^n+1)` per step (`deficitS_growth_odd`). The
+  key fact making the odd case close anyway: the product of these shrink
+  factors over ANY number of steps stays bounded below by a fixed `1/2`,
+  uniformly in the starting point and step count (`prodShrink_ge_half`) —
+  via a hand-proved Weierstrass-type inequality `∏(1-xᵢ) ≥ 1-∑xᵢ` (no direct
+  Mathlib lemma found) combined with an elementary telescoping bound on
+  `∑ 2/(N₀+i)³`. This keeps the deficit growth quadratic, merely scaled by a
+  fixed constant, which still beats the linear ceiling
+  (`deficitS_quadratic_lower_odd`, `limitValNS_eq_self_odd`). So the exact
+  value `L(N) = N` is now proven for EVERY `n ≥ 2`, both parities.
 
 ## Known gap in the paper itself (largely resolved here)
 

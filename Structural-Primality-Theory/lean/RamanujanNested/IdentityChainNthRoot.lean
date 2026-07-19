@@ -559,4 +559,354 @@ theorem limitValNS_eq_self_even {n : ℕ} (hn : 2 ≤ n) (hne : Even n) {N : ℝ
     nlinarith [mul_lt_mul_of_pos_right hprod hNjm1_pos]
   linarith [hlow, hceil, hfinal]
 
+/-! ## Part 4: the exact limit `L(N) = N`, odd root order
+
+For odd `n` the identity gives `altSum n N * (N+1) = N^n + 1` instead of
+`N^n - 1` — a constant gap of exactly `2` relative to the even case. This
+means the per-step growth bound picks up an extra shrink factor
+`shrinkFactor n N := 1 - 2/(N^n+1) = (N^n-1)/(N^n+1)` relative to the clean
+ratio `(N+1)/(N-1)`. The product of these shrink factors over any number of
+steps stays bounded below by a fixed positive constant (`1/2`, uniformly in
+`N₀` and the step count) via a Weierstrass-type product-sum inequality
+together with an elementary telescoping bound on `∑ 2/(N₀+i)^3`. This keeps
+the deficit growth quadratic (merely scaled down by a fixed constant), which
+still suffices to beat the linear ceiling in the closing contradiction. -/
+
+/-- **Weierstrass-type product-sum inequality.** No direct match found in
+Mathlib under `one_sub_sum_le_prod` / `Weierstrass` / `prod_one_sub`; proved
+by hand via `Finset.induction_on`. -/
+private theorem prod_one_sub_ge_one_sub_sum {ι : Type*} [DecidableEq ι] (x : ι → ℝ) :
+    ∀ s : Finset ι, (∀ i ∈ s, 0 ≤ x i) → (∀ i ∈ s, x i ≤ 1) →
+      1 - ∑ i ∈ s, x i ≤ ∏ i ∈ s, (1 - x i) := by
+  intro s
+  induction s using Finset.induction_on with
+  | empty => intro _ _; simp
+  | @insert a s ha ih =>
+    intro hx0 hx1
+    have hx0' : ∀ i ∈ s, 0 ≤ x i := fun i hi => hx0 i (Finset.mem_insert_of_mem hi)
+    have hx1' : ∀ i ∈ s, x i ≤ 1 := fun i hi => hx1 i (Finset.mem_insert_of_mem hi)
+    have hxa0 : 0 ≤ x a := hx0 a (Finset.mem_insert_self a s)
+    have hxa1 : x a ≤ 1 := hx1 a (Finset.mem_insert_self a s)
+    have ihs := ih hx0' hx1'
+    rw [Finset.sum_insert ha, Finset.prod_insert ha]
+    have hsum_nonneg : 0 ≤ ∑ i ∈ s, x i := Finset.sum_nonneg hx0'
+    have key : (1 - x a) * (1 - ∑ i ∈ s, x i) ≤ (1 - x a) * ∏ i ∈ s, (1 - x i) :=
+      mul_le_mul_of_nonneg_left ihs (by linarith)
+    have expand : (1 - x a) * (1 - ∑ i ∈ s, x i) =
+        1 - x a - ∑ i ∈ s, x i + x a * ∑ i ∈ s, x i := by ring
+    have hxa_sum_nonneg : 0 ≤ x a * ∑ i ∈ s, x i := mul_nonneg hxa0 hsum_nonneg
+    nlinarith [key, expand, hxa_sum_nonneg]
+
+/-- Elementary telescoping step: `2/k^3 ≤ 1/(k-1)^2 - 1/k^2` for `k ≥ 2`. -/
+private theorem cube_reciprocal_step {k : ℝ} (hk : 2 ≤ k) :
+    2 / k ^ 3 ≤ 1 / (k - 1) ^ 2 - 1 / k ^ 2 := by
+  have hk1 : (0 : ℝ) < k - 1 := by linarith
+  have hk0 : (0 : ℝ) < k := by linarith
+  rw [← sub_nonneg]
+  have heq : 1 / (k - 1) ^ 2 - 1 / k ^ 2 - 2 / k ^ 3 =
+      (3 * k - 2) / ((k - 1) ^ 2 * k ^ 3) := by
+    have hk0' : k ≠ 0 := ne_of_gt hk0
+    have hk1' : k - 1 ≠ 0 := ne_of_gt hk1
+    field_simp
+    ring
+  rw [heq]
+  apply div_nonneg
+  · linarith
+  · positivity
+
+/-- Uniform-in-`J` telescoped sum bound: `∑_{i<J} 2/(N₀+i)^3 ≤ 2/N₀^3 + 1/N₀^2`. -/
+private theorem sum_two_over_cube_bound (N₀ : ℝ) (hN₀ : 2 ≤ N₀) :
+    ∀ J : ℕ, ∑ i ∈ range J, 2 / (N₀ + (i : ℝ)) ^ 3 ≤ 2 / N₀ ^ 3 + 1 / N₀ ^ 2 := by
+  have main : ∀ J : ℕ, ∑ i ∈ range (J + 1), 2 / (N₀ + (i : ℝ)) ^ 3 ≤
+      2 / N₀ ^ 3 + 1 / N₀ ^ 2 - 1 / (N₀ + (J : ℝ)) ^ 2 := by
+    intro J
+    induction J with
+    | zero =>
+      simp only [zero_add, Finset.sum_range_one, Nat.cast_zero, add_zero]
+      linarith
+    | succ m ih =>
+      rw [Finset.sum_range_succ]
+      have hmnn : (0 : ℝ) ≤ (m : ℝ) := Nat.cast_nonneg m
+      have hk : (2 : ℝ) ≤ N₀ + (m : ℝ) + 1 := by linarith
+      have hstep := cube_reciprocal_step hk
+      have heq1 : N₀ + (m : ℝ) + 1 - 1 = N₀ + (m : ℝ) := by ring
+      rw [heq1] at hstep
+      have hcastJ : ((m + 1 : ℕ) : ℝ) = (m : ℝ) + 1 := by push_cast; ring
+      rw [hcastJ]
+      have hassoc : N₀ + ((m : ℝ) + 1) = N₀ + (m : ℝ) + 1 := by ring
+      rw [hassoc]
+      linarith [ih, hstep]
+  intro J
+  cases J with
+  | zero =>
+    simp only [Finset.range_zero, Finset.sum_empty]
+    positivity
+  | succ m =>
+    have hm := main m
+    have hnn : (0 : ℝ) ≤ 1 / (N₀ + (m : ℝ)) ^ 2 := by positivity
+    linarith [hm, hnn]
+
+/-- The per-step shrink factor for odd `n`, relative to the clean
+`(N+1)/(N-1)` ratio of the even case: `1 - 2/(N^n+1) = (N^n-1)/(N^n+1)`. -/
+noncomputable def shrinkFactor (n : ℕ) (N : ℝ) : ℝ := 1 - 2 / (N ^ n + 1)
+
+private theorem shrinkFactor_nonneg {n : ℕ} (hn : 2 ≤ n) {N : ℝ} (hN : 2 ≤ N) :
+    0 ≤ shrinkFactor n N := by
+  unfold shrinkFactor
+  have hNnpos : (0 : ℝ) < N ^ n + 1 := by positivity
+  rw [le_sub_iff_add_le, zero_add, div_le_one hNnpos]
+  have h2 : (2 : ℝ) ≤ N ^ n := by
+    have h4 : (4 : ℝ) ≤ N ^ 2 := by nlinarith
+    have hNn2 : N ^ 2 ≤ N ^ n := pow_le_pow_right₀ (by linarith : (1 : ℝ) ≤ N) hn
+    linarith
+  linarith
+
+/-- **The key global growth bound, odd `n`.** Same factorization argument as
+`deficitS_growth_even`, but `altSum n N * (N+1) = N^n + 1` (not `N^n - 1`)
+picks up an extra `shrinkFactor n N = (N^n-1)/(N^n+1)` relative to the clean
+ratio. -/
+theorem deficitS_growth_odd {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N : ℝ} (hN : 2 ≤ N) :
+    deficitS n N * (N + 1) * shrinkFactor n N ≤ deficitS n (N + 1) * (N - 1) := by
+  have hNp1pos : (0 : ℝ) < N + 1 := by linarith
+  have hL_ge1 := limitValNS_ge_one hn hN
+  have hDnn : 0 ≤ deficitS n N := deficitS_nonneg hn hN
+  have hsign : (-1 : ℝ) ^ n = -1 := hodd.neg_one_pow
+  have hFE := limitValNS_functional_eq hn hN
+  rw [hsign] at hFE
+  have hn_ne : (n : ℝ) ≠ 0 := by
+    have : (0 : ℝ) < n := by exact_mod_cast (by omega : 0 < n)
+    linarith
+  have hkey := altSum_shift_ge_one hn hN
+  rw [hsign] at hkey
+  have hL1_nonneg : (0 : ℝ) ≤ -1 + altSum n N * limitValNS n (N + 1) := by
+    have hL1' := limitValNS_ge_one hn (show 2 ≤ N + 1 by linarith)
+    have hanneg := altSum_nonneg hn (by linarith : (1 : ℝ) ≤ N)
+    nlinarith [hL1', hanneg, hkey]
+  have hLn : (limitValNS n N) ^ n = -1 + altSum n N * limitValNS n (N + 1) := by
+    have hexp1 : (1 / (n : ℝ)) * (n : ℝ) = 1 := by field_simp
+    rw [hFE, ← Real.rpow_natCast _ n, ← Real.rpow_mul hL1_nonneg, hexp1, Real.rpow_one]
+  have hNn_eq : N ^ n = -1 + altSum n N * (N + 1) := by
+    have hid := altSum_identity n N
+    rw [hsign] at hid
+    linarith [hid]
+  have hsub : N ^ n - (limitValNS n N) ^ n = altSum n N * deficitS n (N + 1) := by
+    unfold deficitS
+    rw [hLn, hNn_eq]; ring
+  have hfact := factor_pow_sub N (limitValNS n N) n
+  have hNL : N - limitValNS n N = deficitS n N := rfl
+  rw [hNL] at hfact
+  have hfact2 : (∑ i ∈ range n, N ^ i * (limitValNS n N) ^ (n - 1 - i)) * deficitS n N =
+      altSum n N * deficitS n (N + 1) := by linarith [hfact, hsub]
+  have hSge := geomFactor_ge_even' hN hL_ge1 n
+  have haltval : altSum n N * (N + 1) = N ^ n + 1 := by
+    have hid := altSum_identity n N
+    rw [hsign] at hid; linarith [hid]
+  have hNnpos : (0 : ℝ) < N ^ n + 1 := by positivity
+  have hanpos : 0 < altSum n N := by
+    by_contra hcon
+    push_neg at hcon
+    have hle0 : altSum n N * (N + 1) ≤ 0 := mul_nonpos_of_nonpos_of_nonneg hcon hNp1pos.le
+    linarith [haltval, hNnpos, hle0]
+  have hstep2 : (N ^ n - 1) * deficitS n N ≤
+      (∑ i ∈ range n, N ^ i * (limitValNS n N) ^ (n - 1 - i)) * (N - 1) * deficitS n N :=
+    mul_le_mul_of_nonneg_right hSge hDnn
+  have hreassoc : (∑ i ∈ range n, N ^ i * (limitValNS n N) ^ (n - 1 - i)) * (N - 1) *
+      deficitS n N = altSum n N * deficitS n (N + 1) * (N - 1) := by
+    rw [show (∑ i ∈ range n, N ^ i * (limitValNS n N) ^ (n - 1 - i)) * (N - 1) * deficitS n N =
+        ((∑ i ∈ range n, N ^ i * (limitValNS n N) ^ (n - 1 - i)) * deficitS n N) * (N - 1) from
+        by ring, hfact2]
+  rw [hreassoc] at hstep2
+  have hmul2 : (N ^ n - 1) * deficitS n N * (N + 1) ≤
+      altSum n N * deficitS n (N + 1) * (N - 1) * (N + 1) :=
+    mul_le_mul_of_nonneg_right hstep2 hNp1pos.le
+  have hreassoc2 : altSum n N * deficitS n (N + 1) * (N - 1) * (N + 1) =
+      (altSum n N * (N + 1)) * deficitS n (N + 1) * (N - 1) := by ring
+  rw [hreassoc2, haltval] at hmul2
+  have hshrink_eq : shrinkFactor n N = (N ^ n - 1) / (N ^ n + 1) := by
+    unfold shrinkFactor
+    have hNnpos' : (N ^ n + 1 : ℝ) ≠ 0 := ne_of_gt hNnpos
+    field_simp
+    ring
+  rw [hshrink_eq, show deficitS n N * (N + 1) * ((N ^ n - 1) / (N ^ n + 1)) =
+      deficitS n N * (N + 1) * (N ^ n - 1) / (N ^ n + 1) from by ring,
+      div_le_iff₀ hNnpos]
+  have hgoal_eq : deficitS n N * (N + 1) * (N ^ n - 1) =
+      (N ^ n - 1) * deficitS n N * (N + 1) := by ring
+  have htarget_eq : deficitS n (N + 1) * (N - 1) * (N ^ n + 1) =
+      (N ^ n + 1) * deficitS n (N + 1) * (N - 1) := by ring
+  rw [hgoal_eq, htarget_eq]
+  exact hmul2
+
+/-- **The product of shrink factors stays uniformly bounded below by `1/2`**,
+for every `N₀ ≥ 2` and every step count `j` — the constant is independent of
+both. Combines `prod_one_sub_ge_one_sub_sum` with `sum_two_over_cube_bound`. -/
+private theorem prodShrink_ge_half {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N₀ : ℝ} (hN₀ : 2 ≤ N₀)
+    (j : ℕ) : (1 : ℝ) / 2 ≤ ∏ i ∈ range j, shrinkFactor n (N₀ + (i : ℝ)) := by
+  have hn3 : 3 ≤ n := by obtain ⟨k, hk⟩ := hodd; omega
+  have hprod_eq : ∏ i ∈ range j, shrinkFactor n (N₀ + (i : ℝ)) =
+      ∏ i ∈ range j, (1 - 2 / ((N₀ + (i : ℝ)) ^ n + 1)) := by
+    apply Finset.prod_congr rfl
+    intro i _
+    rfl
+  have hy0 : ∀ i ∈ range j, (0 : ℝ) ≤ 2 / ((N₀ + (i : ℝ)) ^ n + 1) := by
+    intro i _; positivity
+  have hy1 : ∀ i ∈ range j, 2 / ((N₀ + (i : ℝ)) ^ n + 1) ≤ 1 := by
+    intro i _
+    have hNi : (2 : ℝ) ≤ N₀ + (i : ℝ) := by
+      have : (0 : ℝ) ≤ (i : ℝ) := Nat.cast_nonneg i; linarith
+    have h1 : (1 : ℝ) ≤ (N₀ + (i : ℝ)) ^ n := by
+      calc (1 : ℝ) = 1 ^ n := (one_pow n).symm
+        _ ≤ (N₀ + (i : ℝ)) ^ n := pow_le_pow_left₀ (by norm_num) (by linarith) n
+    have hden : (0 : ℝ) < (N₀ + (i : ℝ)) ^ n + 1 := by positivity
+    rw [div_le_one hden]
+    linarith
+  have hweier :=
+    prod_one_sub_ge_one_sub_sum (fun (i : ℕ) => 2 / ((N₀ + (i : ℝ)) ^ n + 1)) (range j) hy0 hy1
+  have hxbound : ∀ i ∈ range j, 2 / ((N₀ + (i : ℝ)) ^ n + 1) ≤ 2 / (N₀ + (i : ℝ)) ^ 3 := by
+    intro i _
+    have hNi : (2 : ℝ) ≤ N₀ + (i : ℝ) := by
+      have : (0 : ℝ) ≤ (i : ℝ) := Nat.cast_nonneg i; linarith
+    have hpow : (N₀ + (i : ℝ)) ^ 3 ≤ (N₀ + (i : ℝ)) ^ n :=
+      pow_le_pow_right₀ (by linarith : (1 : ℝ) ≤ N₀ + (i : ℝ)) hn3
+    have hden1 : (0 : ℝ) < (N₀ + (i : ℝ)) ^ n + 1 := by positivity
+    have hden2 : (0 : ℝ) < (N₀ + (i : ℝ)) ^ 3 := by positivity
+    rw [div_le_div_iff₀ hden1 hden2]
+    nlinarith [hpow]
+  have hsum_le : ∑ i ∈ range j, 2 / ((N₀ + (i : ℝ)) ^ n + 1) ≤
+      ∑ i ∈ range j, 2 / (N₀ + (i : ℝ)) ^ 3 := Finset.sum_le_sum hxbound
+  have hsumbound := sum_two_over_cube_bound N₀ hN₀ j
+  have hB_le_half : 2 / N₀ ^ 3 + 1 / N₀ ^ 2 ≤ (1 : ℝ) / 2 := by
+    have hN0pos : (0 : ℝ) < N₀ := by linarith
+    rw [← sub_nonneg]
+    have heq : (1 : ℝ) / 2 - (2 / N₀ ^ 3 + 1 / N₀ ^ 2) =
+        (N₀ ^ 3 - 2 * N₀ - 4) / (2 * N₀ ^ 3) := by
+      have hN0ne : (N₀ : ℝ) ≠ 0 := ne_of_gt hN0pos
+      field_simp
+      ring
+    rw [heq]
+    have hpoly : N₀ ^ 3 - 2 * N₀ - 4 = (N₀ - 2) * (N₀ ^ 2 + 2 * N₀ + 2) := by ring
+    have hfactor_nonneg : (0 : ℝ) ≤ (N₀ - 2) * (N₀ ^ 2 + 2 * N₀ + 2) := by
+      apply mul_nonneg (by linarith)
+      nlinarith [sq_nonneg (N₀ + 1)]
+    rw [hpoly]
+    apply div_nonneg hfactor_nonneg
+    positivity
+  have hsum_le_half : ∑ i ∈ range j, 2 / ((N₀ + (i : ℝ)) ^ n + 1) ≤ 1 / 2 := by
+    linarith [hsum_le, hsumbound, hB_le_half]
+  rw [hprod_eq]
+  linarith [hweier, hsum_le_half]
+
+/-- Single-step telescoping bound, odd `n`, carrying an abstract accumulated
+shrink-factor product `P` alongside the quadratic ratio — mirrors `quadS_step`
+with the extra multiplicative factor threaded through. -/
+private theorem quadS_step_odd {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N₀ M P : ℝ}
+    (hN₀ : 2 ≤ N₀) (hM : 2 ≤ M) (hPnn : 0 ≤ P)
+    (ih : deficitS n N₀ * (M * (M - 1)) / (N₀ * (N₀ - 1)) * P ≤ deficitS n M) :
+    deficitS n N₀ * ((M + 1) * M) / (N₀ * (N₀ - 1)) * (P * shrinkFactor n M) ≤
+      deficitS n (M + 1) := by
+  have hMpos : (0 : ℝ) < M - 1 := by linarith
+  have hN0pos : (0 : ℝ) < N₀ * (N₀ - 1) := by nlinarith
+  have hshrink_nonneg := shrinkFactor_nonneg hn hM
+  have hratio_nonneg : (0 : ℝ) ≤ (M + 1) / (M - 1) * shrinkFactor n M :=
+    mul_nonneg (by positivity) hshrink_nonneg
+  have hgrow := deficitS_growth_odd hn hodd hM
+  have hgrow' : deficitS n M * ((M + 1) / (M - 1) * shrinkFactor n M) ≤ deficitS n (M + 1) := by
+    have heq : deficitS n M * ((M + 1) / (M - 1) * shrinkFactor n M) =
+        (deficitS n M * (M + 1) * shrinkFactor n M) / (M - 1) := by
+      have hMne : (M - 1 : ℝ) ≠ 0 := ne_of_gt hMpos
+      field_simp
+      ring
+    rw [heq, div_le_iff₀ hMpos]
+    exact hgrow
+  have step : deficitS n N₀ * (M * (M - 1)) / (N₀ * (N₀ - 1)) * P *
+      ((M + 1) / (M - 1) * shrinkFactor n M) ≤
+      deficitS n M * ((M + 1) / (M - 1) * shrinkFactor n M) :=
+    mul_le_mul_of_nonneg_right ih hratio_nonneg
+  have eq1 : deficitS n N₀ * (M * (M - 1)) / (N₀ * (N₀ - 1)) * P *
+      ((M + 1) / (M - 1) * shrinkFactor n M) =
+      deficitS n N₀ * ((M + 1) * M) / (N₀ * (N₀ - 1)) * (P * shrinkFactor n M) := by
+    have hMne : (M - 1 : ℝ) ≠ 0 := ne_of_gt hMpos
+    have hN0ne : (N₀ * (N₀ - 1) : ℝ) ≠ 0 := ne_of_gt hN0pos
+    field_simp
+    ring
+  rw [eq1] at step
+  exact le_trans step hgrow'
+
+/-- **Quadratic-in-`j` lower bound on the deficit, odd `n`** — same shape as
+`deficitS_quadratic_lower`, carrying the accumulated shrink-factor product
+`∏ i < j, shrinkFactor n (N₀+i)` alongside the quadratic ratio. -/
+theorem deficitS_quadratic_lower_odd {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N₀ : ℝ}
+    (hN₀ : 2 ≤ N₀) :
+    ∀ j : ℕ, deficitS n N₀ * ((N₀ + (j : ℝ)) * (N₀ + (j : ℝ) - 1)) / (N₀ * (N₀ - 1)) *
+        (∏ i ∈ range j, shrinkFactor n (N₀ + (i : ℝ))) ≤ deficitS n (N₀ + (j : ℝ)) := by
+  have hC0pos : (0 : ℝ) < N₀ * (N₀ - 1) := by nlinarith
+  intro j
+  induction j with
+  | zero =>
+    simp only [Nat.cast_zero, add_zero, range_zero, Finset.prod_empty, mul_one]
+    rw [mul_div_assoc, div_self (ne_of_gt hC0pos), mul_one]
+  | succ m ih =>
+    have hmnn : (0 : ℝ) ≤ (m : ℝ) := Nat.cast_nonneg m
+    have hNm : (2 : ℝ) ≤ N₀ + (m : ℝ) := by linarith
+    have hprod_nonneg : (0 : ℝ) ≤ ∏ i ∈ range m, shrinkFactor n (N₀ + (i : ℝ)) := by
+      apply Finset.prod_nonneg
+      intro i _
+      apply shrinkFactor_nonneg hn
+      have hi : (0 : ℝ) ≤ (i : ℝ) := Nat.cast_nonneg i
+      linarith
+    have hstep := quadS_step_odd hn hodd hN₀ hNm hprod_nonneg ih
+    have hcast : (N₀ + ((m + 1 : ℕ) : ℝ)) = (N₀ + (m : ℝ)) + 1 := by push_cast; ring
+    have hprod_succ : ∏ i ∈ range (m + 1), shrinkFactor n (N₀ + (i : ℝ)) =
+        (∏ i ∈ range m, shrinkFactor n (N₀ + (i : ℝ))) * shrinkFactor n (N₀ + (m : ℝ)) :=
+      Finset.prod_range_succ _ m
+    rw [hcast, hprod_succ]
+    have hsimp : (N₀ + (m : ℝ)) + 1 - 1 = N₀ + (m : ℝ) := by ring
+    rw [hsimp]
+    exact hstep
+
+/-- **The closing theorem: `L(N) = N` exactly, for every odd root order
+`n ≥ 2` (i.e. `n ≥ 3`).** Same contradiction structure as
+`limitValNS_eq_self_even`, with the extra fixed factor `1/2` from
+`prodShrink_ge_half` absorbed into a doubled threshold for `j`. -/
+theorem limitValNS_eq_self_odd {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N : ℝ} (hN : 2 ≤ N) :
+    limitValNS n N = N := by
+  by_contra hne'
+  have hlt : limitValNS n N < N := lt_of_le_of_ne (limitValNS_le hn hN) hne'
+  have hδ0_pos : 0 < deficitS n N := by unfold deficitS; linarith
+  have hN0pos : (0 : ℝ) < N * (N - 1) := by nlinarith
+  obtain ⟨j, hj⟩ := exists_nat_gt (2 * (N * (N - 1) / deficitS n N) - N)
+  have hjnn : (0 : ℝ) ≤ (j : ℝ) := Nat.cast_nonneg j
+  have hNj : (2 : ℝ) ≤ N + (j : ℝ) := by linarith
+  have hNjm1_pos : (0 : ℝ) < N + (j : ℝ) - 1 := by linarith
+  have hlowraw := deficitS_quadratic_lower_odd hn hodd hN j
+  have hprodhalf := prodShrink_ge_half hn hodd hN j
+  have hbase_nonneg :
+      (0 : ℝ) ≤ deficitS n N * ((N + (j : ℝ)) * (N + (j : ℝ) - 1)) / (N * (N - 1)) := by
+    apply div_nonneg
+    · apply mul_nonneg (deficitS_nonneg hn hN)
+      nlinarith [hNj, hNjm1_pos]
+    · linarith [hN0pos]
+  have hlow : deficitS n N * ((N + (j : ℝ)) * (N + (j : ℝ) - 1)) / (N * (N - 1)) * (1 / 2) ≤
+      deficitS n (N + (j : ℝ)) := by
+    have hmul : deficitS n N * ((N + (j : ℝ)) * (N + (j : ℝ) - 1)) / (N * (N - 1)) * (1 / 2) ≤
+        deficitS n N * ((N + (j : ℝ)) * (N + (j : ℝ) - 1)) / (N * (N - 1)) *
+          (∏ i ∈ range j, shrinkFactor n (N + (i : ℝ))) :=
+      mul_le_mul_of_nonneg_left hprodhalf hbase_nonneg
+    linarith [hmul, hlowraw]
+  have hceil := deficitS_le_ceiling hn hNj
+  have hprod : 2 * (N * (N - 1)) < (N + (j : ℝ)) * deficitS n N := by
+    have h1 : 2 * (N * (N - 1) / deficitS n N) < N + (j : ℝ) := by linarith
+    have heq : 2 * (N * (N - 1) / deficitS n N) = (2 * (N * (N - 1))) / deficitS n N := by ring
+    rw [heq] at h1
+    rwa [div_lt_iff₀ hδ0_pos] at h1
+  have hfinal : N + (j : ℝ) - 1 <
+      deficitS n N * ((N + (j : ℝ)) * (N + (j : ℝ) - 1)) / (N * (N - 1)) * (1 / 2) := by
+    have hgoal_equiv : N + (j : ℝ) - 1 <
+        deficitS n N * ((N + (j : ℝ)) * (N + (j : ℝ) - 1)) / (N * (N - 1)) * (1 / 2) ↔
+        2 * (N + (j : ℝ) - 1) < deficitS n N * ((N + (j : ℝ)) * (N + (j : ℝ) - 1)) / (N * (N - 1)) := by
+      constructor <;> intro h <;> linarith
+    rw [hgoal_equiv, lt_div_iff₀ hN0pos]
+    nlinarith [mul_lt_mul_of_pos_right hprod hNjm1_pos]
+  linarith [hlow, hceil, hfinal]
+
 end RamanujanNested

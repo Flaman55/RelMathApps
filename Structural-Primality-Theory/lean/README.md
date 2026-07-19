@@ -80,8 +80,11 @@ next section.
   only by a sign: `x=-1` is a root of exactly one of `x^n-1`, `x^n+1`
   depending on parity, giving one coefficient polynomial `altSum n x` and
   one identity valid for every `n`. Existence of a limit holds for every
-  `n ≥ 2`; the exact value `L(N) = N` is proven for every EVEN `n`, by the
-  same deficit-growth argument as `HerschfeldClosure.lean`.
+  `n ≥ 2`; the exact value `L(N) = N` is proven for every `n ≥ 2`, EVEN and
+  ODD alike — the odd case needed an extra ingredient (a fixed-constant
+  lower bound on an infinite product of per-step shrink factors, via a
+  hand-proved Weierstrass-type inequality) beyond the deficit-growth
+  argument that closes the even case outright.
 
 ## Errors this formalization caught (now fixed in v2 of the paper)
 
@@ -249,18 +252,36 @@ for `a_k = p_k` remains open, as it does in the paper itself.
   `1`, not `0`: for odd `n` the seed `0` genuinely makes the radicand go
   negative, which is exactly why the earlier exploration of this family (for
   the linear/unbounded cases) needed a different starting point. The exact
-  value `L(N) = N` (`limitValNS_eq_self_even`) is proven for every EVEN `n`,
-  by the same deficit-growth telescoping argument as `HerschfeldClosure.lean`
-  — it transfers essentially unchanged because, for even `n`, `altSum n N`'s
-  numerator matches exactly the bound the factorization
-  `N^n-L(N)^n=(N-L(N))·S` gives from `L(N) ≥ 1` alone. For odd `n` the two
-  numerators differ by a constant, so existence is proven but the exact
-  value is not (yet) pinned down by this argument. Confirmed building
-  (needed one fix-up round: the same `mul_one_div` exponent-order issue seen
-  in `TargetRadicalNthRoot.lean` recurring in a new spot, a
-  `ContinuousAt.comp` higher-order-unification mismatch fixed via the direct
-  `ContinuousAt.rpow_const` combinator, and a stray `.symm` flipping an
-  equality the wrong way in the final contradiction).
+  value `L(N) = N` is now proven for EVERY `n ≥ 2`, both parities:
+
+  - **Even `n`** (`limitValNS_eq_self_even`): the same deficit-growth
+    telescoping argument as `HerschfeldClosure.lean`, transferring essentially
+    unchanged because, for even `n`, `altSum n N`'s numerator matches exactly
+    the bound the factorization `N^n-L(N)^n=(N-L(N))·S` gives from `L(N) ≥ 1`
+    alone.
+  - **Odd `n`** (`limitValNS_eq_self_odd`): for odd `n` the same factorization
+    gives numerator `N^n+1` instead of `N^n-1` — a constant gap of exactly
+    `2` — so the clean ratio `(N+1)/(N-1)` picks up an extra per-step
+    `shrinkFactor n N = (N^n-1)/(N^n+1)` (`deficitS_growth_odd`). The gap
+    turns out not to be fatal: the product of these shrink factors over ANY
+    number of steps stays bounded below by a fixed `1/2`, independent of the
+    starting point and the step count (`prodShrink_ge_half`), via a
+    hand-proved Weierstrass-type inequality `∏(1-xᵢ) ≥ 1-∑xᵢ` (no direct
+    match found in Mathlib) combined with an elementary telescoping bound on
+    `∑ 2/(N₀+i)³`. A fixed-factor-scaled deficit growth is still quadratic,
+    so it still beats the linear ceiling (`deficitS_quadratic_lower_odd`),
+    just needing a doubled threshold in the final contradiction.
+
+  Confirmed building (two fix-up rounds: first, the same `mul_one_div`
+  exponent-order issue seen in `TargetRadicalNthRoot.lean` recurring in a new
+  spot, a `ContinuousAt.comp` higher-order-unification mismatch fixed via the
+  direct `ContinuousAt.rpow_const` combinator, and a stray `.symm` flipping an
+  equality the wrong way in the final contradiction; second, for the odd-`n`
+  addition, a `Finset` range-cast associativity mismatch defeating `linarith`,
+  a lambda whose bound variable elaborated to `ℝ` instead of `ℕ` from an
+  under-annotated cast, and a fraction identity `a/b·(1/2) = a/(2b)` that
+  `ring` cannot in fact verify unconditionally — replaced with an `Iff`
+  closed by `linarith`, which handles rational-coefficient scaling directly).
 
 **Not attempted:** the complex-valued extension mentioned in the paper's
 conclusion.
