@@ -4,9 +4,9 @@ import Mathlib
 /-!
 # TargetRadical.lean — a constant-coefficient radical hitting an exact target
 
-This formalizes the idea from the 2026-07-17 conversation: instead of trying
-to prove that the classical, UNBOUNDED Ramanujan radical (`a_k = k`) converges
-to a prescribed target under the forward evaluation (an open gap — see
+Instead of trying to prove that the classical, UNBOUNDED Ramanujan radical
+(`a_k = k`) converges to a prescribed target under the forward evaluation
+(an open gap — see
 `RamanujanNested.lean`'s "Known gap" section, since `Bounds.lean` needs a
 fixed uniform ceiling `A`), build a genuinely different, structurally simple
 nested radical that:
