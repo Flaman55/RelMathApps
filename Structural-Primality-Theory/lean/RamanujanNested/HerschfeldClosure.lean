@@ -9,22 +9,20 @@ classical `a_k = k` case from Section 5.1) the remaining half of the gap
 `UnboundedChain.lean` left open: that file proves the truncated radical has a
 finite limit `L(N) ≤ N`; this file proves `L(N) = N` exactly.
 
-The closing argument below improves on an earlier two-phase ("bulk vs
-boundary") sketch that turned out to be unnecessary: a single GLOBAL
-multiplicative growth bound
-`δ(N+1) ≥ δ(N)·(N+1)/(N-1)` (valid for every `N`, not just while `δ` is
-small — it only ever uses the trivial ceiling `δ(N) ≤ N-1`) telescopes to an
-explicit *quadratic*-in-step lower bound, which cleanly outraces the
-*linear* trivial ceiling. No arbitrary cutoff anywhere — this is the "real
-boundary" Artur asked for.
+The argument rests on a single global multiplicative growth bound,
+`δ(N+1) ≥ δ(N)·(N+1)/(N-1)`, valid for every `N` (not merely while `δ` is
+small — it uses only the trivial ceiling `δ(N) ≤ N-1`), which telescopes to
+an explicit *quadratic*-in-step lower bound. This outraces the *linear*
+trivial ceiling after finitely many steps, forcing `δ ≡ 0`, with no
+arbitrary cutoff at any point in the argument.
 
 ## Status
 
 No `sorry`: `limitVal`, its `Tendsto`/bounds, the functional equation
 `limitVal_functional_eq`, `deficit_recursion`, `deficit_growth` (the key
 global bound), `quad_step` + `deficit_quadratic_lower` (telescoping over `j`
-steps), and `limitVal_eq_self` (the closing contradiction) are all written
-out in full and confirmed building (`lake build`, run by Artur).
+steps), and `limitVal_eq_self` (the closing contradiction) are all proved in
+full.
 -/
 
 namespace RamanujanNested
@@ -82,9 +80,8 @@ private theorem step_identity (N : ℝ) (d : ℕ) :
   rw [rollUp_succ, ha1, hshift]
 
 /-- `d ↦ d+1` tends to `atTop` — the elementary fact making "shifting a
-sequence by one index doesn't change its limit" work. Proved from the raw
-`atTop` characterization rather than via a possibly-misnamed shift-lemma, to
-keep this one link in the chain as low-risk as possible. -/
+sequence by one index doesn't change its limit" work, proved directly from
+the definition of `atTop`. -/
 private theorem tendsto_succ_atTop : Tendsto (fun d : ℕ => d + 1) atTop atTop :=
   tendsto_atTop_atTop.mpr (fun b => ⟨b, fun a ha => by omega⟩)
 
@@ -139,17 +136,17 @@ theorem deficit_recursion {N : ℝ} (hN : 2 ≤ N) :
   rw [eq_div_iff (ne_of_gt hN1pos)]
   linear_combination hsq
 
-/-- **The key global growth bound.** Unlike the plan document's abandoned
-"bulk vs boundary" split, this needs no case distinction and no arbitrary
-cutoff: it only ever uses the trivial ceiling `δ(N) ≤ N-1`, valid everywhere.
-`δ(N+1)-δ(N) = δ(N)·(N+1-δ(N))/(N-1) ≥ δ(N)·2/(N-1)` (since `N+1-δ(N) ≥ 2`
-follows directly from the ceiling), giving the stated multiplicative bound. -/
+/-- **The key global growth bound.** No case distinction and no arbitrary
+cutoff are needed: the argument uses only the trivial ceiling `δ(N) ≤ N-1`,
+valid everywhere. `δ(N+1)-δ(N) = δ(N)·(N+1-δ(N))/(N-1) ≥ δ(N)·2/(N-1)` (since
+`N+1-δ(N) ≥ 2` follows directly from the ceiling), giving the stated
+multiplicative bound. -/
 theorem deficit_growth {N : ℝ} (hN : 2 ≤ N) :
     deficit N * (N + 1) / (N - 1) ≤ deficit (N + 1) := by
   have hN1pos : (0 : ℝ) < N - 1 := by linarith
   have hceil : deficit N ≤ N - 1 := deficit_le_ceiling hN
   have hnn : 0 ≤ deficit N := deficit_nonneg hN
-  rw [deficit_recursion hN, div_le_div_iff hN1pos hN1pos]
+  rw [deficit_recursion hN, div_le_div_iff₀ hN1pos hN1pos]
   have h1 : N + 1 ≤ 2 * N - deficit N := by linarith
   nlinarith [mul_le_mul_of_nonneg_right (mul_le_mul_of_nonneg_left h1 hnn) hN1pos.le]
 

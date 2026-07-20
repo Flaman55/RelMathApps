@@ -49,8 +49,10 @@ theorem chain_satisfies_recursion (N k : ℕ) (hN : 2 ≤ N) :
 
 /-- In particular, `R_1 = N`: the identity chain closes exactly at the target,
 which is the numerical phenomenon documented in Table 1 (the "Rolling
-construction" column hitting the target `N` exactly at every depth). -/
-theorem chain_hits_target (N : ℕ) (hN : 2 ≤ N) :
+construction" column hitting the target `N` exactly at every depth). Holds for
+every `N`, not only `N ≥ 2` — unlike `chain_satisfies_recursion`, no square
+root needs inverting here. -/
+theorem chain_hits_target (N : ℕ) :
     chainClosedForm N 1 = (N : ℝ) := by
   unfold chainClosedForm
   push_cast

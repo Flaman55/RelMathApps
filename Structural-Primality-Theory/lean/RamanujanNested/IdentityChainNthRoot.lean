@@ -24,11 +24,11 @@ form `R_k = N+k-1` (`IdentityChain.lean`'s Algorithm 3) satisfies, for
 
   `R_k^n = (-1)^n + altSum n R_k · R_{k+1}`
 
-exactly: `+1` inside the radical when `n` is even, `-1` when `n` is odd. This
-is the "type" difference Artur pointed out — a single sign, not a structural
-split — so both cases are carried by one coefficient family and one set of
-theorems below, branching only where the sign genuinely changes the
-argument (`altSum_shift_ge_one`, and the final exact-limit closure).
+exactly: `+1` inside the radical when `n` is even, `-1` when `n` is odd. The
+even/odd distinction is thus a single sign, not a structural split, so both
+cases are carried by one coefficient family and one set of theorems below,
+branching only where the sign genuinely changes the argument
+(`altSum_shift_ge_one`, and the final exact-limit closure).
 
 ## What's proven here
 
@@ -44,11 +44,14 @@ argument (`altSum_shift_ge_one`, and the final exact-limit closure).
   `δ(N+1)·(N-1) ≥ δ(N)·(N+1)` falls out of the same factorization
   `N^n - L(N)^n = (N - L(N))·S`, using only `L(N) ≥ 1` to bound `S` from
   below — and for even `n` this bound matches `altSum n N`'s own numerator
-  exactly, reproducing the `n = 2` ratio `(N+1)/(N-1)` verbatim. For odd `n`
-  the matching numerator is off by a constant (`altSum`'s is `N^n+1`, the
-  bound from `L ≥ 1` alone only gives `N^n-1`), so the odd-`n` exact closure
-  needs a sharper argument than the one below and is left for further work;
-  existence (`truncRadicalNS_converges`) already covers odd `n` fully.
+  exactly, reproducing the `n = 2` ratio `(N+1)/(N-1)` verbatim.
+* `limitValNS_eq_self_odd`: **`L(N) = N` exactly**, for *odd* `n` as well
+  (Part 4 below). For odd `n` the matching numerator is off by a constant
+  from the even case (`altSum`'s is `N^n+1`, the bound from `L ≥ 1` alone
+  gives `N^n-1`), so the clean ratio picks up an extra per-step shrink
+  factor; this factor is shown to stay bounded below by a fixed positive
+  constant uniformly in the step count, which keeps the deficit growth
+  quadratic and closes the argument regardless of parity.
 -/
 
 namespace RamanujanNested
@@ -111,8 +114,9 @@ theorem chainS_hits_target (N : ℕ) : chainClosedFormS N 1 = (N : ℝ) := by
 
 /-! ## Part 2: existence of a limit for the truncated radical, both parities -/
 
-/-- `altSum n x ≥ 0` for `x ≥ 1`, from the identity plus `x^n ≥ 1 ≥ (-1)^n`. -/
-theorem altSum_nonneg {n : ℕ} (hn : 2 ≤ n) {x : ℝ} (hx : 1 ≤ x) : 0 ≤ altSum n x := by
+/-- `altSum n x ≥ 0` for `x ≥ 1`, from the identity plus `x^n ≥ 1 ≥ (-1)^n`. Holds
+for every `n`, not only `n ≥ 2` — `altSum_identity` itself is unconditional in `n`. -/
+theorem altSum_nonneg {n : ℕ} {x : ℝ} (hx : 1 ≤ x) : 0 ≤ altSum n x := by
   have hid := altSum_identity n x
   have hxp1_pos : (0 : ℝ) < x + 1 := by linarith
   have h1 : (-1 : ℝ) ^ n ≤ 1 := by
@@ -197,20 +201,20 @@ theorem rollUpNS_altCoeffR_bounded {n : ℕ} (hn : 2 ≤ n) :
     have ha1_eq : altCoeffR n N 1 = altSum n N := by
       unfold altCoeffR; congr 1; push_cast; ring
     have ha1_nonneg : 0 ≤ altCoeffR n N 1 := by
-      rw [ha1_eq]; exact altSum_nonneg hn (by linarith : (1 : ℝ) ≤ N)
+      rw [ha1_eq]; exact altSum_nonneg (by linarith : (1 : ℝ) ≤ N)
     rw [rollUpNS_succ, hshift]
     have hradicand_le :
         (-1 : ℝ) ^ n + altCoeffR n N 1 * rollUpNS n (altCoeffR n (N + 1)) T m ≤ N ^ n := by
       rw [ha1_eq]
       have hmul : altSum n N * rollUpNS n (altCoeffR n (N + 1)) T m ≤ altSum n N * (N + 1) :=
-        mul_le_mul_of_nonneg_left hhi (altSum_nonneg hn (by linarith : (1 : ℝ) ≤ N))
+        mul_le_mul_of_nonneg_left hhi (altSum_nonneg (by linarith : (1 : ℝ) ≤ N))
       have hid := altSum_identity n N
       linarith [hmul, hid]
     have hradicand_ge_one :
         (1 : ℝ) ≤ (-1 : ℝ) ^ n + altCoeffR n N 1 * rollUpNS n (altCoeffR n (N + 1)) T m := by
       rw [ha1_eq]
       have hmul : altSum n N * 1 ≤ altSum n N * rollUpNS n (altCoeffR n (N + 1)) T m :=
-        mul_le_mul_of_nonneg_left hlo (altSum_nonneg hn (by linarith : (1 : ℝ) ≤ N))
+        mul_le_mul_of_nonneg_left hlo (altSum_nonneg (by linarith : (1 : ℝ) ≤ N))
       have hkey := altSum_shift_ge_one hn hN
       linarith [hmul, hkey]
     have hn_ne : (n : ℝ) ≠ 0 := by
@@ -272,7 +276,7 @@ theorem rollUpNS_altCoeffR_step_mono {n : ℕ} (hn : 2 ≤ n) :
     have ha1_eq : altCoeffR n N 1 = altSum n N := by
       unfold altCoeffR; congr 1; push_cast; ring
     have ha1_nonneg : 0 ≤ altCoeffR n N 1 := by
-      rw [ha1_eq]; exact altSum_nonneg hn (by linarith : (1 : ℝ) ≤ N)
+      rw [ha1_eq]; exact altSum_nonneg (by linarith : (1 : ℝ) ≤ N)
     have hstep := ih (N + 1) hN1
     have hmul : altCoeffR n N 1 * rollUpNS n (altCoeffR n (N + 1)) 1 m ≤
         altCoeffR n N 1 * rollUpNS n (altCoeffR n (N + 1)) 1 (m + 1) :=
@@ -366,7 +370,7 @@ theorem limitValNS_functional_eq {n : ℕ} (hn : 2 ≤ n) {N : ℝ} (hN : 2 ≤ 
   have hy0_pos : (0 : ℝ) < (-1 : ℝ) ^ n + altSum n N * limitValNS n (N + 1) := by
     have hk := altSum_shift_ge_one hn hN
     have hL1 := limitValNS_ge_one hn hN1
-    have hanneg := altSum_nonneg hn (by linarith : (1 : ℝ) ≤ N)
+    have hanneg : 0 ≤ altSum n N := altSum_nonneg (by linarith : (1 : ℝ) ≤ N)
     have hmul : altSum n N * 1 ≤ altSum n N * limitValNS n (N + 1) :=
       mul_le_mul_of_nonneg_left hL1 hanneg
     nlinarith [hmul, hk]
@@ -440,7 +444,7 @@ theorem deficitS_growth_even {n : ℕ} (hn : 2 ≤ n) (hne : Even n) {N : ℝ} (
     linarith
   have hL1_nonneg : (0 : ℝ) ≤ 1 + altSum n N * limitValNS n (N + 1) := by
     have hL1' := limitValNS_ge_one hn (show 2 ≤ N + 1 by linarith)
-    have hanneg := altSum_nonneg hn (by linarith : (1 : ℝ) ≤ N)
+    have hanneg : 0 ≤ altSum n N := altSum_nonneg (by linarith : (1 : ℝ) ≤ N)
     nlinarith [hL1', hanneg]
   have hLn : (limitValNS n N) ^ n = 1 + altSum n N * limitValNS n (N + 1) := by
     have hexp1 : (1 / (n : ℝ)) * (n : ℝ) = 1 := by field_simp
@@ -680,7 +684,7 @@ theorem deficitS_growth_odd {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N : ℝ} (h
   rw [hsign] at hkey
   have hL1_nonneg : (0 : ℝ) ≤ -1 + altSum n N * limitValNS n (N + 1) := by
     have hL1' := limitValNS_ge_one hn (show 2 ≤ N + 1 by linarith)
-    have hanneg := altSum_nonneg hn (by linarith : (1 : ℝ) ≤ N)
+    have hanneg : 0 ≤ altSum n N := altSum_nonneg (by linarith : (1 : ℝ) ≤ N)
     nlinarith [hL1', hanneg, hkey]
   have hLn : (limitValNS n N) ^ n = -1 + altSum n N * limitValNS n (N + 1) := by
     have hexp1 : (1 / (n : ℝ)) * (n : ℝ) = 1 := by field_simp
@@ -800,7 +804,7 @@ private theorem prodShrink_ge_half {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N₀
 shrink-factor product `P` alongside the quadratic ratio — mirrors `quadS_step`
 with the extra multiplicative factor threaded through. -/
 private theorem quadS_step_odd {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N₀ M P : ℝ}
-    (hN₀ : 2 ≤ N₀) (hM : 2 ≤ M) (hPnn : 0 ≤ P)
+    (hN₀ : 2 ≤ N₀) (hM : 2 ≤ M)
     (ih : deficitS n N₀ * (M * (M - 1)) / (N₀ * (N₀ - 1)) * P ≤ deficitS n M) :
     deficitS n N₀ * ((M + 1) * M) / (N₀ * (N₀ - 1)) * (P * shrinkFactor n M) ≤
       deficitS n (M + 1) := by
@@ -848,13 +852,7 @@ theorem deficitS_quadratic_lower_odd {n : ℕ} (hn : 2 ≤ n) (hodd : Odd n) {N�
   | succ m ih =>
     have hmnn : (0 : ℝ) ≤ (m : ℝ) := Nat.cast_nonneg m
     have hNm : (2 : ℝ) ≤ N₀ + (m : ℝ) := by linarith
-    have hprod_nonneg : (0 : ℝ) ≤ ∏ i ∈ range m, shrinkFactor n (N₀ + (i : ℝ)) := by
-      apply Finset.prod_nonneg
-      intro i _
-      apply shrinkFactor_nonneg hn
-      have hi : (0 : ℝ) ≤ (i : ℝ) := Nat.cast_nonneg i
-      linarith
-    have hstep := quadS_step_odd hn hodd hN₀ hNm hprod_nonneg ih
+    have hstep := quadS_step_odd hn hodd hN₀ hNm ih
     have hcast : (N₀ + ((m + 1 : ℕ) : ℝ)) = (N₀ + (m : ℝ)) + 1 := by push_cast; ring
     have hprod_succ : ∏ i ∈ range (m + 1), shrinkFactor n (N₀ + (i : ℝ)) =
         (∏ i ∈ range m, shrinkFactor n (N₀ + (i : ℝ))) * shrinkFactor n (N₀ + (m : ℝ)) :=

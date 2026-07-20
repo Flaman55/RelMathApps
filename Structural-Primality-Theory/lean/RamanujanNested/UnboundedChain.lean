@@ -32,13 +32,15 @@ Section 4.1 as stated does not supply.
 
 ## What's still open: pinning down `L = N` exactly
 
-The above gives `L ≤ N`, not `L = N`. A natural next attempt is to bound the
-gap between the forward evaluation (seed `T=0`) and the "rolling" evaluation
+The above gives `L ≤ N`, not `L = N`. A natural approach is to bound the gap
+between the forward evaluation (seed `T=0`) and the "rolling" evaluation
 (seed `T=N+d`, which by `IdentityChain.lean` hits `N` exactly at every finite
 depth) using the same conjugate-multiplication contraction used in
-`TargetRadical.lean`. Carried out here (on paper, not committed as a Lean
-theorem because it does not actually work — recorded for honesty rather than
-silently discarded):
+`TargetRadical.lean`. This estimate is worked through below; it turns out to
+be too weak to conclude `L=N`, for the reason given at the end, so it is not
+stated as a Lean theorem — `L=N` is instead established in
+`HerschfeldClosure.lean`, via a genuinely different route (a functional
+equation for `L` in the limit, not a gap estimate between two evaluations):
 
 Let `Δ_k` be the gap between the two seeds' values at layer `k`. The
 per-layer contraction is `Δ_k ≤ (N+k-2)/(N+k-1) · Δ_{k+1}` (using only that
@@ -61,8 +63,9 @@ truncation depth `d` and only grows roughly linearly for `k` well inside the
 depth, so no single constant `c` bounds `V_k/k` uniformly across `k`.) This
 mirrors why Herschfeld's classical convergence criterion for infinite nested
 radicals is a genuine theorem and not a two-line estimate — closing `L = N`
-here needs a sharper argument than a direct tail-sensitivity bound, and is
-left open rather than forced.
+by this specific estimate needs a sharper argument than a direct
+tail-sensitivity bound. `HerschfeldClosure.lean` supplies that sharper
+argument, by a different route (see below).
 -/
 
 namespace RamanujanNested
@@ -175,8 +178,8 @@ open Filter Topology
 `IdentityChain.lean`'s own hypothesis), the classical-type radical
 `truncRadical (classicalCoeff N)` — an UNBOUNDED coefficient family, outside
 `Bounds.lean`'s reach — converges to a finite limit `L`, and `L ≤ N`. This is
-new: Section 4.1 as stated does not cover this family at all. Whether
-`L = N` exactly remains open (see the file docstring). -/
+new: Section 4.1 as stated does not cover this family at all. `L = N`
+exactly is proven separately, in `HerschfeldClosure.lean`. -/
 theorem classicalRadical_converges {N : ℝ} (hN : 2 ≤ N) :
     ∃ L : ℝ, Tendsto (truncRadical (classicalCoeff N)) atTop (𝓝 L) ∧ L ≤ N := by
   have hnonneg : ∀ k, 0 ≤ classicalCoeff N k := fun k => by

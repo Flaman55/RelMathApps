@@ -32,14 +32,13 @@ on a negative base, so nonnegativity of the radicand (hence of `a_k`) has to
 be tracked explicitly here — this file assumes `0 ≤ a_k` throughout, matching
 what the paper's Section 4.1 assumes anyway.
 
-## A notation note (the reason for a fix-up round after the first attempt)
+## A notation convention for `rpow`
 
 Every `Real.rpow` term below is written with `^` notation (`x ^ (y : ℝ)`),
 never as an explicit `Real.rpow x y` application. The two are defeq, but
 `rw` matches syntactically: Mathlib's `rpow` lemmas (`Real.rpow_mul`,
-`Real.rpow_one`, ...) are stated using `^`, and a goal built from explicit
-`Real.rpow` applications does not `rw` against them even though it unifies
-fine under `exact`. Writing everything as `^` from the start avoids this.
+`Real.rpow_one`, ...) are stated using `^`, so writing every term this way
+from the start keeps them available to `rw` throughout.
 -/
 
 namespace RamanujanNested

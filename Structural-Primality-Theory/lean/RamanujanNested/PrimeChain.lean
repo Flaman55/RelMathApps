@@ -32,15 +32,17 @@ Primes satisfy `p_k ≤ 4^k` (in fact much less), and that bound itself follows
 from Bertrand's postulate: each prime is less than twice the previous one, so
 doubling is dominated by base-4 growth with room to spare
 (`nth_prime_le_four_pow`). This file uses Mathlib's own Bertrand
-(`Nat.exists_prime_lt_and_le_two_mul`, alias `Nat.bertrand`) rather than
-Artur's independently-verified `StructuralBertrand.bertrand_chebyshev`
-(same statement) purely to avoid a cross-project Lean dependency; swapping
-one for the other is a one-line change if the two projects are later linked.
+(`Nat.exists_prime_lt_and_le_two_mul`, alias `Nat.bertrand`) rather than the
+independently-verified `StructuralBertrand.bertrand_chebyshev` (same
+statement, from a separate project) purely to avoid a cross-project Lean
+dependency; swapping one for the other is a one-line change if the two
+projects are later linked.
 
 ## Status
 
-Written in full, not yet built — this is a first attempt for `lake build` to
-check, in the same spirit as every other file in this project.
+No `sorry`: `nth_prime_le_four_pow`, `rollUp_geomBounded` (the general
+geometric moving-ceiling bound), and `primeRadical_converges` (the
+existence result) are all proved in full.
 -/
 
 namespace RamanujanNested

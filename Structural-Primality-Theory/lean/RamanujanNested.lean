@@ -35,33 +35,19 @@ bear on, and `README.md` for a top-level summary.
 
 ## Status
 
-Builds cleanly (`lake build`), zero `sorry`, confirmed — including
-`PrimeChain.lean`, `LinearChain.lean`, `LinearChainGeneral.lean`,
-`LinearChainTight.lean`, `NthRootChain.lean` (the first file in this project
-to use `Real.rpow` instead of `Real.sqrt`; needed one fix-up round for
-`rw`/`rpow` notation mismatches, now clean), `LinearChainNthRoot.lean`,
+Builds cleanly (`lake build`), with no `sorry` anywhere in the project.
+`NthRootChain.lean` is the first file to use `Real.rpow` in place of
+`Real.sqrt`, generalizing the root order from `n = 2` to arbitrary `n ≥ 2`;
+this generalization is carried through `LinearChainNthRoot.lean`,
 `LinearChainGeneralNthRoot.lean`, `LinearChainTightNthRoot.lean`,
-`PrimeChainNthRoot.lean`, `OscillatoryNthRoot.lean`, and
-`TargetRadicalNthRoot.lean` (needed one fix-up round: an exponent product
-appeared as `(1/n)*n` rather than `n*(1/n)`, so `mul_one_div` didn't match —
-replaced with an explicit `field_simp`-proved fact, direction-agnostic), and
-`IdentityChainNthRoot.lean` (needed one fix-up round: the same `mul_one_div`
-exponent-order issue recurring in a new spot, a `ContinuousAt.comp`
-higher-order-unification mismatch fixed via the direct `ContinuousAt.rpow_const`
-combinator, and a stray `.symm` flipping an equality the wrong way in the
-final contradiction — now clean). `IdentityChainNthRoot.lean` was later
-extended (Part 4) to close the exact-value case for odd `n` too — see its
-entry below for the argument; needed a second round of fix-ups (a `Finset`
-range-cast associativity mismatch defeating `linarith`, a lambda whose
-bound variable elaborated to `ℝ` instead of `ℕ` from an under-annotated
-cast, and a fraction identity `a/b·(1/2) = a/(2b)` that `ring` cannot in
-fact verify unconditionally — replaced with an `Iff` closed by `linarith`,
-which handles rational-coefficient scaling directly — now clean).
-`Monotone.lean` and `UnboundedChain.lean` were later extended
-(`rollUp_mono_seed`, `rollUp_classicalCoeff_hits_target`,
-`rollUp_classicalCoeff_le_of_tail_le`) to formalize Appendix A.1's Table 3
-"tail-independence" discussion, a claim found unformalized during an audit
-of the paper against the Lean project — clean on the first build attempt.
+`PrimeChainNthRoot.lean`, `OscillatoryNthRoot.lean`,
+`TargetRadicalNthRoot.lean`, and `IdentityChainNthRoot.lean` — the last of
+these extends the classical unbounded family's exact-value closure
+(`HerschfeldClosure.lean`) to arbitrary root order and both parities of `n`,
+via the shrink-factor argument described in its entry below.
+`Monotone.lean` and `UnboundedChain.lean` additionally formalize Appendix
+A.1's Table 3 "tail-independence" discussion (`rollUp_mono_seed`,
+`rollUp_classicalCoeff_hits_target`, `rollUp_classicalCoeff_le_of_tail_le`).
 
 ## What's covered, file by file
 
@@ -85,8 +71,7 @@ of the paper against the Lean project — clean on the first build attempt.
 
 * `Convergence.lean` — `truncRadical_converges`: combines the two above via
   Mathlib's monotone-bounded convergence theorem to get the paper's actual
-  stated conclusion — existence of a finite limit as `N → ∞`. This is the
-  piece flagged as missing in the first pass.
+  stated conclusion — existence of a finite limit as `N → ∞`.
 
 * `ControlledNegative.lean` — Lemma 1: coefficients may dip to `-A₋` (with
   `A₋ ≤ 1/r*`) and the radicand at every step stays nonnegative — the
@@ -123,9 +108,8 @@ of the paper against the Lean project — clean on the first build attempt.
   (`classicalRadical_converges`) — a family Section 4.1 as stated does not
   cover at all. Whether `L = N` exactly is still open by *this* argument
   (closed instead in `HerschfeldClosure.lean`, below); the file docstring
-  records a concrete attempt (a tail-sensitivity/telescoping estimate) that
-  was tried and found too lossy, rather than leaving the difficulty
-  unstated. Also `rollUp_classicalCoeff_hits_target` (the exact identity
+  discusses a tail-sensitivity/telescoping estimate that was tried and found
+  too weak to conclude `L = N`. Also `rollUp_classicalCoeff_hits_target` (the exact identity
   `rollUp (classicalCoeff N) (N+d) d = N`, at the `rollUp` level rather than
   `IdentityChain.lean`'s pointwise closed-form recursion) and
   `rollUp_classicalCoeff_le_of_tail_le` (combining this with
@@ -140,7 +124,7 @@ of the paper against the Lean project — clean on the first build attempt.
   `δ(N+1) ≥ δ(N)(N+1)/(N-1)` — no arbitrary cutoff, valid everywhere, using
   only the trivial ceiling `δ(N) ≤ N-1`. Telescoped over `j` steps this beats
   the linear ceiling quadratically, forcing `δ ≡ 0`, i.e. `L(N) = N` exactly
-  (`limitVal_eq_self`). No `sorry`, confirmed building.
+  (`limitVal_eq_self`). No `sorry`.
 
 * `PrimeChain.lean` — targets the last genuinely unformalized case:
   `a_k = p_k` (Appendix A.2). Primes have no
@@ -150,9 +134,8 @@ of the paper against the Lean project — clean on the first build attempt.
   `r > 1`, already gives a genuine depth-independent ceiling, via a moving
   ceiling `A·r^i` that closes to a fixed constant at the top level); primes
   satisfy `p_k ≤ 4^k` (`nth_prime_le_four_pow`), itself derived from
-  Bertrand's postulate (Mathlib's `Nat.bertrand`, not Artur's own
-  independently-verified `structural_bertrand` — see the file docstring for
-  why, and how to swap it in). Result: `primeRadical_converges` — EXISTENCE
+  Bertrand's postulate (Mathlib's `Nat.bertrand`; see the file docstring for
+  the alternative source and how to swap it in). Result: `primeRadical_converges` — EXISTENCE
   of a finite limit only, not the exact value (unlike `HerschfeldClosure`'s
   `L(N) = N`). This is a materially weaker claim than the linear family's
   closure, chosen deliberately: existence is the bar the paper itself leaves
@@ -166,7 +149,7 @@ of the paper against the Lean project — clean on the first build attempt.
   `HerschfeldClosure.lean` only balances when `m² = 1`, so slope `1` is the
   only slope with a known exact value; `linearRadical_converges` gives
   existence only for `m ≥ 1` in general (`L ≤ N`), the same weaker bar as
-  `PrimeChain.lean`. Confirmed recovering `UnboundedChain.lean` exactly at
+  `PrimeChain.lean`. Recovers `UnboundedChain.lean` exactly at
   `m = 1` (`linearRadical_converges_one`). Not from the paper — motivated by
   checking whether a literature family with a different linear slope
   (Kusniec's difference-of-oblongs Radiciatory, slope `q-1`) could be
@@ -284,7 +267,7 @@ applied at `N = 2` gives `a_k = k` converging to `2`, not the classical
 value `3` (the paper's own "classical" formula and the `a_k = k`
 attribution both had an indexing error — see below). The prime-coefficient
 example now has an existence-only answer via `PrimeChain.lean`
-(`primeRadical_converges`, confirmed building); its exact value remains
+(`primeRadical_converges`); its exact value remains
 open, as it does in the paper.
 `TargetRadical.lean` sidesteps this gap rather than closing it: a distinct,
 provably-convergent constant-coefficient radical reaching the same targets,

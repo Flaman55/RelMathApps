@@ -127,8 +127,7 @@ concerns, but concrete, checkable mistakes:
   family `a_k = N+k-2` (the classical radical is `N=3`; `a_k=k` is `N=2`). A
   *moving-ceiling* induction (the bound at depth `d` is `N` itself, not a
   fixed constant) proves the truncated radical has a finite limit `L ≤ N`.
-  Also formalizes Appendix A.1's Table 3 ("tail-independence") discussion,
-  found unformalized in an audit of the paper against this project:
+  Also formalizes Appendix A.1's Table 3 ("tail-independence") discussion:
   `rollUp_classicalCoeff_hits_target` restates `IdentityChain.lean`'s closed
   form as the exact `rollUp`-level identity `rollUp (classicalCoeff N) (N+d) d
   = N`, and `rollUp_classicalCoeff_le_of_tail_le` combines it with
@@ -210,32 +209,32 @@ for `a_k = p_k` remains open, as it does in the paper itself.
   (arXiv:2404.04051) states a general-`n` identity schematically but proves
   convergence only for `n = 3` (cube roots); this covers arbitrary `n` for
   the bounded-coefficient case. The first file in this project to use
-  `Real.rpow` instead of `Real.sqrt`; confirmed building.
+  `Real.rpow` instead of `Real.sqrt`.
 
 - **`LinearChainNthRoot.lean`** — combines `LinearChain.lean` with
   `NthRootChain.lean`: existence of a limit for the unbounded linear family
   `linearCoeff m N` (slope `m ≥ 1`), at any root order `n ≥ 2`, via the same
   moving-ceiling technique, run against `rollUpN`. `n = 2` recovers
   `LinearChain.lean`'s own key inequality exactly, with no case split needed
-  on `n`. Confirmed building.
+  on `n`.
 
 - **`LinearChainGeneralNthRoot.lean`** — the same generalization for
   `LinearChainGeneral.lean`: existence for EVERY slope `m > 0`, at any root
-  order `n ≥ 2`, bound `L ≤ N+1`. Confirmed building.
+  order `n ≥ 2`, bound `L ≤ N+1`.
 
 - **`LinearChainTightNthRoot.lean`** — the same generalization for
   `LinearChainTight.lean`: existence for `0 < m ≤ 1`, at any root order
   `n ≥ 2`, keeping the same tight shift `s(m) = (√(5m²+4)-3m)/2` (no longer
-  claimed optimal at `n ≥ 3`, only valid). Confirmed building.
+  claimed optimal at `n ≥ 3`, only valid).
 
 - **`PrimeChainNthRoot.lean`** — generalizes `PrimeChain.lean`'s geometric
   moving-ceiling argument to any root order `n ≥ 2`: existence of a limit for
   `a_k = p_k`, same hypotheses and concrete instance (`r=4, A=17`) as
-  `PrimeChain.lean`. Confirmed building.
+  `PrimeChain.lean`.
 
 - **`OscillatoryNthRoot.lean`** — the small-amplitude oscillatory family
   (`0 ≤ α ≤ 1`) is bounded, so this is a one-line corollary of
-  `NthRootChain.lean`'s `truncRadicalN_converges`. Confirmed building.
+  `NthRootChain.lean`'s `truncRadicalN_converges`.
 
 - **`TargetRadicalNthRoot.lean`** — generalizes `TargetRadical.lean`'s
   constant-coefficient exact-target radical to any root order `n ≥ 2`.
@@ -245,10 +244,7 @@ for `a_k = p_k` remains open, as it does in the paper itself.
   `targetRadicalN_tendsto` proves convergence to `t` exactly via a
   generalized contraction rate `ρ_n=1-1/t^n` (numerically checked against
   the true asymptotic rate `(1-1/t^n)/n`; this bound is valid but not tight,
-  same as the `n=2` case). Confirmed building (needed one fix-up round: an
-  exponent product appeared as `(1/n)*n` rather than `n*(1/n)`, so
-  `mul_one_div` didn't match — replaced with an explicit
-  `field_simp`-proved fact, direction-agnostic).
+  same as the `n=2` case).
 
 - **`IdentityChainNthRoot.lean`** — generalizes the classical unbounded
   family `R_k = N+k-1` from `n=2` to any root order `n ≥ 2`. The even and
@@ -280,17 +276,6 @@ for `a_k = p_k` remains open, as it does in the paper itself.
     `∑ 2/(N₀+i)³`. A fixed-factor-scaled deficit growth is still quadratic,
     so it still beats the linear ceiling (`deficitS_quadratic_lower_odd`),
     just needing a doubled threshold in the final contradiction.
-
-  Confirmed building (two fix-up rounds: first, the same `mul_one_div`
-  exponent-order issue seen in `TargetRadicalNthRoot.lean` recurring in a new
-  spot, a `ContinuousAt.comp` higher-order-unification mismatch fixed via the
-  direct `ContinuousAt.rpow_const` combinator, and a stray `.symm` flipping an
-  equality the wrong way in the final contradiction; second, for the odd-`n`
-  addition, a `Finset` range-cast associativity mismatch defeating `linarith`,
-  a lambda whose bound variable elaborated to `ℝ` instead of `ℕ` from an
-  under-annotated cast, and a fraction identity `a/b·(1/2) = a/(2b)` that
-  `ring` cannot in fact verify unconditionally — replaced with an `Iff`
-  closed by `linarith`, which handles rational-coefficient scaling directly).
 
 **Not attempted:** the complex-valued extension mentioned in the paper's
 conclusion.

@@ -9,16 +9,7 @@ import Mathlib
 of the truncated radicals to a finite real limit." `Bounds.lean` gives the
 boundedness, `Monotone.lean` gives the monotonicity; this file combines them
 via Mathlib's monotone-bounded-sequence convergence theorem
-(`tendsto_atTop_ciSup`) to get the actual convergence statement the paper
-claims — this is the piece that was missing after the first pass.
-
-This file `import Mathlib` wholesale rather than a narrow path, because the
-exact module housing `tendsto_atTop_ciSup` was not double-checked against a
-running toolchain in this sandbox (no network access to fetch the Mathlib
-cache — see the project root docstring); if that lemma name has moved or been
-renamed, this is the one spot in the project most likely to need a fix, and a
-wildcard import at least isolates "wrong lemma name" from "wrong import path"
-as separate failure modes.
+(`tendsto_atTop_ciSup`) to obtain the convergence statement the paper claims.
 -/
 
 namespace RamanujanNested
