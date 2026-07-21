@@ -1,8 +1,8 @@
-import StructuralWindow.Unification
+import StructuralLegendre.Unification
 import Mathlib.NumberTheory.Bertrand
 
 /-!
-# StructuralWindow.WidthLaw — the family by width law, and the range to infinity
+# StructuralLegendre.WidthLaw — the family by width law, and the range to infinity
 
 The generalization is parametrized by a **width law** `W : ℕ → ℕ`: the family of windows
 `(A, A + W A]` over all anchors `A`. The quantitative question — which laws force a new prime at
@@ -14,7 +14,7 @@ end. The provable range of laws is the analytic frontier: width exponent `1` (Ch
 `0.525` (Baker–Harman–Pintz); Legendre's `1/2` is the single gap below it.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- A width law forces a new prime at every anchor. -/
 def GapCertificate (W : ℕ → ℕ) : Prop := ∀ A, 1 ≤ A → windowHasVoid A (W A)
@@ -55,4 +55,4 @@ theorem exists_prime_bertrandLaw {A : ℕ} (hA : 1 ≤ A) : ∃ p, A < p ∧ p �
   have := exists_prime_of_gapCertificate gapCertificate_bertrandLaw hA
   simpa [bertrandLaw, two_mul] using this
 
-end StructuralWindow
+end StructuralLegendre

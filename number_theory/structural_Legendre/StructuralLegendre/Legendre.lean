@@ -1,8 +1,8 @@
-import StructuralWindow.SmallAnchors
-import StructuralWindow.Determinism
+import StructuralLegendre.SmallAnchors
+import StructuralLegendre.Determinism
 
 /-!
-# StructuralWindow.Legendre — the instances and the crossover
+# StructuralLegendre.Legendre — the instances and the crossover
 
 Bertrand `(P, 2P]` and Legendre `(n², (n+1)²]` are two placements of one object. Concrete windows
 are settled by evaluation. The point of interest is the structural crossover at `n = 42`:
@@ -20,7 +20,7 @@ the structural bound no longer forces it. That gap — worst-case CRT vs the act
 positions — is the open problem.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- The Legendre statement at scale `n`: a void in `(n², (n+1)²]`. With the generative
     determinism `void ⟹ prime` (to be added), this is "a prime between consecutive squares". -/
@@ -60,4 +60,4 @@ example : LegendreVoid 60 := by native_decide          -- well past the crossove
 example : windowHasVoid 7 7 := by native_decide         -- (7, 14]
 example : windowHasVoid 97 97 := by native_decide       -- (97, 194]
 
-end StructuralWindow
+end StructuralLegendre

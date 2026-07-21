@@ -1,14 +1,14 @@
-import StructuralWindow.Basic
+import StructuralLegendre.Basic
 
 /-!
-# StructuralWindow.Counting — the atom in counting form
+# StructuralLegendre.Counting — the atom in counting form
 
 The window has a void exactly when the active base fails to cover all `W` positions. This is
 the anchor-agnostic analogue of `structural_bertrand`'s `windowHasVoid_iff_coveredCount_lt`, and
 it is the point at which the whole question localizes.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- Number of positions in the window `(A, A+W]` covered by the active base. -/
 def coveredCount (A W : ℕ) : ℕ :=
@@ -45,4 +45,4 @@ theorem windowHasVoid_iff_coveredCount_lt (A W : ℕ) :
     rw [Finset.mem_filter] at hn
     exact ⟨n, hn.1, hn.2⟩
 
-end StructuralWindow
+end StructuralLegendre

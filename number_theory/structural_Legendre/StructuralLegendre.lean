@@ -1,21 +1,21 @@
-import StructuralWindow.Basic
-import StructuralWindow.Reframing
-import StructuralWindow.Covering
-import StructuralWindow.Counting
-import StructuralWindow.Forcing
-import StructuralWindow.CoveredRun
-import StructuralWindow.Jacobsthal
-import StructuralWindow.SmallAnchors
-import StructuralWindow.Determinism
-import StructuralWindow.Unification
-import StructuralWindow.WidthLaw
-import StructuralWindow.Legendre
-import StructuralWindow.GeneralLaw
-import StructuralWindow.Certificate
-import StructuralWindow.Bridge
+import StructuralLegendre.Basic
+import StructuralLegendre.Reframing
+import StructuralLegendre.Covering
+import StructuralLegendre.Counting
+import StructuralLegendre.Forcing
+import StructuralLegendre.CoveredRun
+import StructuralLegendre.Jacobsthal
+import StructuralLegendre.SmallAnchors
+import StructuralLegendre.Determinism
+import StructuralLegendre.Unification
+import StructuralLegendre.WidthLaw
+import StructuralLegendre.Legendre
+import StructuralLegendre.GeneralLaw
+import StructuralLegendre.Certificate
+import StructuralLegendre.Bridge
 
 /-!
-# StructuralWindow — the coupled-window mechanism
+# StructuralLegendre — the coupled-window mechanism
 
 Companion development to `structural_bertrand`. The aim is NOT to prove Legendre's conjecture
 (open), but to formalize the *generalized* structural mechanism behind "there is a prime in

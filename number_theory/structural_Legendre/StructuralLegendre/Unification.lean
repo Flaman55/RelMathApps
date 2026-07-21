@@ -1,7 +1,7 @@
-import StructuralWindow.Determinism
+import StructuralLegendre.Determinism
 
 /-!
-# StructuralWindow.Unification — one anchor, one base, any width
+# StructuralLegendre.Unification — one anchor, one base, any width
 
 The full generalization, read off the coupled table: at an anchor `A` the base `≤ √(2A)` has one
 deterministic reach `≈ (A, 2A]`, and **any** window `(A, A+W]` sitting inside it has its survivors
@@ -12,7 +12,7 @@ every interval in between is an instance too.
 The engine is a single theorem: a void in any window is a new prime there (`prime_of_isVoid`).
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- Survivors are new primes, for **any** interval sitting in the base's deterministic reach:
     a void in `(A, A+W]` is a prime in `(A, A+W]`. This is the whole law — Bertrand, Legendre and
@@ -34,4 +34,4 @@ example : ∃ p, 169 < p ∧ p ≤ 169 + 100 ∧ p.Prime :=     -- an intermedia
 example : ∃ p, 169 < p ∧ p ≤ 169 + 169 ∧ p.Prime :=     -- Bertrand  (169, 338],  W = A
   exists_prime_of_windowHasVoid (by norm_num) (by native_decide)
 
-end StructuralWindow
+end StructuralLegendre

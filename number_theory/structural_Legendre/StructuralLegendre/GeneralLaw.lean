@@ -1,8 +1,8 @@
-import StructuralWindow.Unification
-import StructuralWindow.Legendre
+import StructuralLegendre.Unification
+import StructuralLegendre.Legendre
 
 /-!
-# StructuralWindow.GeneralLaw — the general law, and everything as its corollary
+# StructuralLegendre.GeneralLaw — the general law, and everything as its corollary
 
 The target is not Legendre but the **general law to infinity**: at every anchor `A`, every window
 `(A, A+W]` whose width lies between the Legendre width `2⌊√A⌋+1` and the Bertrand width `A`
@@ -13,7 +13,7 @@ deterministic range fall out as corollaries — that is its purpose.
 of this file is the *extraction* — the corollary arrows are proved unconditionally.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- The general law to infinity: at every anchor, every window from the Legendre width up to the
     Bertrand width contains a void (a new prime). -/
@@ -51,4 +51,4 @@ theorem bertrand_of_generalLaw (h : GeneralLaw) {A : ℕ} (hA : 6 ≤ A) :
     exists_prime_of_windowHasVoid (by omega : 1 ≤ A) (h A A (by omega) hlo (le_refl A))
   exact ⟨p, h1, by omega, h3⟩
 
-end StructuralWindow
+end StructuralLegendre

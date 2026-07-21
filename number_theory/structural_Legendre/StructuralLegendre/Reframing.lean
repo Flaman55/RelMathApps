@@ -1,7 +1,7 @@
-import StructuralWindow.Basic
+import StructuralLegendre.Basic
 
 /-!
-# StructuralWindow.Reframing — Legendre as Bertrand, narrowed from the left
+# StructuralLegendre.Reframing — Legendre as Bertrand, narrowed from the left
 
 The Legendre window is Bertrand's window at the same top, with the left edge pushed right. These
 are interval identities — provable outright — so they *confirm* the reduction structurally. The
@@ -9,7 +9,7 @@ one thing they do NOT (and must not) settle is the localization of a prime into 
 that stays open at `θ = 1/2`.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- The Legendre window `legendreWindow N` has top `(N+1)²`: it is `(N², (N+1)²]`. -/
 theorem legendreWindow_eq (N : ℕ) : legendreWindow N = Finset.Ioc (N ^ 2) ((N + 1) ^ 2) := by
@@ -40,4 +40,4 @@ theorem legendreWindow_subset_doubling (N : ℕ) (hN : 3 ≤ N) :
     omega
   · exact le_refl _
 
-end StructuralWindow
+end StructuralLegendre

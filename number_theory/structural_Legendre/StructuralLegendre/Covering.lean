@@ -1,7 +1,7 @@
-import StructuralWindow.Basic
+import StructuralLegendre.Basic
 
 /-!
-# StructuralWindow.Covering — the covering / void duality
+# StructuralLegendre.Covering — the covering / void duality
 
 A window either contains a void or is *fully covered* by its active base. These are exact
 complements, and both are decidable, so concrete windows are settled by evaluation
@@ -10,7 +10,7 @@ Jacobsthal floor (built on top) states how narrow a window must be before full c
 void-free run — becomes possible.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- The window `(A, A+W]` is *fully covered* by its active base: every position is divisible by
     some active-covering prime. This is the negation of containing a void. -/
@@ -46,4 +46,4 @@ example : windowHasVoid 97 97 := by native_decide      -- Bertrand window (97,19
 
 example : ¬ windowCovered 30 7 := by native_decide     -- the complement, same window
 
-end StructuralWindow
+end StructuralLegendre

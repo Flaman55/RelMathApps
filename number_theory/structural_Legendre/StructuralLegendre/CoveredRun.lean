@@ -1,7 +1,7 @@
-import StructuralWindow.Forcing
+import StructuralLegendre.Forcing
 
 /-!
-# StructuralWindow.CoveredRun — the local forcing quantity
+# StructuralLegendre.CoveredRun — the local forcing quantity
 
 The quantity that governs the coupled window is the longest run of consecutive **covered**
 positions *inside the window*, not the global Jacobsthal `g(M)` (whose worst-case run sits far
@@ -12,7 +12,7 @@ margin: the coupled window loosens, not tightens. Bertrand `(P, 2P]` and Legendr
 `(P², (P+1)²]` obey the *same* inequality `run < width` — Legendre is its `θ = 1/2` evaluation.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- Longest run of consecutive covered positions inside `(A, A+W]`. `run < W` ⟺ a void exists. -/
 def coveredRun (A W : ℕ) : ℕ :=
@@ -32,4 +32,4 @@ example : coveredRun (97 ^ 2) (2 * 97 + 1) = 35 := by native_decide
 example : coveredRun 97 97 < 97 := by native_decide                        -- Bertrand, θ = 1
 example : coveredRun (97 ^ 2) (2 * 97 + 1) < 2 * 97 + 1 := by native_decide  -- Legendre, θ = 1/2
 
-end StructuralWindow
+end StructuralLegendre

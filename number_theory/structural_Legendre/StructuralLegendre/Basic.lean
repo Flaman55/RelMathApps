@@ -4,7 +4,7 @@ import Mathlib.Order.Interval.Finset.Nat
 import Mathlib.Tactic
 
 /-!
-# StructuralWindow.Basic — anchor-agnostic core
+# StructuralLegendre.Basic — anchor-agnostic core
 
 The structural layer of the coupled-window mechanism, written without reference to a specific
 anchor. A window `(A, A+W]` is covered by its *active base* — the primes `p` with `p² ≤ A+W`
@@ -12,7 +12,7 @@ anchor. A window `(A, A+W]` is covered by its *active base* — the primes `p` w
 active-covering prime is a *void*; inside the deterministic range a void is prime.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- Coupled window with left endpoint (anchor) `A` and width `W`: the interval `(A, A+W]`. -/
 def coupledWindow (A W : ℕ) : Finset ℕ := Finset.Ioc A (A + W)
@@ -42,4 +42,4 @@ def bertrandWindow (n : ℕ) : Finset ℕ := coupledWindow n n
 /-- Legendre's window: anchor `n²`, width `2n+1` (so the top is `(n+1)²`). -/
 def legendreWindow (n : ℕ) : Finset ℕ := coupledWindow (n ^ 2) (2 * n + 1)
 
-end StructuralWindow
+end StructuralLegendre

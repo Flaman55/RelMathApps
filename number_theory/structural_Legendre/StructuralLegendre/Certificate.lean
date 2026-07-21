@@ -1,7 +1,7 @@
-import StructuralWindow.Legendre
+import StructuralLegendre.Legendre
 
 /-!
-# StructuralWindow.Certificate — the generalized forcing; Legendre is a by-product
+# StructuralLegendre.Certificate — the generalized forcing; Legendre is a by-product
 
 The object here is not a proof of Legendre's conjecture but the *generalized* coupled-window
 mechanism: for a window `(A, A+W]` with **free position `A` and width `W`**, a void is forced
@@ -14,7 +14,7 @@ they are dense (`g ≥ W`, the Legendre end) the mechanism localizes an open fro
 so without ever being aimed at Legendre.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- The generalized forcing condition for a coupled window `(A, A+W]`: a coprime to the active-ring
     product, equivalently a void. Position and width are free — this is the mechanism itself. -/
@@ -42,4 +42,4 @@ theorem legendre_of_windowForcing (h : ∀ n, 0 < n → WindowForcing (n ^ 2) (2
 example : WindowForcing (7 ^ 2) (2 * 7 + 1) :=
   (windowHasVoid_iff_windowForcing _ _).mp (by native_decide)
 
-end StructuralWindow
+end StructuralLegendre

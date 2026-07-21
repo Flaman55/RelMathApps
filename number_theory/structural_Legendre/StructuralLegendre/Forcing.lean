@@ -1,7 +1,7 @@
-import StructuralWindow.Basic
+import StructuralLegendre.Basic
 
 /-!
-# StructuralWindow.Forcing — voids are coprimes to the ring product
+# StructuralLegendre.Forcing — voids are coprimes to the ring product
 
 A position is a void exactly when it is coprime to `M = ∏(active base)`. This is the bridge
 between the window and the Jacobsthal floor `g(M)`: the window contains a void iff it contains
@@ -10,7 +10,7 @@ wider than `g(M)` is forced to contain a void — the structural forcing, with n
 (The gap bound itself, `W ≥ g(M) ⟹ a coprime exists`, is the remaining periodic step.)
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- The product of the active base of a window with top `T`. -/
 def activeBaseProd (T : ℕ) : ℕ := (activeBase T).prod id
@@ -35,4 +35,4 @@ theorem windowHasVoid_iff_exists_coprime (A W : ℕ) :
   apply and_congr_right; intro _
   exact isVoid_iff_coprime A W n
 
-end StructuralWindow
+end StructuralLegendre

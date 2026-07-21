@@ -1,9 +1,9 @@
-name = "StructuralWindow"
+name = "StructuralLegendre"
 version = "0.1.0"
-defaultTargets = ["StructuralWindow"]
+defaultTargets = ["StructuralLegendre"]
 
 [[lean_lib]]
-name = "StructuralWindow"
+name = "StructuralLegendre"
 
 [[require]]
 name = "mathlib"

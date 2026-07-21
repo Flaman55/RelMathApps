@@ -1,7 +1,7 @@
-import StructuralWindow.Basic
+import StructuralLegendre.Basic
 
 /-!
-# StructuralWindow.Jacobsthal — the structural floor
+# StructuralLegendre.Jacobsthal — the structural floor
 
 The Jacobsthal function `g(M)` of the ring product `M = ∏(active rings)` is the widest window
 the rings dividing `M` can fully cover — the longest run of consecutive integers each sharing a
@@ -10,7 +10,7 @@ must contain a position coprime to `M` (a void). Here `g` is computable, so the 
 active-ring sets are settled by evaluation; the values match `structural_bertrand`.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- Product of the active rings up to `s`: `∏ (p prime ≤ s)`. Choosing the anchor `s` selects
     the active ring set — Bertrand's `Pmax = 7` takes all of `{2,3,5,7}`; the generalized
@@ -32,4 +32,4 @@ example : jacobsthal 2310 = 14 := by native_decide     -- anchor 11: rings {2,3,
 
 example : activePrimorial 7 = 210 := by native_decide
 
-end StructuralWindow
+end StructuralLegendre

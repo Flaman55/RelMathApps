@@ -1,7 +1,7 @@
-import StructuralWindow.Forcing
+import StructuralLegendre.Forcing
 
 /-!
-# StructuralWindow.SmallAnchors — the anchor experiment, closed structurally
+# StructuralLegendre.SmallAnchors — the anchor experiment, closed structurally
 
 For a fixed active-ring set (product `M`) the Jacobsthal bound `g(M)` is a finite, decidable
 fact: over one period `[0, M)`, every window of `g(M)` consecutive residues contains one coprime
@@ -14,7 +14,7 @@ same values as `structural_bertrand`). Combined with `windowHasVoid_iff_exists_c
 forces a void wherever the active-base product is `M`.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- Coprimality to `M` depends only on the residue mod `M`. -/
 theorem coprime_of_mod {M x : ℕ} (h : Nat.Coprime M (x % M)) : Nat.Coprime M x := by
@@ -81,4 +81,4 @@ theorem windowHasVoid_anchor11 {A : ℕ} (h : activeBaseProd (A + 14) = 2310) : 
     base `{2,3,5}`, so `force_30` supplies a void. -/
 example : windowHasVoid 30 6 := windowHasVoid_anchor5 (by native_decide)
 
-end StructuralWindow
+end StructuralLegendre

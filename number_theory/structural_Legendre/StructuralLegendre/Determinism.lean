@@ -1,7 +1,7 @@
-import StructuralWindow.Basic
+import StructuralLegendre.Basic
 
 /-!
-# StructuralWindow.Determinism — generative determinism: void ⟹ prime
+# StructuralLegendre.Determinism — generative determinism: void ⟹ prime
 
 Inside the window a void is prime. If `n ∈ (A, A+W]` is not divisible by any active-covering
 prime (`p² ≤ A+W`), then it has no prime factor `≤ √(A+W) ≥ √n`, so a composite would expose one
@@ -9,7 +9,7 @@ prime (`p² ≤ A+W`), then it has no prime factor `≤ √(A+W) ≥ √n`, so a
 mean "a prime is present".
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- A void in the window is prime (the generative determinism `void ⟹ prime`). -/
 theorem prime_of_isVoid {A W n : ℕ} (hn : n ∈ coupledWindow A W) (h1 : 1 < n)
@@ -42,4 +42,4 @@ theorem prime_of_isVoid {A W n : ℕ} (hn : n ∈ coupledWindow A W) (h1 : 1 < n
     exact ⟨by omega, hpp, by omega⟩
   exact hv n.minFac hmem (Nat.minFac_dvd n)
 
-end StructuralWindow
+end StructuralLegendre

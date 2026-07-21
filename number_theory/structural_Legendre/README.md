@@ -244,11 +244,11 @@ does not remove that gap; it isolates it as the one inequality and proves everyt
 ## Layout
 
 ```
-structural_window/                       ← Lean 4 / Mathlib project (builds clean, no `sorry`)
+structural_Legendre/                       ← Lean 4 / Mathlib project (builds clean, no `sorry`)
 ├── README.md · LICENSE · .gitignore
 ├── lean-toolchain · lakefile.toml · lake-manifest.json
-├── StructuralWindow.lean                ← aggregator + module map
-└── StructuralWindow/
+├── StructuralLegendre.lean                ← aggregator + module map
+└── StructuralLegendre/
         ├── Basic.lean        — anchor-agnostic core (window, active base, void)
         ├── Reframing.lean    — Legendre = Bertrand narrowed from the left (interval identities)
         ├── Covering.lean     — covering / void duality

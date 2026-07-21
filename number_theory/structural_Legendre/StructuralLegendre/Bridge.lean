@@ -1,7 +1,7 @@
-import StructuralWindow.GeneralLaw
+import StructuralLegendre.GeneralLaw
 
 /-!
-# StructuralWindow.Bridge — the existential entry point
+# StructuralLegendre.Bridge — the existential entry point
 
 The whole mechanism reduces the general law to a single existential input: *a prime in every
 window of the coupled family*. This module supplies the missing connector, `prime ⟹ void`, and
@@ -10,7 +10,7 @@ result over the family's range, and `GeneralLaw` — hence Bertrand, Legendre, a
 window — follows. Nothing else is needed; the structure is complete up to this one estimate.
 -/
 
-namespace StructuralWindow
+namespace StructuralLegendre
 
 /-- A prime in the window, above the active-base cutoff (`A+W < p²`), is a void: no active-covering
     prime can divide it. -/
@@ -41,4 +41,4 @@ theorem generalLaw_of_shortInterval
   · rw [coupledWindow, Finset.mem_Ioc]; exact ⟨h1, h2⟩
   · nlinarith [h1, hhi, hA]
 
-end StructuralWindow
+end StructuralLegendre
