@@ -46,7 +46,7 @@ def print_identity_chain(N: int, depth: int):
         print(f"R_{k:>2} = {val:.17f}   <- {note}")
 
     print("Conclusion: LHS=N = {:.17f}, RHS=R_1 = {:.17f}, Difference = {:.6e} {}".format(
-        float(N), chain[1][1], abs(chain[1][1]-N), "[PASSED]" if ok else "[FAILED]")
+        float(N), chain[depth][1], abs(chain[depth][1]-N), "[PASSED]" if ok else "[FAILED]")
     )
 
 def solve_tail_for_equality(N: float, depth: int, tol: float = 1e-12):
