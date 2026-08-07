@@ -1,0 +1,4091 @@
+import sys
+import os
+import csv
+import bisect
+import math
+import re
+import datetime
+import json
+import threading
+import queue
+import subprocess
+import shlex
+import time
+
+# ==========================================================================================
+# PrimeAtlas -- a tkinter desktop application for browsing, generating, and managing the
+# prime number and constellation data produced by the sieve/orchestrator pipeline in this
+# repository. It ties together mass generation and mapping of prime numbers and their
+# constellations across exponents ("piętra"), plus search, backup/restore, and benchmark
+# tooling built around that data.
+#
+# On-disk data continues to live under a folder/environment-variable named
+# CONSTELLATION_PORTAL / CONSTELLATION_PORTAL_DIR. Those names are read directly by the
+# sieve/orchestrator/constellation scripts this app launches (prime_sieve_v1.py/v3.py,
+# orchestrator_v3.py, orchestrator_loop_v2.py, constellation_finder_v1.py) and are kept
+# as-is to avoid touching those scripts or migrating data on disk; they are independent of
+# the application's display name.
+#
+# Not a port of an existing script -- this is a self-contained GUI, so there is no LINEAGE
+# predecessor to cite (unlike prime_sieve_v1.py / orchestrator_v1.py / constellation_
+# finder_v1.py).
+#
+# Purpose: browse what the scanner/orchestrator/constellation finder have actually
+# produced without opening a terminal. Five tabs:
+#   1) "Liczby pierwsze" -- piętro by piętro, PGS2 source-window file by file (count,
+#      generation time, on-demand paginated prime preview; plus a search box to jump
+#      straight to a specific prime number).
+#   2) "Konstelacje" -- piętro by piętro, k-tuple pattern by pattern, showing hit count,
+#      the pattern's offsets/record info from pattern_catalog_v1.py, and an on-demand
+#      paginated preview that reconstructs each hit's FULL tuple (starting value + fixed
+#      offsets); plus a search box that reports whether a given number participates in any
+#      recorded constellation and at which position of its structure.
+#   3) "Generowanie" -- launches orchestrator_loop_v2.py (the generation pipeline) and
+#      constellation_finder_v1.py (k-tuple search) directly from this GUI, via WSL, instead
+#      of a manual WSL terminal + hand-typed CLI args. Two independent forms (one per
+#      script), each exposing every CLI parameter those scripts have -- including
+#      workers/batches_per_worker/window_count_per_run -- with live streamed output and a
+#      best-effort Stop button. Form values persist to .portal_generation_settings.json
+#      (loaded at startup, saved whenever a run is launched).
+#   4) "Benchmark" -- a small dependency-free growth chart (seconds/10M vs. piętro depth,
+#      one point per piętro -- latest logged run wins) above a full table view of
+#      benchmark_log.csv (written by orchestrator_v1.py's print_benchmark_summary()); a
+#      "Zapisz PDF" button renders that same chart + the full table into a standalone PDF
+#      report (see the hand-rolled PDF writer below render_benchmark_pdf()).
+#   5) "Ustawienia" -- storage path configuration plus backup/restore/delete of the whole
+#      prime/constellation database, built object-oriented in its own package
+#      (./primeatlas/) rather than as more inline functions on this already-large file.
+#      primeatlas/ holds five small, independently unit-tested (no tkinter dependency),
+#      single-purpose classes:
+#        - AppSettings                          (app_settings.py)  -- configurable storage
+#                                                  path, persisted OUTSIDE the portal folder
+#                                                  itself (see that module's docstring for
+#                                                  why)
+#        - BackupManifest/PietroSnapshot/
+#          ConstellationSnapshot                 (manifest.py)  -- a lightweight JSON
+#                                                  SNAPSHOT of what piętra/constellations/
+#                                                  benchmark log exist -- NOT a copy of the
+#                                                  actual (many-GB) prime data
+#        - BackupStore                           (backup_store.py)  -- saves/lists/loads
+#                                                  those manifests under <storage>/_backups/
+#        - RestoreJob                            (restore_job.py)  -- checkpointed,
+#                                                  pausable/resumable/cancellable plan for
+#                                                  regenerating whatever a backup's manifest
+#                                                  says is missing from the CURRENT disk
+#        - PortalWiper                           (delete_manager.py)  -- the "delete
+#                                                  everything" button's actual logic
+#      settings_tab.py (same package) is the only module that imports tkinter, wiring the
+#      classes above into the actual Ustawienia tab widgets. This file (prime_atlas_v1.py)
+#      owns the other four tabs' UI code directly.
+#
+# The chosen storage path also has to reach the scripts this app launches as separate WSL
+# processes (prime_sieve_v3.py, orchestrator_v3.py, orchestrator_loop_v2.py,
+# constellation_finder_v1.py). All four check a CONSTELLATION_PORTAL_DIR environment
+# variable first (see each file's own __main__/module-level comment) --
+# build_wsl_logged_command() below prepends it to every WSL command this app launches, so
+# choosing a custom path in Ustawienia transparently affects the Generowanie tab's
+# pipeline runs too, with no separate wiring needed.
+#
+# Built with tkinter (Python's standard-library GUI toolkit) specifically so it runs with
+# zero extra installs on a normal Windows Python -- no pip packages required. Run directly
+# (not through WSL -- this needs a display, and reading PGS2 files is pure Python, no
+# ctypes/.so/primesieve dependency at all):
+#   python prime_atlas_v1.py
+#
+# Depends on prime_sieve_v1.py (./prime_sieve/) for the PGS2 format readers and
+# pattern_catalog_v1.py (./constellation/) for pattern offsets/record metadata --
+# imported via sys.path, same approach orchestrator_v1.py/constellation_finder_v1.py use.
+# Never touches prime_sieve_engine_v1.so (only prime_sieve_v1's lazy sieving path does).
+# ==========================================================================================
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_SCRIPT_DIR, "prime_sieve"))
+sys.path.insert(0, os.path.join(_SCRIPT_DIR, "constellation"))
+import prime_sieve_v1  # noqa: E402
+import pattern_catalog_v1  # noqa: E402
+from primeatlas import AppSettings, Translator, DEFAULT_LANGUAGE  # noqa: E402
+
+# AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
+# app_settings.py's docstring for the chicken-and-egg reason). Loaded once here, at module
+# level, BEFORE the App class is defined/instantiated -- every function in this file reads
+# the bare name PORTAL_FOLDER at CALL time (not at function-definition time), so
+# overwriting the global here is enough to redirect the whole app, with no changes needed
+# to any of the call sites that pass PORTAL_FOLDER around explicitly.
+APP_SETTINGS = AppSettings(_SCRIPT_DIR)
+PORTAL_FOLDER = APP_SETTINGS.storage_path
+
+# Every user-visible string in the GUI classes below goes through T("some.key", **kwargs)
+# instead of a hardcoded literal -- see primeatlas/i18n.py's docstring for the full
+# rationale (a language switch requires a RESTART, not a live re-render, since this app's
+# widgets are built once at startup). Built from AppSettings.language the same way
+# PORTAL_FOLDER is built from AppSettings.storage_path -- loaded once here, at module
+# level, before the App class exists.
+TRANSLATOR = Translator(APP_SETTINGS.language)
+T = TRANSLATOR.t
+PAGE_SIZE = 500  # entries per page in the preview lists -- windows/hit files can hold
+                  # 100k+ entries; decoding is cached per selection, only rendering is paged.
+FLOOR_PAGE_SIZE = 200  # PRIME_WINDOW_*.bin files shown per page when a piętro node is
+                        # expanded in the "Liczby pierwsze" tree -- separate from PAGE_SIZE
+                        # above (that one pages through prime NUMBERS inside one file; this
+                        # one pages through FILES inside one piętro). A piętro can hold
+                        # thousands of windows (10p15 alone passed 2,600+ and is still
+                        # growing) -- reading every file's header AND inserting every file
+                        # as a tree row on a single expand is what used to freeze the GUI.
+
+QUICK_GEN_MAX_WINDOW_WIDTH = 10_000_000  # window width the (future) range ->
+                          # window_count_per_run translation logic must not exceed. Not
+                          # used yet -- interface-only step, logic follows in a later
+                          # change; kept here as the single source of truth for that
+                          # upcoming calculation.
+                          #
+                          # NOTE: this constant ASSUMES window_m=10,000,000, matching the
+                          # editable "window_m" field on the low-level form (see
+                          # add_loop_field(3, 0, "window_m", ...) and build_loop_argv()).
+                          # Quick-gen does NOT read the value from that form field -- if
+                          # window_m is ever changed there, the Zakres/Eksploracja math
+                          # below (and QUICK_GEN_EXPLORE_ITERATION_WIDTH) will silently
+                          # stop matching what orchestrator_loop_v2.py actually scans.
+                          # Safe as long as window_m stays at its default value (as in
+                          # DEFAULT_GENERATION_SETTINGS) -- not fixed here, only noted as
+                          # a known limitation.
+
+QUICK_GEN_EXPLORE_ITERATION_WIDTH = 10_000_000_000  # one Eksploracja "iteracja" == one
+                          # orchestrator_loop_v2 run_count unit at its own defaults
+                          # (WINDOW_COUNT_PER_RUN=1000 x WINDOW_M=10,000,000), i.e. a
+                          # minimum width of 10 billion. Iterations field is capped at
+                          # 100 (100 x 10 bln = 1 trillion upper bound) -- see
+                          # _validate_quick_iterations_spinbox. Same window_m=10,000,000
+                          # assumption/caveat as QUICK_GEN_MAX_WINDOW_WIDTH above.
+
+BENCHMARK_TREE_HIDDEN_COLUMNS = {"base_exponent", "run_timestamp_utc"}  # columns dropped
+                                # from the Benchmark tab's tree (not from the CSV, PDF
+                                # export, or growth chart -- those still use every column).
+                                # base_exponent is redundant once rows are grouped under a
+                                # "10p{N}" piętro node (every row repeats the same value).
+                                # run_timestamp_utc is dropped as a COLUMN but not lost --
+                                # it moves into the #0 "Piętro / run" tree label for
+                                # individual rows instead (that column sits empty for data
+                                # -- see _order_benchmark_tree_columns() below for the one
+                                # column whose DISPLAY position also gets adjusted
+                                # rows otherwise, see _show_benchmark_page), freeing a whole
+                                # column's width for the other fields that don't fit on
+                                # screen at once.
+
+def _order_benchmark_tree_columns(fieldnames):
+    """Reorders the Benchmark tab's visible tree columns so loop_seconds_per_window sits
+    immediately after seconds_per_window, instead of trailing at the end where it
+    physically lives in benchmark_log.csv. Only the DISPLAY order changes here -- the
+    CSV's own column order (and BENCHMARK_FIELDNAMES in orchestrator_v1.py etc.) is
+    untouched, still append-only per the established schema-migration pattern. A no-op if
+    either column is missing (older schema / already filtered out), so this is safe to
+    call unconditionally."""
+    fieldnames = list(fieldnames)
+    if "loop_seconds_per_window" not in fieldnames or "seconds_per_window" not in fieldnames:
+        return fieldnames
+    fieldnames.remove("loop_seconds_per_window")
+    insert_at = fieldnames.index("seconds_per_window") + 1
+    fieldnames.insert(insert_at, "loop_seconds_per_window")
+    return fieldnames
+
+
+BENCHMARK_PAGE_SIZE = 200  # benchmark_log.csv rows shown per page when a piętro node is
+                            # expanded in the Benchmark tab's tree -- same reasoning as
+                            # FLOOR_PAGE_SIZE above. benchmark_log.csv now gets a row per
+                            # orchestrator run (including count-only/no-write benchmarking
+                            # runs, which are cheap to run repeatedly), so it grows much
+                            # faster than one row per piętro -- inserting every row as a flat
+                            # Treeview row on load is what would freeze this tab the same way
+                            # the old un-paginated primes tree used to.
+
+
+# ------------------------------------------------------------------------------------------
+# Pure logic (no tkinter dependency) -- kept separate from the GUI classes below so it can
+# be unit-tested on its own, without a display.
+# ------------------------------------------------------------------------------------------
+
+def list_pietra(portal_folder):
+    """Returns sorted base_exponent ints for every 10p{N} folder found directly under
+    portal_folder (regardless of whether it has source_primes/ or constellations/
+    populated yet)."""
+    if not os.path.isdir(portal_folder):
+        return []
+    result = []
+    for name in os.listdir(portal_folder):
+        if name.startswith("10p") and name[3:].isdigit():
+            if os.path.isdir(os.path.join(portal_folder, name)):
+                result.append(int(name[3:]))
+    return sorted(result)
+
+
+def list_source_files(portal_folder, base_exponent):
+    """Returns a list of (filename, full_path, header_dict) for every PRIME_WINDOW_*.bin
+    under 10p{base_exponent}/source_primes/, sorted into ascending window order (by the
+    base prime in each file's header -- robust to filename shorthand like "10M" vs "0",
+    unlike trying to re-parse format_offset()'s abbreviation back into a number). Files
+    that fail to parse (corrupt/truncated) are still listed, with header=None, rather than
+    silently dropped -- a browsing tool should surface problems, not hide them."""
+    source_dir = os.path.join(portal_folder, f"10p{base_exponent}", "source_primes")
+    if not os.path.isdir(source_dir):
+        return []
+    entries = []
+    for name in sorted(os.listdir(source_dir)):
+        if not (name.startswith("PRIME_WINDOW_") and name.endswith(".bin")):
+            continue
+        path = os.path.join(source_dir, name)
+        try:
+            header = prime_sieve_v1.read_prime_window_header(path)
+        except Exception:
+            header = None
+        entries.append((name, path, header))
+
+    def sort_key(entry):
+        _, _, header = entry
+        if header is None or header.get("base_prime") is None:
+            return (1, 0, entry[0])
+        return (0, header["base_prime"], entry[0])
+
+    entries.sort(key=sort_key)
+    return entries
+
+
+_OFFSET_FROM_NAME_RE = re.compile(r"_off_(\d+)(M|k)?\.bin$")
+
+
+def _offset_from_filename(name):
+    """Cheap, I/O-free sort key: reconstructs the numeric offset directly from the
+    filename's "_off_{N}[M|k]" suffix instead of opening the file to read its header.
+    Safe for THIS project specifically because window_m (orchestrator_v1.WINDOW_M) is
+    always a multiple of 1_000_000 -- format_offset() therefore always emits either the
+    literal "0" or an exact "{N}M" form for every file this scanner actually writes, never
+    the fractional/rounded "k" fallback it has for arbitrary (non-window-aligned) inputs.
+    Returns None if a filename doesn't match (corrupt/foreign file) -- callers should sort
+    those to the end rather than guessing at a position."""
+    m = _OFFSET_FROM_NAME_RE.search(name)
+    if not m:
+        return None
+    n = int(m.group(1))
+    suffix = m.group(2)
+    if suffix == "M":
+        n *= 1_000_000
+    elif suffix == "k":
+        n *= 1_000
+    return n
+
+
+def list_source_filenames(portal_folder, base_exponent):
+    """Cheap listing of every PRIME_WINDOW_*.bin under 10p{base_exponent}/source_primes/:
+    just os.listdir() + a regex per name, NO file opens. Sorted ascending by the offset
+    parsed from the filename (see _offset_from_filename) -- a piętro can hold thousands of
+    windows (10p15 alone is past 2,600+ and still growing), and list_source_files()'s
+    per-file header read is exactly what made expanding a heavily-populated piętro node
+    freeze the GUI. Returns [(name, path), ...]; headers are read separately, only for
+    whichever page is actually being displayed (see read_source_file_headers())."""
+    source_dir = os.path.join(portal_folder, f"10p{base_exponent}", "source_primes")
+    if not os.path.isdir(source_dir):
+        return []
+    entries = []
+    for name in os.listdir(source_dir):
+        if not (name.startswith("PRIME_WINDOW_") and name.endswith(".bin")):
+            continue
+        entries.append((_offset_from_filename(name), name))
+    entries.sort(key=lambda e: (e[0] is None, e[0], e[1]))
+    return [(name, os.path.join(source_dir, name)) for _offset, name in entries]
+
+
+def find_continuation_target_idx(portal_folder, base_exponent, window_m):
+    """Pure-Python, WSL/ctypes-free reimplementation of orchestrator_v2_debug.
+    find_auto_start()'s logic, built on list_source_filenames() (already parses each
+    PRIME_WINDOW_*.bin's offset straight from its filename, no file opens). Returns the
+    target_idx the REAL orchestrator will actually continue from the next time it runs
+    against this piętro (0 if nothing exists yet) -- used by the Szybkie generowanie
+    panel to preview/validate a requested range against what generation can truthfully
+    do, WITHOUT importing orchestrator_v2_debug itself: that module's import
+    chain ctypes-loads a Linux .so a few hops down (prime_sieve_v2_debug ->
+    prime_sieve_engine), which this native-Windows tkinter app must never require just to
+    check what's already on disk (same reasoning DEFAULT_GENERATION_SETTINGS's own
+    docstring gives for duplicating orchestrator_loop_v2's defaults instead of importing
+    them)."""
+    highest = -1
+    for name, _path in list_source_filenames(portal_folder, base_exponent):
+        offset = _offset_from_filename(name)
+        if offset is None:
+            continue
+        target_idx = offset // window_m
+        if target_idx > highest:
+            highest = target_idx
+    return highest + 1
+
+
+def read_source_file_headers(entries):
+    """Reads headers for a (small, page-sized) list of (name, path) tuples -- the actual
+    disk I/O, deliberately kept separate from list_source_filenames() so it only ever runs
+    on however many files are visible on ONE page, never the whole piętro. Returns
+    [(name, path, header_or_None), ...] in the same order given."""
+    result = []
+    for name, path in entries:
+        try:
+            header = prime_sieve_v1.read_prime_window_header(path)
+        except Exception:
+            header = None
+        result.append((name, path, header))
+    return result
+
+
+TOTALS_CACHE_FILENAME = ".portal_totals_cache.json"
+
+
+def _totals_cache_path(portal_folder):
+    return os.path.join(portal_folder, TOTALS_CACHE_FILENAME)
+
+
+def load_totals_cache(portal_folder):
+    """Returns the persisted {"10p{N}": {"files": {filename: count, ...}, "total": T,
+    "file_count": C}, ...} cache, or {} if it doesn't exist yet or is corrupt (never raises --
+    a missing/bad cache just means the next update rebuilds it, same as no cache at all)."""
+    path = _totals_cache_path(portal_folder)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_totals_cache(portal_folder, cache):
+    """Atomic write (temp file + os.replace()), same pattern as orchestrator_v1.py's
+    _ensure_benchmark_log_schema() -- this file can get large (one entry per source window,
+    e.g. 15000+ for a heavily-populated piętro), so a half-written file from an interrupted
+    save must never be what a later load sees."""
+    path = _totals_cache_path(portal_folder)
+    tmp_path = f"{path}.tmp{os.getpid()}"
+    try:
+        os.makedirs(portal_folder, exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+        os.replace(tmp_path, path)
+    except OSError:
+        pass  # best-effort -- a failed cache save just means the next visit re-scans
+
+
+def update_pietro_totals_cache(portal_folder, base_exponent, cache):
+    """Computes (and caches) the TOTAL prime count across every source window file for one
+    piętro -- the file list on its own only shows each file's OWN count, never a sum, so
+    this fills in the piętro row's total. Reading every file's header for a
+    heavily-populated piętro is NOT cheap on this project's actual storage (~78s for one
+    piętro's 15,101 files, ~5ms/file -- per-file open() latency on the underlying mount,
+    not the tiny header read itself) -- exactly why list_source_filenames()/
+    read_source_file_headers() were already split apart for the paginated file list (see
+    those functions' docstrings). This
+    function makes repeat visits cheap: `cache` maps piętro -> {filename: count} from the
+    LAST computation, and only filenames not already in that map get their header re-read --
+    files removed from disk since the last run are dropped from the map (no stale counts
+    lingering forever). A piętro visited for the first time still pays the full one-time
+    scan cost -- callers should run this off the GUI thread (see PortalApp's background
+    totals worker) so that cost is never a frozen window.
+
+    Returns (total, file_count, newly_read_count) -- newly_read_count lets a caller report
+    "read 42 new files" instead of re-summarizing the whole piętro every time, useful for a
+    status message on the (usual, fast) incremental case."""
+    key = f"10p{base_exponent}"
+    entry = cache.setdefault(key, {"files": {}})
+    cached_files = entry.setdefault("files", {})
+
+    filenames = list_source_filenames(portal_folder, base_exponent)
+    current_names = {name for name, _path in filenames}
+
+    for stale_name in list(cached_files.keys()):
+        if stale_name not in current_names:
+            del cached_files[stale_name]
+
+    to_read = [(name, path) for name, path in filenames if name not in cached_files]
+    if to_read:
+        for name, path, header in read_source_file_headers(to_read):
+            cached_files[name] = header["count"] if header is not None else 0
+
+    total = sum(cached_files.values())
+    entry["total"] = total
+    entry["file_count"] = len(cached_files)
+    return total, len(cached_files), len(to_read)
+
+
+def hit_file_path(portal_folder, base_exponent, k, variant_id):
+    """Same layout as constellation_finder_v1.hit_file_path() -- not imported from there
+    directly (a browsing tool depending on the heavy analysis script felt backwards); this
+    is deliberately kept in sync with that function instead."""
+    return os.path.join(
+        portal_folder, f"10p{base_exponent}", "constellations", f"k{k}", f"variant{variant_id}",
+        f"HITS_10p{base_exponent}_k{k}_v{variant_id}.bin")
+
+
+def list_constellation_hits(portal_folder, base_exponent):
+    """Returns [(pattern_dict, path, header_or_None), ...] for every catalog pattern that
+    has an existing hit file for this piętro (i.e. constellation_finder_v1 has found at
+    least one match), sorted by (k, id)."""
+    entries = []
+    for pattern in sorted(pattern_catalog_v1.PATTERN_CATALOG, key=lambda w: (w["k"], w["id"])):
+        path = hit_file_path(portal_folder, base_exponent, pattern["k"], pattern["id"])
+        if not os.path.exists(path):
+            continue
+        try:
+            header = prime_sieve_v1.read_prime_window_header(path)
+        except Exception:
+            header = None
+        entries.append((pattern, path, header))
+    return entries
+
+
+def group_constellation_hits_by_k(entries):
+    """Groups list_constellation_hits()'s flat (pattern, path, header) list into
+    [(k, k_total, [(pattern, path, header), ...]), ...] sorted ascending by k -- fills in
+    the "how many k-tuples do I have in total for this k" figure that the tree's per-variant
+    hit counts alone don't show (e.g. k=7 v=1: 136, k=7 v=2: 131, but never their sum).
+    Cheap by construction -- the pattern catalog itself is
+    small (currently 48 entries across all k), so list_constellation_hits() already reads
+    every existing hit file's header for a piętro in one shot; this just re-groups that
+    already-fetched data, no extra I/O. Rows with header=None (corrupt/unreadable hit file)
+    count as 0 toward k_total rather than breaking the sum."""
+    groups = {}
+    for pattern, path, header in entries:
+        k = pattern["k"]
+        groups.setdefault(k, []).append((pattern, path, header))
+    result = []
+    for k in sorted(groups):
+        variants = groups[k]
+        k_total = sum(header["count"] for _pattern, _path, header in variants if header is not None)
+        result.append((k, k_total, variants))
+    return result
+
+
+def format_big_int(n, head=12, tail=6):
+    """Shortens a huge integer for display: keeps the first `head` and last `tail` digits,
+    elides the middle with "...". This is just for compact display in a tree/list widget;
+    full-precision values are always used for any actual computation."""
+    if n is None:
+        return "-"
+    s = str(n)
+    if len(s) <= head + tail + 3:
+        return s
+    return f"{s[:head]}...{s[-tail:]} ({len(s)} digits)"
+
+
+_DECIMAL_COMMA_RE = re.compile(r'^-?\d+,\d+$')
+
+
+def _normalize_decimal_commas(row):
+    """Fixes numeric fields that got re-written with a comma decimal separator (e.g.
+    "236228657,66" instead of "236228657.66") -- happens if benchmark_log.csv is ever opened
+    and re-saved in a spreadsheet app under a locale that uses comma-as-decimal (e.g.
+    deleting rows in Excel under a Polish locale re-exports every numeric field this way,
+    silently breaking the growth chart -- aggregate_benchmark_growth()/
+    aggregate_benchmark_fair_spw()/benchmark_row_stats() all call float() on these columns,
+    which raises ValueError on a comma decimal and gets caught+skipped, so the chart just
+    quietly lost almost every point). Only touches values matching digits-comma-digits
+    exactly (e.g. "1/1" in instance_of_n, or a plain int like "1000", are left alone) --
+    same regex used for the one-off CSV repair that fixed the existing file. Mutates and
+    returns `row` in place."""
+    for k, v in row.items():
+        if v and _DECIMAL_COMMA_RE.match(v):
+            row[k] = v.replace(",", ".")
+    return row
+
+
+def read_benchmark_log(portal_folder):
+    """Returns (fieldnames, rows) from CONSTELLATION_PORTAL/benchmark_log.csv, or
+    ([], []) if the file doesn't exist yet (no benchmarked runs so far). Numeric fields are
+    normalized to a period decimal separator on read (see _normalize_decimal_commas()) --
+    tolerates the file having been re-saved with comma decimals by a spreadsheet app,
+    regardless of whether the on-disk file itself has been repaired."""
+    log_path = os.path.join(portal_folder, "benchmark_log.csv")
+    if not os.path.exists(log_path):
+        return [], []
+    with open(log_path, newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        rows = [_normalize_decimal_commas(row) for row in reader]
+    return fieldnames, rows
+
+
+def aggregate_benchmark_growth(rows):
+    """Reduces benchmark_log.csv rows to one (base_exponent, loop_numbers_per_second) point per
+    piętro, for the "cost growth by depth" chart. loop_numbers_per_second is the real
+    session-level throughput (total numbers swept across all concurrent instances / real
+    wall-clock time of the orchestrator_loop run -- see _tag_single_benchmark_row() /
+    _tag_benchmark_rows_by_range() in orchestrator_loop_v1.py/v2.py), used directly as the
+    y-value -- higher is better, unlike the old seconds_per_window metric which got WORSE
+    (higher) as more concurrent instances were added even though wall-clock throughput
+    actually improved. When a piętro has multiple logged runs (re-benchmarked after a
+    scanner change, or just run again), the LAST row for that piętro wins: rows are appended
+    in chronological order, so this reflects the most recent measurement instead of blending
+    old and new tool versions together into one misleading average. Rows predating this
+    column (blank loop_numbers_per_second) or with unparseable values are skipped rather than
+    raising -- older piętro depths simply won't have a point until re-benchmarked through
+    orchestrator_loop. Returns a list of (base_exponent, loop_numbers_per_second) sorted
+    ascending by base_exponent."""
+    latest = {}
+    for row in rows:
+        try:
+            base_exponent = int(row.get("base_exponent", ""))
+            numbers_per_second = float(row.get("loop_numbers_per_second", ""))
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(numbers_per_second):
+            continue
+        latest[base_exponent] = numbers_per_second
+    return sorted(latest.items())
+
+
+def aggregate_benchmark_fair_spw(rows):
+    """Same reduction as aggregate_benchmark_growth() (last row per piętro wins, missing/
+    unparseable values skipped), but for loop_seconds_per_window instead of
+    loop_numbers_per_second -- a second growth-chart line restoring a seconds/window-shaped
+    view alongside n/s, but computed FAIRLY (loop_total_seconds / total_windows across the
+    whole concurrent group) instead of the old
+    per-instance seconds_per_window, which punished splitting into more instances. Independent
+    reduction from aggregate_benchmark_growth() -- a piętro could in principle have one column
+    populated and not the other (shouldn't happen for rows written after this feature, both
+    get stamped together, but kept independent for the same robustness reason the two columns
+    are independent in the CSV). Returns (base_exponent, loop_seconds_per_window) pairs sorted
+    ascending by base_exponent."""
+    latest = {}
+    for row in rows:
+        try:
+            base_exponent = int(row.get("base_exponent", ""))
+            seconds_per_window_fair = float(row.get("loop_seconds_per_window", ""))
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(seconds_per_window_fair):
+            continue
+        latest[base_exponent] = seconds_per_window_fair
+    return sorted(latest.items())
+
+
+def format_duration(seconds):
+    """H h M m S s, dropping leading zero units. Duplicated (not imported) from
+    orchestrator_v3.py's own format_duration() -- this GUI module deliberately doesn't
+    import the WSL-only orchestrator scripts directly (see the Generowanie tab's own note
+    on why orchestrator_loop_v2 is launched as a subprocess instead), so small pure-Python
+    helpers like this one get a local copy rather than a cross-module dependency."""
+    if seconds is None:
+        return "?"
+    seconds = int(round(seconds))
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def aggregate_write_seconds_by_pietro(rows):
+    """Sums total_seconds per piętro across every benchmark_log.csv row that ACTUALLY wrote
+    files (write_files=="1"), skipping write_files=False count-only benchmark rows entirely
+    -- otherwise a piętro that was also re-benchmarked in count-only mode (same
+    base_exponent/range, much faster since it skips disk I/O) would have its "how long did
+    this piętro really take to generate" figure polluted by runs that produced no files at
+    all -- counting numbers without writing files needs to stay distinct from counting with
+    writes. Rows predating the write_files
+    column (blank -- see orchestrator_v3.py's BENCHMARK_FIELDNAMES comment) are skipped too,
+    same as an unparseable row -- no way to know after the fact which mode they ran in.
+    Returns {base_exponent: total_seconds}."""
+    totals = {}
+    for row in rows:
+        if row.get("write_files") != "1":
+            continue
+        try:
+            base_exponent = int(row.get("base_exponent", ""))
+            seconds = float(row.get("total_seconds", ""))
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(seconds):
+            continue
+        totals[base_exponent] = totals.get(base_exponent, 0.0) + seconds
+    return totals
+
+
+def group_benchmark_rows_by_pietro(rows):
+    """Splits benchmark_log.csv rows into {base_exponent: [rows...]}, preserving each
+    piętro's rows in their original (chronological, CSV-append) order. Rows with a missing
+    or unparseable base_exponent are skipped -- same defensive approach as
+    aggregate_benchmark_growth(). Used by the Benchmark tab to build one lazily-expandable
+    tree node per piętro (mirroring the "Liczby pierwsze" tab's piętro tree) instead of
+    dumping every row into one flat, ever-growing table."""
+    grouped = {}
+    for row in rows:
+        try:
+            base_exponent = int(row.get("base_exponent", ""))
+        except (TypeError, ValueError):
+            continue
+        grouped.setdefault(base_exponent, []).append(row)
+    return grouped
+
+
+def benchmark_row_stats(rows):
+    """Reduces a piętro's benchmark rows to {count, avg, min, max} of seconds_per_window --
+    the "how fast is this piętro, at a glance" summary shown at the top of an expanded
+    piętro node in the Benchmark tab, so the user doesn't have to page through potentially
+    dozens of runs (including quick count-only benchmarking runs) to see the spread. Rows
+    with a missing/unparseable/NaN seconds_per_window are skipped. Returns None if no row
+    had a usable value (e.g. an empty or all-unparseable piętro)."""
+    values = []
+    for row in rows:
+        try:
+            v = float(row.get("seconds_per_window", ""))
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(v):
+            continue
+        values.append(v)
+    if not values:
+        return None
+    return {
+        "count": len(values),
+        "avg": sum(values) / len(values),
+        "min": min(values),
+        "max": max(values),
+    }
+
+
+# ------------------------------------------------------------------------------------------
+# Minimal, dependency-free PDF writer -- just enough (text, lines, filled shapes, multiple
+# pages) to render the Benchmark tab's growth chart + full data table into a standalone
+# report. Written by hand instead of pulling in reportlab/matplotlib, to keep this app's
+# documented zero-extra-installs promise (see module header: "no pip packages required").
+# Only the three standard core-14 PDF fonts are used (Helvetica, Helvetica-Bold, Courier),
+# so no font embedding is needed. WinAnsiEncoding (the default PDF text encoding for these
+# fonts) doesn't cover Polish diacritics -- static labels drawn via these helpers stick to
+# plain ASCII; the benchmark data itself (CSV field names/values) already is. Kept in the
+# "pure logic" section (no tkinter dependency) so render_benchmark_pdf() can be exercised
+# without a display, same reasoning as the rest of this section.
+# ------------------------------------------------------------------------------------------
+
+def _pdf_escape(s):
+    return str(s).replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+
+
+_PDF_ASCII_FOLD_MAP = str.maketrans({
+    "ą": "a", "Ą": "A", "ć": "c", "Ć": "C", "ę": "e", "Ę": "E",
+    "ł": "l", "Ł": "L", "ń": "n", "Ń": "N", "ó": "o", "Ó": "O",
+    "ś": "s", "Ś": "S", "ź": "z", "Ź": "Z", "ż": "z", "Ż": "Z",
+})
+
+
+def _pdf_ascii_fold(text):
+    """Strips Polish diacritics down to plain ASCII -- WinAnsiEncoding (the PDF default
+    for the core-14 fonts this writer uses, see the module comment above) doesn't cover
+    them at all, so a raw accented string would render as garbage/missing glyphs, not
+    just "wrong language". Locale strings themselves (strings_pl.json) stay properly
+    accented -- they're shared with the on-screen Tkinter UI, which renders UTF-8 fine
+    -- this folding only ever happens right here, at the point text is actually drawn
+    into a PDF page, for EITHER language. The report's chrome (title/subtitle/
+    continuation header, axis labels) is fully translator-driven and tracks the app's
+    selected language -- see render_benchmark_pdf()'s/_pdf_chart_ops()'s title/axis
+    text, so no fixed-language string leaks through untranslated."""
+    return text.translate(_PDF_ASCII_FOLD_MAP)
+
+
+def _pdf_text_op(x, y, size, font_key, text, rgb=(0, 0, 0)):
+    r, g, b = rgb
+    return (f"{r:.3f} {g:.3f} {b:.3f} rg BT /{font_key} {size} Tf "
+            f"1 0 0 1 {x:.2f} {y:.2f} Tm ({_pdf_escape(text)}) Tj ET")
+
+
+def _pdf_line_op(x1, y1, x2, y2, width=1.0, rgb=(0, 0, 0)):
+    r, g, b = rgb
+    return (f"{r:.3f} {g:.3f} {b:.3f} RG {width:.2f} w "
+            f"{x1:.2f} {y1:.2f} m {x2:.2f} {y2:.2f} l S")
+
+
+def _pdf_rect_op(x, y, w, h, fill_rgb=None, stroke_rgb=None, width=1.0):
+    ops = []
+    modes = []
+    if fill_rgb is not None:
+        r, g, b = fill_rgb
+        ops.append(f"{r:.3f} {g:.3f} {b:.3f} rg")
+        modes.append("f")
+    if stroke_rgb is not None:
+        r, g, b = stroke_rgb
+        ops.append(f"{r:.3f} {g:.3f} {b:.3f} RG {width:.2f} w")
+        modes.append("S")
+    mode = "B" if len(modes) == 2 else (modes[0] if modes else "n")
+    ops.append(f"{x:.2f} {y:.2f} {w:.2f} {h:.2f} re {mode}")
+    return " ".join(ops)
+
+
+def _pdf_dot_op(cx, cy, r, rgb=(0, 0, 0)):
+    """Approximates a filled circle with a small octagon -- simpler than a real bezier-curve
+    circle in raw PDF content ops, and plenty smooth at chart-marker size (r ~ 2.5pt)."""
+    pts = [(cx + r * math.cos(2 * math.pi * i / 8), cy + r * math.sin(2 * math.pi * i / 8))
+           for i in range(8)]
+    rr, gg, bb = rgb
+    parts = [f"{rr:.3f} {gg:.3f} {bb:.3f} rg", f"{pts[0][0]:.2f} {pts[0][1]:.2f} m"]
+    for x, y in pts[1:]:
+        parts.append(f"{x:.2f} {y:.2f} l")
+    parts.append("h f")
+    return " ".join(parts)
+
+
+def _write_pdf(path, pages, page_size=(841.89, 595.28)):
+    """Writes a minimal multi-page PDF (PDF 1.4) from `pages` -- a list of lists of raw
+    content-stream operator strings (see the _pdf_*_op helpers above), one list per page,
+    already positioned in PDF's bottom-left-origin point space. No compression, no font
+    embedding -- just objects + an xref table, which is all a plain few-hundred-row report
+    needs and keeps the writer itself small enough to read/review in one sitting. Default
+    page size is A4 landscape (points, 1pt = 1/72in) -- the benchmark table has enough
+    columns that portrait would force an unreadably small font."""
+    width, height = page_size
+    objects = {}
+    next_id = [1]
+
+    def alloc(body):
+        oid = next_id[0]
+        next_id[0] += 1
+        objects[oid] = body
+        return oid
+
+    font_ids = {}
+    for name in ("Helvetica", "Helvetica-Bold", "Courier"):
+        font_ids[name] = alloc(
+            f"<< /Type /Font /Subtype /Type1 /BaseFont /{name} >>".encode("ascii"))
+
+    pages_id = alloc(None)  # backfilled below, once every page object id is known
+    page_ids = []
+    for ops in pages:
+        content = "\n".join(ops).encode("ascii", errors="replace")
+        content_id = alloc(
+            f"<< /Length {len(content)} >>\nstream\n".encode("ascii") + content + b"\nendstream")
+        font_res = " ".join(f"/{name} {oid} 0 R" for name, oid in font_ids.items())
+        page_id = alloc(
+            (f"<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 {width:.2f} {height:.2f}] "
+             f"/Resources << /Font << {font_res} >> >> /Contents {content_id} 0 R >>"
+             ).encode("ascii"))
+        page_ids.append(page_id)
+
+    kids = " ".join(f"{pid} 0 R" for pid in page_ids)
+    objects[pages_id] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode("ascii")
+    catalog_id = alloc(f"<< /Type /Catalog /Pages {pages_id} 0 R >>".encode("ascii"))
+
+    buf = bytearray(b"%PDF-1.4\n")
+    offsets = {}
+    for oid in sorted(objects):
+        offsets[oid] = len(buf)
+        buf += f"{oid} 0 obj\n".encode("ascii")
+        buf += objects[oid]
+        buf += b"\nendobj\n"
+    xref_offset = len(buf)
+    total = len(objects) + 1
+    buf += f"xref\n0 {total}\n".encode("ascii")
+    buf += b"0000000000 65535 f \n"
+    for oid in range(1, total):
+        buf += f"{offsets[oid]:010d} 00000 n \n".encode("ascii")
+    buf += (f"trailer\n<< /Size {total} /Root {catalog_id} 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF").encode("ascii")
+
+    with open(path, "wb") as f:
+        f.write(buf)
+
+
+def _pdf_chart_ops(points, x0, y0, w, h, points2=None, translator=None):
+    """Returns PDF content-stream ops drawing the (pietro, numbers/second) growth chart as
+    _draw_growth_chart() (same axis/tick/point layout logic), inside the box
+    [x0, x0+w] x [y0, y0+h] in PDF's bottom-left-origin point space -- kept as a SEPARATE
+    function rather than sharing code with the canvas version, since tkinter's Canvas anchors
+    ("e", "sw", ...) and y-down coordinate system have no PDF equivalent.
+
+    points2 (optional): a SECOND (base_exponent, loop_seconds_per_window) series -- the
+    'fair' seconds/window figure, shown alongside n/s. Drawn as a red line with
+    its OWN right-hand y-axis and its own independent scale (values are tiny decimals,
+    nothing like the primary series' huge integers, so sharing one axis would flatten one of
+    the two lines into a straight line at the bottom). x-axis (pietro) is shared -- its tick
+    set is the UNION of both series' base_exponent values, so a pietro present in only one
+    series still gets an x-tick.
+
+    translator (optional): a primeatlas.i18n.Translator instance -- axis labels reuse the
+    SAME on-screen chart's i18n keys (bench.axis_pietro/axis_nps/axis_spw/no_data_chart,
+    see _draw_growth_chart()) instead of separate hardcoded PDF text, then ASCII-fold the
+    result (see _pdf_ascii_fold()), so every axis label tracks the app's actual language
+    selection instead of a fixed one. Defaults to DEFAULT_LANGUAGE if not given (e.g.
+    direct/test calls)."""
+    t = (translator or Translator(DEFAULT_LANGUAGE)).t
+    points = points or []
+    points2 = points2 or []
+    ops = [_pdf_rect_op(x0, y0, w, h, stroke_rgb=(0.8, 0.8, 0.8), width=0.5)]
+    if not points and not points2:
+        ops.append(_pdf_text_op(x0 + w / 2 - 60, y0 + h / 2, 10, "Helvetica",
+                                 _pdf_ascii_fold(t("bench.no_data_chart"))))
+        return ops
+
+    has_secondary = bool(points2)
+    pad_left = 55
+    pad_right = 55 if has_secondary else 15
+    pad_top, pad_bottom = 20, 30
+    plot_x0 = x0 + pad_left
+    plot_y0 = y0 + pad_bottom
+    plot_w = max(1, w - pad_left - pad_right)
+    plot_h = max(1, h - pad_top - pad_bottom)
+
+    all_xs = sorted({p[0] for p in points} | {p[0] for p in points2})
+    x_min, x_max = min(all_xs), max(all_xs)
+    if x_min == x_max:
+        x_min -= 1
+        x_max += 1
+
+    def y_bounds(pts):
+        ys = [p[1] for p in pts]
+        ylo, yhi = min(ys), max(ys)
+        if ylo == yhi:
+            pad = max(1.0, abs(ylo) * 0.1)
+            ylo -= pad
+            yhi += pad
+        return min(ylo, 0), yhi
+
+    if points:
+        y_min, y_max = y_bounds(points)
+    if has_secondary:
+        y2_min, y2_max = y_bounds(points2)
+
+    # Horizontal inset so the leftmost/rightmost points don't sit flush against the y-axis /
+    # right edge -- their value labels (drawn centered above each point) would otherwise
+    # collide with the y-axis tick labels at the same height. Numbers/second values are wide
+    # (12-14 digit strings), so this collision is far more visible than it was with the old
+    # short 1-2 digit s/10M values.
+    inset_x = max(15.0, plot_w * 0.05)
+
+    def sx(x):
+        return plot_x0 + inset_x + (x - x_min) / (x_max - x_min) * (plot_w - 2 * inset_x)
+
+    def sy(y):
+        return plot_y0 + (y - y_min) / (y_max - y_min) * plot_h
+
+    def sy2(y):
+        return plot_y0 + (y - y2_min) / (y2_max - y2_min) * plot_h
+
+    axis_gray = (0.4, 0.4, 0.4)
+    red = (0.75, 0.2, 0.2)
+    ops.append(_pdf_line_op(plot_x0, plot_y0, plot_x0, plot_y0 + plot_h, rgb=axis_gray))
+    ops.append(_pdf_line_op(plot_x0, plot_y0, plot_x0 + plot_w, plot_y0, rgb=axis_gray))
+    if has_secondary:
+        ops.append(_pdf_line_op(plot_x0 + plot_w, plot_y0, plot_x0 + plot_w, plot_y0 + plot_h,
+                                 rgb=red))
+
+    if points:
+        for i in range(6):
+            y_val = y_min + (y_max - y_min) * i / 5
+            y_px = sy(y_val)
+            ops.append(_pdf_line_op(plot_x0 - 3, y_px, plot_x0, y_px, rgb=axis_gray))
+            ops.append(_pdf_text_op(plot_x0 - 50, y_px - 3, 7, "Courier", f"{y_val:,.0f}"))
+
+    if has_secondary:
+        for i in range(6):
+            y_val = y2_min + (y2_max - y2_min) * i / 5
+            y_px = sy2(y_val)
+            ops.append(_pdf_line_op(plot_x0 + plot_w, y_px, plot_x0 + plot_w + 3, y_px, rgb=red))
+            ops.append(_pdf_text_op(plot_x0 + plot_w + 5, y_px - 3, 7, "Courier",
+                                     f"{y_val:,.3f}"))
+
+    for x_val in all_xs:
+        x_px = sx(x_val)
+        ops.append(_pdf_line_op(x_px, plot_y0, x_px, plot_y0 - 3, rgb=axis_gray))
+        ops.append(_pdf_text_op(x_px - 8, plot_y0 - 14, 7, "Courier", str(x_val)))
+
+    ops.append(_pdf_text_op(plot_x0 + plot_w / 2 - 30, y0 + 4, 8, "Helvetica-Bold",
+                             _pdf_ascii_fold(t("bench.axis_pietro"))))
+    if points:
+        ops.append(_pdf_text_op(x0 + 2, y0 + h - 10, 8, "Helvetica-Bold",
+                                 _pdf_ascii_fold(t("bench.axis_nps"))))
+    if has_secondary:
+        ops.append(_pdf_text_op(x0 + w - 62, y0 + h - 10, 8, "Helvetica-Bold",
+                                 _pdf_ascii_fold(t("bench.axis_spw")), rgb=red))
+
+    if points:
+        if len(points) > 1:
+            coords = [(sx(xv), sy(yv)) for xv, yv in points]
+            for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+                ops.append(_pdf_line_op(x1, y1, x2, y2, width=1.5, rgb=(0.29, 0.56, 0.85)))
+        for x_val, y_val in points:
+            cx, cy = sx(x_val), sy(y_val)
+            ops.append(_pdf_dot_op(cx, cy, 2.5, rgb=(0.11, 0.37, 0.66)))
+            ops.append(_pdf_text_op(cx - 10, cy + 8, 7, "Courier", f"{y_val:,.0f}"))
+
+    if has_secondary:
+        if len(points2) > 1:
+            coords2 = [(sx(xv), sy2(yv)) for xv, yv in points2]
+            for (x1, y1), (x2, y2) in zip(coords2, coords2[1:]):
+                ops.append(_pdf_line_op(x1, y1, x2, y2, width=1.5, rgb=red))
+        for x_val, y_val in points2:
+            cx, cy = sx(x_val), sy2(y_val)
+            ops.append(_pdf_dot_op(cx, cy, 2.5, rgb=red))
+            ops.append(_pdf_text_op(cx - 12, cy - 14, 7, "Courier", f"{y_val:,.3f}", rgb=red))
+
+    return ops
+
+
+def render_benchmark_pdf(path, points, fieldnames, rows, points2=None, translator=None):
+    """Writes a standalone PDF report -- the same growth chart shown in the Benchmark tab
+    plus the FULL benchmark_log.csv table (every row, every column) -- to `path`. The table
+    continues onto as many additional (landscape A4) pages as needed, repeating the column
+    header row on each one, since a project running for months can accumulate far more rows
+    than fit on one page. Pure function (no tkinter) so it can be exercised/tested without a
+    display -- the GUI layer (_export_benchmark_pdf) just gathers the same
+    points/fieldnames/rows this app already holds for the on-screen chart/table and hands
+    them here unchanged.
+
+    points2 (optional): second (base_exponent, loop_seconds_per_window) series, drawn as a
+    second red line on its own right-hand y-axis -- see _pdf_chart_ops().
+
+    translator (optional): a primeatlas.i18n.Translator instance, threaded into
+    _pdf_chart_ops() and used for the title/subtitle/continuation-page header below --
+    defaults to DEFAULT_LANGUAGE if not given. The title/subtitle/continuation text and
+    axis labels are all translator-driven so the report is consistently in one language,
+    matching whatever the app's language setting actually is, rather than mixing
+    languages across different pieces of chrome. Table column headers (`fieldnames`) are
+    deliberately left alone -- they're the raw benchmark_log.csv
+    column names, same untranslated technical identifiers already shown as-is in the
+    on-screen Benchmark tab's own Treeview (see self.benchmark_tree.heading(col,
+    text=col)), not app-owned UI vocabulary."""
+    t = (translator or Translator(DEFAULT_LANGUAGE)).t
+    page_w, page_h = 841.89, 595.28  # A4 landscape, points
+    margin = 30
+    content_left = margin
+    content_width = page_w - 2 * margin
+    content_top = page_h - margin
+    content_bottom = margin
+
+    font_size = 6.5
+    row_h = 12
+    header_h = 14
+    n_cols = max(1, len(fieldnames))
+    col_w = content_width / n_cols
+    max_chars = max(3, int(col_w / (0.6 * font_size)))  # ~0.6*size = Courier's fixed
+                                                          # advance width per character
+
+    def cell_text(value):
+        s = "" if value is None else str(value)
+        if len(s) > max_chars:
+            s = s[:max(0, max_chars - 3)] + "..."
+        return s
+
+    def draw_table_header(ops, y_top):
+        ops.append(_pdf_rect_op(content_left, y_top - header_h, content_width, header_h,
+                                 fill_rgb=(0.90, 0.90, 0.90)))
+        for i, name in enumerate(fieldnames):
+            ops.append(_pdf_text_op(content_left + i * col_w + 2, y_top - header_h + 3,
+                                     font_size, "Helvetica-Bold", cell_text(name)))
+        return y_top - header_h
+
+    def draw_table_rows(ops, y_top, row_slice):
+        y = y_top
+        for row in row_slice:
+            for i, name in enumerate(fieldnames):
+                ops.append(_pdf_text_op(content_left + i * col_w + 2, y - row_h + 3,
+                                         font_size, "Courier", cell_text(row.get(name, ""))))
+            y -= row_h
+        return y
+
+    pages = []
+
+    # --- page 1: title + chart + as many table rows as fit below it ---
+    ops = []
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ops.append(_pdf_text_op(content_left, content_top - 14, 14, "Helvetica-Bold",
+                             _pdf_ascii_fold(t("bench.pdf_title"))))
+    ops.append(_pdf_text_op(content_left, content_top - 30, 9, "Helvetica",
+                             _pdf_ascii_fold(t("bench.pdf_subtitle", now=now_str,
+                                               runs=len(rows), depths=len(points)))))
+    chart_h = 180
+    chart_top = content_top - 40
+    chart_y0 = chart_top - chart_h
+    ops.extend(_pdf_chart_ops(points, content_left, chart_y0, content_width, chart_h,
+                               points2=points2, translator=translator))
+
+    table_top = chart_y0 - 12
+    y_after_header = draw_table_header(ops, table_top)
+    available = y_after_header - content_bottom
+    rows_fit = max(0, int(available // row_h))
+    draw_table_rows(ops, y_after_header, rows[:rows_fit])
+    pages.append(ops)
+
+    # --- continuation pages: just the table, repeating the header row ---
+    remaining = rows[rows_fit:]
+    page_num = 2
+    while remaining:
+        ops = []
+        ops.append(_pdf_text_op(content_left, content_top - 12, 10, "Helvetica-Bold",
+                                 _pdf_ascii_fold(t("bench.pdf_continued", page=page_num))))
+        table_top = content_top - 22
+        y_after_header = draw_table_header(ops, table_top)
+        available = y_after_header - content_bottom
+        rows_fit = max(1, int(available // row_h))  # at least 1, so a single
+                                                       # oversized/edge-case row can't loop
+                                                       # forever without making progress
+        chunk = remaining[:rows_fit]
+        draw_table_rows(ops, y_after_header, chunk)
+        pages.append(ops)
+        remaining = remaining[len(chunk):]
+        page_num += 1
+
+    _write_pdf(path, pages, page_size=(page_w, page_h))
+
+
+def digit_count_floor(number):
+    """A window at piętro N holds numbers in [10^N, ...), which all have N+1 digits (in
+    the overwhelming common case -- windows practically never straddle a power-of-10
+    boundary). So the digit count of `number` directly tells us which piętro to look in
+    first, without having to scan every piętro folder."""
+    return len(str(number)) - 1
+
+
+def _eval_quick_number(raw):
+    """Best-effort parse of a Python-expression-style number (e.g. "10**5") -- shared by
+    every numeric field in the Szybkie generowanie panel. Returns an int, or None if
+    `raw` is blank/unparseable; callers
+    treat None as "no value given" rather than raising, e.g. to decide whether the
+    Piętro field should be auto-computed or left for manual entry (see
+    _on_quick_floor_start_changed). Restricted eval (no builtins) -- this is a personal
+    desktop tool, not a network-facing service, but there's no reason to allow arbitrary
+    code execution just to parse a number typed into a text field."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(eval(raw, {"__builtins__": {}}, {}))
+    except Exception:
+        return None
+
+
+def _round_range_to_window(start, end, window=QUICK_GEN_MAX_WINDOW_WIDTH):
+    """Zakres od/do quick-gen mode: the on-disk window format doesn't change here either,
+    so a requested [start, end) span is always widened out to whole `window`-sized chunks
+    -- start rounded DOWN to the nearest multiple, end rounded UP -- so generation never
+    falls short of what was asked for. Example: 12,000,000..309,000,000 ->
+    10,000,000..310,000,000 (window=10,000,000). Plain floor/ceil division; a start or
+    end that's already an exact multiple is left unchanged."""
+    rounded_start = (start // window) * window
+    rounded_end = -(-end // window) * window  # ceiling division without importing math
+    return rounded_start, rounded_end
+
+
+def _read_base_prime(path):
+    """Just the one field find_prime_in_floor's binary search actually needs -- still a
+    full header read (there's no cheaper way to get a real base_prime without opening the
+    file), but callers control exactly how many of these happen, unlike the old
+    list_source_files()-based approach which read every window's header unconditionally."""
+    try:
+        header = prime_sieve_v1.read_prime_window_header(path)
+    except Exception:
+        return None
+    return header.get("base_prime") if header else None
+
+
+def find_prime_in_floor(portal_folder, base_exponent, number):
+    """Searches PGS2 source windows under 10p{base_exponent} for `number`.
+
+    Windows are non-overlapping and written in strictly increasing target_idx order, so
+    their base_primes are guaranteed ascending too -- each window's base_prime falls
+    somewhere inside that window's own [start, start+window_m) range, and those ranges
+    never overlap between windows. That means a binary search for the rightmost window
+    with base_prime <= number identifies the ONE window whose numeric range could contain
+    `number` (plus its immediate neighbor, as a constant-cost safety net against an
+    off-by-one boundary edge case) -- and, critically, the search only needs to read a
+    header for the O(log N) windows it actually PROBES, not every window in the piętro.
+
+    This replaced an earlier version that called list_source_files() (reads every
+    window's header up front) before bisecting in memory -- fine at hundreds of windows,
+    but 10p15 alone has passed 14,000: reading every header on every search made the
+    feature unusably slow/freeze-prone at that scale (~14,000 file opens vs. ~14 for a
+    14,000-window binary search). Listing filenames is still cheap (list_source_filenames,
+    no I/O) -- only actual header reads are now bounded.
+
+    A handful of unreadable headers along the search path (corrupt/truncated files --
+    should be rare) are tolerated by trying the next index once rather than aborting the
+    whole search; if that neighbor is ALSO unreadable, the search conservatively narrows
+    away from that pivot instead of guessing.
+
+    Returns a dict {name, path, primes, index} on success (index = position of `number`
+    within that file's decoded, sorted prime list), or None if not found.
+    """
+    windows = list_source_filenames(portal_folder, base_exponent)  # cheap: no file I/O
+    if not windows:
+        return None
+    n = len(windows)
+
+    def _check(idx):
+        name, path = windows[idx]
+        try:
+            primes = prime_sieve_v1.read_prime_window(path)
+        except Exception:
+            return None
+        pos = bisect.bisect_left(primes, number)
+        if pos < len(primes) and primes[pos] == number:
+            return {"name": name, "path": path, "primes": primes, "index": pos}
+        return None
+
+    lo, hi = 0, n - 1
+    best = -1  # rightmost index seen so far with base_prime <= number
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        bp = _read_base_prime(windows[mid][1])
+        if bp is None and mid + 1 <= hi:
+            mid += 1
+            bp = _read_base_prime(windows[mid][1])
+        if bp is None:
+            hi = mid - 1
+            continue
+        if bp <= number:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    candidate_indices = []
+    if best >= 0:
+        candidate_indices.append(best)
+    if best + 1 < n:
+        candidate_indices.append(best + 1)
+
+    for idx in candidate_indices:
+        result = _check(idx)
+        if result is not None:
+            return result
+    return None
+
+
+def find_constellation_participation(portal_folder, base_exponent, number, hit_set_cache=None,
+                                      progress_callback=None):
+    """For every catalog pattern with an existing hit file at this piętro, checks whether
+    `number` participates in any recorded hit -- either as the BASE (offset +0) or as any
+    other fixed-offset member (base = number - offset). A number can legitimately show up
+    in more than one pattern at once (e.g. any k=4 hit's base is also, by construction, a
+    k=3 and k=2 hit's base -- sub-tuples of a longer pattern), so this returns every match,
+    not just the first.
+
+    `hit_set_cache`, if given, is a dict keyed by (base_exponent, k, id) -> set of decoded
+    starting values; reused across repeated searches in the same session so each hit file
+    is only decoded once rather than on every search.
+
+    `progress_callback(done, total)`, if given, is called once per pattern AFTER it's been
+    processed (whether that meant a fresh, potentially slow prime_sieve_v1.read_prime_window()
+    decode or a cache hit) -- a piętro's FIRST-ever constellation search can decode dozens
+    of full hit files synchronously (nothing cached yet), which is the actual slow part of
+    this feature (find_prime_in_floor's own binary search is fast in comparison -- see
+    that function's docstring). The GUI thread never
+    calls this directly anymore; prime_atlas_v1's _search_worker_loop does, off the main
+    thread, and turns each progress_callback invocation into a queued message that drives
+    the shared status/progress bar (see _poll_search_results).
+
+    Returns a list of dicts: {pattern, offset, position, base} (position is 0-indexed --
+    0 means "this IS the base of the tuple").
+    """
+    if hit_set_cache is None:
+        hit_set_cache = {}
+    entries = list_constellation_hits(portal_folder, base_exponent)
+    total = len(entries)
+    results = []
+    for done, (pattern, path, header) in enumerate(entries, start=1):
+        if header is None or header.get("count", 0) == 0:
+            if progress_callback is not None:
+                progress_callback(done, total)
+            continue
+        key = (base_exponent, pattern["k"], pattern["id"])
+        if key not in hit_set_cache:
+            try:
+                hit_set_cache[key] = set(prime_sieve_v1.read_prime_window(path))
+            except Exception:
+                hit_set_cache[key] = set()
+        starts = hit_set_cache[key]
+        for position, offset in enumerate(pattern["offsets"]):
+            base = number - offset
+            if base in starts:
+                results.append({"pattern": pattern, "offset": offset, "position": position, "base": base})
+        if progress_callback is not None:
+            progress_callback(done, total)
+    return results
+
+
+# ------------------------------------------------------------------------------------------
+# Generation launcher -- settings persistence + WSL command building for running
+# orchestrator_loop_v2.py and constellation_finder_v1.py from inside the GUI's
+# "Generowanie" tab instead of a manual WSL terminal. Kept in this pure-logic section (no
+# tkinter dependency) so the command-building/settings-merge/subprocess-streaming logic can
+# be exercised without a display, same reasoning as everything else above.
+# ------------------------------------------------------------------------------------------
+
+GENERATION_SETTINGS_FILENAME = ".portal_generation_settings.json"
+
+# Mirrors orchestrator_loop_v2.py's own module-level defaults (WINDOW_COUNT_PER_RUN=1000,
+# WORKERS=24, BATCHES_PER_WORKER=2). Duplicated here (not imported) rather than importing
+# orchestrator_loop_v2 directly, because that module requires WSL/ctypes to actually RUN
+# (prime_sieve_v3.py, three hops down its import chain, ctypes-loads a Linux .so) -- this
+# native-Windows tkinter app must never gain that dependency just to read a constant. If
+# those scripts' defaults ever change, update both places.
+DEFAULT_GENERATION_SETTINGS = {
+    "loop": {
+        "base_exponent": "20",
+        "run_count": "1",
+        "n_instances": "2",
+        "write_files": True,
+        "compute_sieving_primes_count": False,
+        "window_count_per_run": "1000",
+        "workers": "24",
+        "batches_per_worker": "2",
+        "window_m": "10000000",  # mirrors orchestrator_loop_helpers.py's own
+                                  # WINDOW_M -- see build_loop_argv()'s docstring for the
+                                  # cross-piętro-consistency caveat before changing this.
+    },
+    "constellation": {
+        "base_exponent": "",  # blank = auto (every piętro with source data -- see
+                               # constellation_finder_v1.list_pietra_with_data())
+    },
+}
+
+
+def _generation_settings_path(portal_folder):
+    return os.path.join(portal_folder, GENERATION_SETTINGS_FILENAME)
+
+
+def load_generation_settings(portal_folder):
+    """Returns the persisted Generowanie-tab form values, merged over
+    DEFAULT_GENERATION_SETTINGS so a settings file saved before some field existed (schema
+    grew since) or a missing/corrupt file still yields a complete dict with every key
+    present -- same defensive shape as load_totals_cache(). Never raises."""
+    merged = {section: dict(values) for section, values in DEFAULT_GENERATION_SETTINGS.items()}
+    path = _generation_settings_path(portal_folder)
+    if not os.path.exists(path):
+        return merged
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return merged
+    if not isinstance(data, dict):
+        return merged
+    for section, values in merged.items():
+        loaded = data.get(section)
+        if isinstance(loaded, dict):
+            values.update(loaded)
+    return merged
+
+
+def save_generation_settings(portal_folder, settings):
+    """Atomic write (temp file + os.replace()), same pattern as save_totals_cache()."""
+    path = _generation_settings_path(portal_folder)
+    tmp_path = f"{path}.tmp{os.getpid()}"
+    try:
+        os.makedirs(portal_folder, exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except OSError:
+        pass  # best-effort -- a failed settings save just means the next launch reuses
+              # whatever was last persisted (or the defaults, if nothing ever saved)
+
+
+_WINDOWS_DRIVE_PATH_RE = re.compile(r'^([A-Za-z]):[\\/](.*)$')
+
+
+def windows_path_to_wsl(path):
+    """Translates a native Windows absolute path (e.g. "H:\\Liczby pierwsze magazyn\\...")
+    to its WSL mount-point equivalent ("/mnt/h/Liczby pierwsze magazyn/...") -- the same
+    mapping orchestrator_v3.py's/prime_sieve_v3.py's own __main__ blocks hardcode for
+    BASE_STORAGE_10PN (see those files: "if os.name == 'nt': ... else: /mnt/h/..."). A path
+    with no drive-letter prefix is returned with backslashes flipped to forward slashes,
+    unchanged otherwise (so already-WSL-style input passes through as-is)."""
+    m = _WINDOWS_DRIVE_PATH_RE.match(path)
+    if not m:
+        return path.replace("\\", "/")
+    drive = m.group(1).lower()
+    rest = m.group(2).replace("\\", "/")
+    return f"/mnt/{drive}/{rest}"
+
+
+ORCHESTRATOR_LOOP_SCRIPT = os.path.abspath(
+    os.path.join(_SCRIPT_DIR, "prime_sieve", "orchestrator_loop_v2.py"))
+CONSTELLATION_FINDER_SCRIPT = os.path.abspath(
+    os.path.join(_SCRIPT_DIR, "constellation", "constellation_finder_v1.py"))
+
+
+def build_loop_argv(base_exponent, run_count, n_instances, write_files,
+                     compute_sieving_primes_count, window_count_per_run,
+                     workers, batches_per_worker, window_m, script_path=None):
+    """Returns the LINUX-side argv (["python3", "-u", script, args...]) for running
+    orchestrator_loop_v2.py -- NOT yet wrapped in a wsl.exe invocation (see
+    build_wsl_logged_command() for that). Argument order matches that script's __main__
+    CLI EXACTLY (see its module-header "Usage (WSL)" comment): <base_exponent> <run_count>
+    <n_instances> <write_files 0/1> <compute_sieving_primes_count 0/1>
+    <window_count_per_run> <workers> <batches_per_worker> <window_m> -- ALL 9 positions are
+    always passed explicitly, never conditionally omitted, so a value the GUI form shows can
+    never silently fall back to that script's own hardcoded default instead (same
+    discipline build_instance_cmd() in orchestrator_loop_v2.py itself follows -- see that
+    function's docstring).
+
+    window_m: how many numbers each "window" (target_idx step) covers -- a real
+    CLI-overridable parameter, same as workers/batches_per_worker, rather than the
+    10,000,000 hardcoded in prime_sieve_v3.py/orchestrator_v3.py/
+    orchestrator_loop_helpers.py. NOTE (surfaced in the GUI field's own label/tooltip too,
+    not just here): changing this for a piętro that ALREADY has PRIME_WINDOW_*.bin files
+    written with a DIFFERENT window_m breaks auto-resume (the next run would compute a
+    wrong/misaligned starting target_idx) -- only safe to change for a piętro with no
+    existing data yet.
+
+    The `-u` flag forces Python's stdout/stderr to be
+    UNBUFFERED instead of the fully-buffered mode it defaults to whenever stdout isn't a
+    terminal (exactly the case here -- see build_wsl_logged_command()'s `> logfile`
+    redirect). Without it, print() output sits in an in-process buffer and isn't actually
+    written to the log file until that buffer fills (several KB) or the process exits --
+    for a script whose print volume is low relative to its runtime (constellation_finder_
+    v1.py's per-window progress lines, especially early in a long first-time run against a
+    heavily-populated piętro), that can mean WslLoggedRunner's live tail shows NOTHING for
+    a very long time even though the process is working correctly and already writing real
+    results to disk incrementally -- indistinguishable from a genuine hang from the GUI's
+    point of view."""
+    script = script_path if script_path is not None else ORCHESTRATOR_LOOP_SCRIPT
+    script_wsl = windows_path_to_wsl(script)
+    return [
+        "python3", "-u", script_wsl,
+        str(base_exponent), str(run_count), str(n_instances),
+        "1" if write_files else "0",
+        "1" if compute_sieving_primes_count else "0",
+        str(window_count_per_run), str(workers), str(batches_per_worker), str(window_m),
+    ]
+
+
+def build_constellation_finder_argv(base_exponent=None, script_path=None):
+    """Returns the LINUX-side argv for constellation_finder_v1.py, whose CLI is
+    `[<base_exponent>]` -- a single OPTIONAL positional arg, omitted entirely (not passed
+    as an empty string) when base_exponent is None/blank, matching that script's own
+    auto-detect-every-populated-piętro behavior (list_pietra_with_data()) when it's
+    called with no argument at all. Not yet wrapped in a wsl.exe invocation -- see
+    build_wsl_logged_command(). Uses `-u` (unbuffered stdout) for the same reason
+    build_loop_argv() does -- see that function's docstring; this script's low per-window
+    print volume made it the one where the default full-buffering was actually reported
+    as a problem."""
+    script = script_path if script_path is not None else CONSTELLATION_FINDER_SCRIPT
+    script_wsl = windows_path_to_wsl(script)
+    argv = ["python3", "-u", script_wsl]
+    if base_exponent not in (None, ""):
+        argv.append(str(base_exponent))
+    return argv
+
+
+GENERATION_LOGS_DIRNAME = ".generation_logs"
+
+
+def generation_log_paths(portal_folder, prefix):
+    """Allocates a fresh (windows_log_path, windows_exit_path, run_id) triple under
+    CONSTELLATION_PORTAL/.generation_logs/ for one subprocess run. Both paths sit on the
+    same H:\\ mount WSL already sees at /mnt/h/... -- the Linux-side redirect (see
+    build_wsl_logged_command()) and this app's own file-tailing (see WslLoggedRunner) are
+    reading/writing the exact same physical file, so no WSL<->Windows translation is ever
+    needed on the READ side, only when building the bash command itself."""
+    logs_dir = os.path.join(portal_folder, GENERATION_LOGS_DIRNAME)
+    os.makedirs(logs_dir, exist_ok=True)
+    run_id = f"{prefix}_{int(time.time() * 1000)}_{os.getpid()}"
+    return (os.path.join(logs_dir, f"{run_id}.log"),
+            os.path.join(logs_dir, f"{run_id}.exit"),
+            run_id)
+
+
+def build_wsl_logged_command(argv, windows_log_path, windows_exit_path):
+    """Wraps a Linux-side argv (e.g. ["python3", "/mnt/h/.../script.py", "20", ...]) in a
+    `wsl.exe -e bash -c "..."` invocation that redirects combined stdout+stderr into
+    windows_log_path (translated to its WSL mount path) and writes the process's exit
+    code into windows_exit_path afterward -- see WslLoggedRunner's docstring for why
+    file-based redirection replaced an earlier subprocess.PIPE-against-wsl.exe's-own-
+    stdout approach. Every token is individually shell-quoted (shlex.quote) so the space
+    in "Liczby pierwsze magazyn" (and anything else) survives bash -c's re-parsing --
+    the exec-mode `wsl.exe -e <argv>` form used elsewhere in this app deliberately avoids
+    a shell entirely for that reason, but the `>`/`;` here are shell syntax and need one."""
+    log_wsl = windows_path_to_wsl(windows_log_path)
+    exit_wsl = windows_path_to_wsl(windows_exit_path)
+    inner = " ".join(shlex.quote(str(t)) for t in argv)
+    # CONSTELLATION_PORTAL_DIR, set via prime_atlas_v1.py's Ustawienia tab: a plain
+    # os.environ[...] set in THIS (Windows) process does NOT automatically cross into
+    # wsl.exe's Linux environment (that needs WSLENV, which this app doesn't otherwise use)
+    # -- so the override is prepended directly to the bash -c command line instead, the one
+    # mechanism guaranteed to work regardless of WSLENV configuration. This makes every WSL
+    # launch through this function (i.e. every Generowanie-tab run) automatically honor
+    # whatever storage path is currently configured, with no per-call-site changes needed.
+    portal_wsl = windows_path_to_wsl(PORTAL_FOLDER)
+    env_prefix = f"CONSTELLATION_PORTAL_DIR={shlex.quote(portal_wsl)} "
+    bash_cmd = (f"{env_prefix}{inner} > {shlex.quote(log_wsl)} 2>&1; "
+                f"echo $? > {shlex.quote(exit_wsl)}")
+    return ["wsl.exe", "-e", "bash", "-c", bash_cmd]
+
+
+def _popen_kwargs_no_window():
+    kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
+
+
+class WslLoggedRunner:
+    """Runs a WSL command with output redirected to files on disk (build_wsl_logged_
+    command()) instead of relying on subprocess.PIPE against wsl.exe's own stdout.
+
+    A pipe-based approach doesn't work reliably here: launching wsl.exe from a
+    console-less parent process (this is a windowed tkinter app, not a console app) can
+    make Windows/WSL's own console-allocation machinery open a SEPARATE, real terminal
+    window that receives the script's actual output, while the pipe this app reads from
+    gets nothing and never sees EOF -- so the app never learns the run finished. A
+    terminal window shows the script running, but neither the user nor the app itself
+    can tell from its own UI whether or when the run finished. Redirecting entirely on
+    the Linux side sidesteps that: the log/exit-code
+    files are ordinary files on the same H:\\ mount both Windows and WSL already share,
+    tailed directly with plain Python file I/O on a background daemon thread -- no pipe,
+    no console, no WSL console-interop quirks anywhere in the actual data path, whatever
+    window WSL itself chooses to pop up (or not) along the way.
+
+    `output_queue` receives plain text chunks, then a final ("__exit__", returncode)
+    sentinel tuple once the run is done (returncode
+    is None if the run never started, or if the wrapper process ended without ever
+    writing the exit-code file -- see the grace-period handling in _tail_loop()) -- so
+    the GUI polling code (_drain_output_queue) needed no changes to support this class.
+
+    stop() remains best-effort for the reason above (WSL's process-lifecycle model
+    doesn't guarantee terminate()ing the Windows-side wrapper kills the Linux process
+    underneath) -- this additionally fires a one-shot `wsl.exe -e pkill -f kill_pattern`
+    as a second, independent attempt at reaching the actual Linux process tree. Matching
+    by substring against the running command line is safe here specifically because the
+    GUI only ever allows one instance of a given script to run at a time (see the
+    is_running() checks in _on_run_loop/_on_run_constellation) -- kill_pattern is that
+    script's own filename, which should not collide with anything else.
+
+    No tkinter dependency -- exercised directly (substituting a plain `bash -c` command
+    for the `wsl.exe -e bash -c` form, since this class only cares about the log/exit
+    FILES, not what actually wrote them) without a display or a real WSL install."""
+
+    POLL_INTERVAL = 0.2
+    EXIT_MARKER_GRACE_SECONDS = 2.0
+
+    def __init__(self, cmd, log_path, exit_path, output_queue, kill_pattern=None):
+        self.cmd = cmd
+        self.log_path = log_path
+        self.exit_path = exit_path
+        self.output_queue = output_queue
+        self.kill_pattern = kill_pattern
+        self.proc = None
+        self._thread = None
+
+    def start(self):
+        self.output_queue.put(f"$ {' '.join(self.cmd)}\n")
+        try:
+            self.proc = subprocess.Popen(self.cmd, **_popen_kwargs_no_window())
+        except OSError as e:
+            self.output_queue.put(f"[!] Nie udalo sie uruchomic procesu: {e}\n")
+            self.output_queue.put(("__exit__", None))
+            return
+        self._thread = threading.Thread(target=self._tail_loop, daemon=True)
+        self._thread.start()
+
+    def _tail_loop(self):
+        offset = 0
+        grace_deadline = None
+        try:
+            while True:
+                offset = self._drain_new_log_bytes(offset)
+                if os.path.exists(self.exit_path):
+                    time.sleep(0.1)  # let a just-flushed final write land before the
+                                      # last drain, so the tail-end of the script's
+                                      # output isn't cut off by a race with echo $? >
+                    offset = self._drain_new_log_bytes(offset)
+                    returncode = self._read_exit_code()
+                    self._cleanup_files()
+                    self.output_queue.put(("__exit__", returncode))
+                    return
+                if self.proc.poll() is not None:
+                    # Wrapper process ended but never wrote the exit marker (e.g. wsl.exe
+                    # itself failed before reaching the redirect) -- give the filesystem
+                    # a brief grace period before giving up, rather than reporting a
+                    # false failure on every ordinary run (write latency on the underlying
+                    # mount is real).
+                    if grace_deadline is None:
+                        grace_deadline = time.time() + self.EXIT_MARKER_GRACE_SECONDS
+                    elif time.time() > grace_deadline:
+                        offset = self._drain_new_log_bytes(offset)
+                        self.output_queue.put(
+                            "[!] Proces wsl.exe zakonczyl sie bez zapisania kodu wyjscia.\n")
+                        self._cleanup_files()
+                        self.output_queue.put(("__exit__", None))
+                        return
+                time.sleep(self.POLL_INTERVAL)
+        except Exception as e:  # noqa: BLE001 -- must never kill this thread silently
+            self.output_queue.put(f"[!] Blad odczytu logu: {e}\n")
+            self.output_queue.put(("__exit__", None))
+
+    def _drain_new_log_bytes(self, offset):
+        if not os.path.exists(self.log_path):
+            return offset
+        try:
+            with open(self.log_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(offset)
+                chunk = f.read()
+                new_offset = f.tell()
+        except OSError:
+            return offset
+        if chunk:
+            self.output_queue.put(chunk)
+        return new_offset
+
+    def _read_exit_code(self):
+        try:
+            with open(self.exit_path, encoding="utf-8") as f:
+                raw = f.read().strip()
+            return int(raw)
+        except (OSError, ValueError):
+            return None
+
+    def _cleanup_files(self):
+        """Best-effort delete of the log/exit files once fully drained and reported --
+        keeps .generation_logs/ from growing unbounded across months of runs. The GUI
+        already shows the full output live in its own pane, so nothing is lost."""
+        for path in (self.log_path, self.exit_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def is_running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def stop(self):
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
+            except OSError:
+                pass
+        if self.kill_pattern:
+            try:
+                subprocess.Popen(["wsl.exe", "-e", "pkill", "-f", self.kill_pattern],
+                                  **_popen_kwargs_no_window())
+            except OSError:
+                pass
+
+
+# ------------------------------------------------------------------------------------------
+# GUI (tkinter). Four tabs: "Liczby pierwsze", "Konstelacje", "Generowanie", "Benchmark".
+# ------------------------------------------------------------------------------------------
+
+def _render_page(listbox, values, page, page_size, formatter):
+    """Replaces `listbox`'s contents with page `page` (0-indexed) of `values`, rendering
+    each entry with `formatter(value) -> str`. Page-based navigation (as opposed to the
+    earlier cumulative "load more" approach): each call fully replaces what's shown, so
+    there's no growing/duplicate-trailer state to track -- Prev/Next/jump-to-page just
+    call this again with a different page index. Returns (clamped_page, total_pages)."""
+    total = len(values)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    listbox.delete(0, "end")
+    start = page * page_size
+    end = min(start + page_size, total)
+    for v in values[start:end]:
+        listbox.insert("end", formatter(v))
+    return page, total_pages
+
+
+def _update_nav_controls(page_label_var, page, total_pages, prev_btn, next_btn):
+    """Shared by both preview panes: updates the "Page X / Y" label and enables/disables
+    the Prev/Next buttons at the boundaries."""
+    page_label_var.set(T("common.page_label", page=page + 1, total=total_pages))
+    prev_btn.configure(state="normal" if page > 0 else "disabled")
+    next_btn.configure(state="normal" if page < total_pages - 1 else "disabled")
+
+
+def _draw_growth_chart(canvas, points, width, height, points2=None):
+    """Draws (base_exponent, loop_numbers_per_second) points onto `canvas` as a simple axes +
+    connected-scatter chart -- x = piętro depth, y = numbers swept per second (real
+    session-level wall-clock throughput, higher is better). Plain
+    tk.Canvas drawing, no charting library: this app is deliberately zero-extra-installs
+    (see module header), and a handful of axis lines + dots doesn't need one. Clears the
+    canvas first, so this is safe to call again on refresh/resize (bound to <Configure>).
+
+    points2 (optional): a SECOND (base_exponent, loop_seconds_per_window) series -- the
+    'fair' seconds/window figure, shown alongside n/s. Drawn as a red line on
+    its own right-hand y-axis with an independent scale (see _pdf_chart_ops()'s docstring for
+    why it needs its own axis rather than sharing the primary one)."""
+    canvas.delete("all")
+    if width <= 1 or height <= 1:
+        return  # not yet realized/sized
+    points = points or []
+    points2 = points2 or []
+    if not points and not points2:
+        canvas.create_text(width / 2, height / 2, text=T("bench.no_data_chart"),
+                            fill="#888888")
+        return
+
+    has_secondary = bool(points2)
+    pad_left = 70
+    pad_right = 70 if has_secondary else 24
+    pad_top, pad_bottom = 40, 40
+    # pad_top has room ABOVE the topmost y-tick (which sits right at pad_top) for the axis
+    # title below -- it used to sit almost on top of that tick's label (both landed within
+    # a few px of each other near the top-left corner) and visually merged into one
+    # unreadable blob.
+    plot_w = max(1, width - pad_left - pad_right)
+    plot_h = max(1, height - pad_top - pad_bottom)
+
+    all_xs = sorted({p[0] for p in points} | {p[0] for p in points2})
+    x_min, x_max = min(all_xs), max(all_xs)
+    if x_min == x_max:
+        x_min -= 1
+        x_max += 1
+
+    def y_bounds(pts):
+        ys = [p[1] for p in pts]
+        ylo, yhi = min(ys), max(ys)
+        if ylo == yhi:
+            pad = max(1.0, abs(ylo) * 0.1)
+            ylo -= pad
+            yhi += pad
+        return min(ylo, 0), yhi  # anchor at (or below) zero -- growth should read honest
+
+    if points:
+        y_min, y_max = y_bounds(points)
+    if has_secondary:
+        y2_min, y2_max = y_bounds(points2)
+
+    # Same horizontal inset as _pdf_chart_ops() -- see that function's comment for why.
+    inset_x = max(15.0, plot_w * 0.05)
+
+    def sx(x):
+        return pad_left + inset_x + (x - x_min) / (x_max - x_min) * (plot_w - 2 * inset_x)
+
+    def sy(y):
+        return pad_top + plot_h - (y - y_min) / (y_max - y_min) * plot_h
+
+    def sy2(y):
+        return pad_top + plot_h - (y - y2_min) / (y2_max - y2_min) * plot_h
+
+    canvas.create_line(pad_left, pad_top, pad_left, pad_top + plot_h, fill="#666666")
+    canvas.create_line(pad_left, pad_top + plot_h, pad_left + plot_w, pad_top + plot_h,
+                        fill="#666666")
+    if has_secondary:
+        canvas.create_line(pad_left + plot_w, pad_top, pad_left + plot_w, pad_top + plot_h,
+                            fill="#c0504d")
+
+    if points:
+        for i in range(6):
+            y_val = y_min + (y_max - y_min) * i / 5
+            y_px = sy(y_val)
+            canvas.create_line(pad_left - 4, y_px, pad_left, y_px, fill="#666666")
+            canvas.create_text(pad_left - 8, y_px, text=f"{y_val:,.0f}", anchor="e",
+                                font=("Consolas", 8))
+
+    if has_secondary:
+        for i in range(6):
+            y_val = y2_min + (y2_max - y2_min) * i / 5
+            y_px = sy2(y_val)
+            canvas.create_line(pad_left + plot_w, y_px, pad_left + plot_w + 4, y_px,
+                                fill="#c0504d")
+            canvas.create_text(pad_left + plot_w + 8, y_px, text=f"{y_val:,.3f}", anchor="w",
+                                font=("Consolas", 8), fill="#c0504d")
+
+    for x_val in all_xs:
+        x_px = sx(x_val)
+        canvas.create_line(x_px, pad_top + plot_h, x_px, pad_top + plot_h + 4, fill="#666666")
+        canvas.create_text(x_px, pad_top + plot_h + 8, text=str(x_val), anchor="n",
+                            font=("Consolas", 8))
+
+    canvas.create_text(pad_left + plot_w / 2, height - 8, text=T("bench.axis_pietro"),
+                        font=("Consolas", 8, "bold"))
+    # Sits in the padding strip ABOVE the plot area (not overlapping any tick label, which
+    # all live at y >= pad_top) -- anchored "sw" so its BOTTOM edge, not its top, is what's
+    # positioned, keeping a consistent small gap above the topmost tick regardless of font
+    # metrics.
+    if points:
+        canvas.create_text(4, pad_top - 10, text=T("bench.axis_nps"), anchor="sw",
+                            font=("Consolas", 8, "bold"))
+    if has_secondary:
+        canvas.create_text(width - 4, pad_top - 10, text=T("bench.axis_spw"), anchor="se",
+                            font=("Consolas", 8, "bold"), fill="#c0504d")
+
+    if points:
+        if len(points) > 1:
+            coords = []
+            for x_val, y_val in points:
+                coords.extend([sx(x_val), sy(y_val)])
+            canvas.create_line(*coords, fill="#4a90d9", width=2)
+
+        r = 4
+        for x_val, y_val in points:
+            cx, cy = sx(x_val), sy(y_val)
+            canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#1c5fa8", outline="")
+            canvas.create_text(cx, cy - r - 8, text=f"{y_val:,.0f}", font=("Consolas", 8))
+
+    if has_secondary:
+        if len(points2) > 1:
+            coords2 = []
+            for x_val, y_val in points2:
+                coords2.extend([sx(x_val), sy2(y_val)])
+            canvas.create_line(*coords2, fill="#c0504d", width=2)
+
+        r = 4
+        for x_val, y_val in points2:
+            cx, cy = sx(x_val), sy2(y_val)
+            canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#c0504d", outline="")
+            canvas.create_text(cx, cy + r + 8, text=f"{y_val:,.3f}", font=("Consolas", 8),
+                                fill="#c0504d")
+
+
+def _build_gui():
+    import tkinter as tk
+    from tkinter import ttk, messagebox, filedialog
+    from tkinter.scrolledtext import ScrolledText
+    # The Ustawienia tab's widgets live in their own package (primeatlas/) as a
+    # proper class (SettingsTab), not more nested functions on PortalBrowserApp -- see
+    # this file's module docstring and settings_tab.py's own docstring for the full
+    # rationale. Imported here (inside _build_gui(), not at module top level) for the
+    # same reason tkinter itself is: it keeps this module's top-level prefix (everything
+    # above _build_gui) importable/testable without tkinter installed.
+    from primeatlas.settings_tab import SettingsTab
+
+    class PortalBrowserApp(tk.Tk):
+        def __init__(self):
+            super().__init__()
+            self.title(T("app.title"))
+            self.geometry("1050x680")
+
+            # status_frame is created and packed BEFORE the notebook, not after. tkinter's
+            # pack() geometry manager carves up the toplevel's cavity in the ORDER widgets
+            # are packed, not by `side` -- a widget packed with fill=both, expand=True (the
+            # notebook) claims however much of the cavity is available AT THE TIME it's
+            # packed, so if it goes first, anything packed afterward (status_frame -- the
+            # bottom status bar showing the grand total prime count/generation time plus
+            # the totals-scan progress bar) only gets whatever sliver is left once total
+            # tab content exceeds the window's height. This is a classic Tk pitfall:
+            # dock-to-edge widgets like a status bar must be packed before the
+            # fill=both,expand=True central widget, not after -- it only becomes visible
+            # once a tab's content grows tall enough to exceed the default 1050x680 window
+            # size. Packing status_frame FIRST guarantees its own natural height is always
+            # reserved; the notebook (still fill=both, expand=True) then fills whatever
+            # remains, exactly as intended.
+            status_frame = ttk.Frame(self)
+            status_frame.pack(fill="x", side="bottom")
+            self.status = tk.StringVar(value=T("app.status_portal_initial", folder=PORTAL_FOLDER))
+            ttk.Label(status_frame, textvariable=self.status, anchor="w").pack(fill="x", side="top")
+            # Visible progress bar for the piętro-totals background scan -- the status TEXT
+            # alone, updating only once per finished piętro, makes it look like nothing is
+            # happening for the first ~78s on a big piętro; a bar that fills in as piętra
+            # complete, plus a "start" message the instant a piętro's scan actually begins
+            # (not just when it finishes), makes the in-progress state visibly obvious.
+            # Always packed (not shown/hidden dynamically)
+            # so its position never jumps around -- sits at 0/0 (empty) until the first batch
+            # starts, see _compute_all_pietro_totals()/_on_pietro_total_start().
+            self.totals_progress = ttk.Progressbar(status_frame, orient="horizontal",
+                                                     mode="determinate", maximum=1, value=0)
+            self.totals_progress.pack(fill="x", side="top")
+
+            notebook = ttk.Notebook(self)
+            notebook.pack(fill="both", expand=True)
+
+            self.primes_tab = ttk.Frame(notebook)
+            self.constellations_tab = ttk.Frame(notebook)
+            self.generation_tab = ttk.Frame(notebook)
+            self.benchmark_tab = ttk.Frame(notebook)
+            self.settings_tab_container = ttk.Frame(notebook)
+            notebook.add(self.primes_tab, text=T("tabs.primes"))
+            notebook.add(self.constellations_tab, text=T("tabs.constellations"))
+            notebook.add(self.generation_tab, text=T("tabs.generation"))
+            notebook.add(self.benchmark_tab, text=T("tabs.benchmark"))
+            notebook.add(self.settings_tab_container, text=T("tabs.settings"))
+
+            self._build_primes_tab()
+            self._build_constellations_tab()
+            self._build_generation_tab()
+            self._build_benchmark_tab()
+            self._build_settings_tab(SettingsTab)
+
+            # Piętro-total background worker: reading every source window's
+            # header to sum a whole piętro's prime count is NOT cheap on this project's real
+            # storage (measured ~78s for one 15,101-file piętro, ~5ms/file -- per-file open()
+            # latency on the underlying mount, not the tiny header itself) -- doing that on
+            # the GUI thread is exactly the kind of freeze the paginated file list was built
+            # to avoid (see _populate_pietro_node's docstring). ONE daemon worker thread owns
+            # self._totals_cache exclusively (loads it once here, then only the worker thread
+            # ever reads/writes/saves it -- see update_pietro_totals_cache()); the main thread
+            # never touches that dict directly, only sends piętro numbers in via
+            # _totals_work_queue and receives (base_exponent, total, file_count, new_read,
+            # error) tuples back via _totals_result_queue, polled every 150ms (see
+            # _poll_totals_results). self._pietro_total_known is a SEPARATE, main-thread-only
+            # dict (seeded from the same on-disk cache at startup, updated only from received
+            # results) -- two independent copies instead of sharing one dict across threads,
+            # so neither thread ever needs a lock.
+            self._pietro_total_known = {}
+            self._totals_cache = {}
+            self._reload_totals_caches()
+            self._totals_work_queue = queue.Queue()
+            self._totals_result_queue = queue.Queue()
+            self._computing_all_totals = False
+            self._totals_batch_size = 0   # fixed at the START of a "compute all" batch --
+                                           # NOT re-read from _pietro_node_by_exp on every
+                                           # result, so the progress bar's denominator can't
+                                           # shift mid-batch (e.g. after a Refresh)
+            self._grand_total_sum = 0
+            self._grand_total_seen = set()
+            # base_exponent -> total real generation seconds (write_files=True runs only),
+            # from benchmark_log.csv -- read fresh on every reload_primes_tree() (cheap, one
+            # small CSV shared by all piętra, not a per-piętro disk scan like the totals
+            # worker above). self._grand_total_seconds mirrors _grand_total_sum's role for
+            # the "SUMA CAŁKOWITA" status line, giving it a time total alongside the
+            # prime-count total.
+            self._pietro_gen_seconds = {}
+            self._grand_total_seconds = 0.0
+            threading.Thread(target=self._totals_worker_loop, daemon=True).start()
+            self.after(150, self._poll_totals_results)
+
+            # Search worker: number/constellation search needs to run off the GUI thread,
+            # or it freezes the whole application while searching. find_prime_in_floor()'s
+            # binary search is normally fast (O(log N) file opens -- see its own
+            # docstring), but find_constellation_participation() can decode dozens of
+            # full hit files on a piętro's first-ever search (nothing cached yet), which
+            # is exactly the kind of disk-bound work _totals_worker_loop already exists
+            # to keep off the GUI thread -- same one-daemon-thread-owns-the-slow-stuff
+            # shape, reusing the SAME status/progress bar the totals worker uses (one
+            # shared status bar for both features, not a second one). See
+            # _search_worker_loop/_poll_search_results/_start_search_job below.
+            self._search_busy = False
+            self._search_work_queue = queue.Queue()
+            self._search_result_queue = queue.Queue()
+            threading.Thread(target=self._search_worker_loop, daemon=True).start()
+            self.after(150, self._poll_search_results)
+
+            self.reload_primes_tree()  # this ALSO kicks off the piętro-totals scan for every
+                                        # piętro -- see reload_primes_tree()'s docstring
+            self.reload_constellations_tree()
+            self.reload_benchmark_log()
+
+        # --- Piętro-total background worker ------------------------------------------
+
+        def _reload_totals_caches(self):
+            """(Re-)loads _pietro_total_known and _totals_cache from PORTAL_FOLDER's own
+            .portal_totals_cache.json -- factored out of __init__ so reload_primes_tree()
+            can call this too, on every refresh, not just once at app startup. Otherwise,
+            after changing storage path in Ustawienia and clicking Odśwież, totals would
+            still reflect the PREVIOUS location.
+
+            Root cause of that: both dicts used to be built ONCE in __init__ against
+            whatever PORTAL_FOLDER was active when the app launched, then never reloaded --
+            a later storage-path change rebinds the PORTAL_FOLDER global (see
+            _set_portal_folder) but left these two dicts holding the OLD location's data
+            in memory. update_pietro_totals_cache()'s incremental-cache logic keys
+            _totals_cache PURELY BY FILENAME within each "10p{N}" entry, with no
+            portal_folder scoping at all -- so if a NEWLY selected location happens to
+            have its own piętro with the same number (and prime_sieve_v1.py assigns
+            filenames deterministically from piętro+offset, so a same-number piętro in
+            two different locations very plausibly has same-NAMED files), the stale
+            entry made it treat that location's real file as "already read" and served
+            the OLD location's cached count without ever opening the new file. A
+            genuinely EMPTY new location was already unaffected by this specific bug
+            (list_pietra() itself is a stateless disk scan, so no rows get inserted for
+            piętra that don't exist there) -- but ANY overlap in piętro numbers between
+            two locations could silently show wrong totals without this reload."""
+            self._pietro_total_known = {}
+            for _key, _entry in load_totals_cache(PORTAL_FOLDER).items():
+                if _key.startswith("10p") and _key[3:].isdigit():
+                    self._pietro_total_known[int(_key[3:])] = (
+                        _entry.get("total", 0), _entry.get("file_count", 0))
+            self._totals_cache = load_totals_cache(PORTAL_FOLDER)  # worker-owned copy
+
+        def _totals_worker_loop(self):
+            """Runs forever on its own daemon thread, pulling base_exponent requests off
+            _totals_work_queue and pushing results back via _totals_result_queue -- see the
+            big comment in __init__ for the single-owner-per-thread rationale. Emits a
+            ("start", base_exponent) message the INSTANT a request is picked up, before the
+            (possibly ~1 minute, for a heavily-populated piętro) scan itself runs -- without
+            this, the status/progress bar would sit unchanged for that whole stretch,
+            making an in-progress scan look like it's not working. A
+            daemon thread needs no explicit shutdown -- it dies with the process."""
+            while True:
+                base_exponent = self._totals_work_queue.get()
+                self._totals_result_queue.put(("start", base_exponent))
+                try:
+                    total, file_count, new_read = update_pietro_totals_cache(
+                        PORTAL_FOLDER, base_exponent, self._totals_cache)
+                    if new_read:
+                        save_totals_cache(PORTAL_FOLDER, self._totals_cache)
+                    self._totals_result_queue.put(
+                        ("done", base_exponent, total, file_count, new_read, None))
+                except Exception as e:  # noqa: BLE001 -- must never kill this thread
+                    self._totals_result_queue.put(
+                        ("done", base_exponent, None, None, None, str(e)))
+
+        def _poll_totals_results(self):
+            """Main-thread side of the worker: drains whatever "start"/"done" messages have
+            arrived since the last poll and updates the tree/status/progress bar, then
+            reschedules itself -- runs for the whole lifetime of the window (see __init__)."""
+            try:
+                while True:
+                    msg = self._totals_result_queue.get_nowait()
+                    if msg[0] == "start":
+                        self._on_pietro_total_start(msg[1])
+                    else:
+                        _kind, base_exponent, total, file_count, new_read, error = msg
+                        if error is not None:
+                            self.status.set(T("primes.status_error_sum", base_exponent=base_exponent, error=error))
+                        else:
+                            self._pietro_total_known[base_exponent] = (total, file_count)
+                            self._on_pietro_total_ready(base_exponent, total, file_count, new_read)
+            except queue.Empty:
+                pass
+            self.after(150, self._poll_totals_results)
+
+        def _on_pietro_total_start(self, base_exponent):
+            """Fires the moment the worker PICKS UP a request -- see _totals_worker_loop's
+            docstring for why this exists separately from the completion handler below."""
+            if self._computing_all_totals:
+                done = len(self._grand_total_seen)
+                self.status.set(
+                    T("primes.status_computing_progress", base_exponent=base_exponent,
+                      done=done, total=self._totals_batch_size,
+                      sum=f"{self._grand_total_sum:,}"))
+            else:
+                self.status.set(T("primes.status_computing", base_exponent=base_exponent))
+
+        def _on_pietro_total_ready(self, base_exponent, total, file_count, new_read):
+            node = self._pietro_node_by_exp.get(base_exponent)
+            gen_seconds = self._pietro_gen_seconds.get(base_exponent)
+            timer_str = format_duration(gen_seconds) if gen_seconds is not None else ""
+            if node is not None and self.tree.exists(node):
+                self.tree.item(node, values=(f"{total:,}", f"{file_count:,}", "", timer_str))
+            if self._active_floor_node == node:
+                self._refresh_floor_nav_controls()
+
+            if self._computing_all_totals:
+                if base_exponent not in self._grand_total_seen:
+                    self._grand_total_seen.add(base_exponent)
+                    self._grand_total_sum += total
+                    self._grand_total_seconds += gen_seconds or 0.0
+                done = len(self._grand_total_seen)
+                expected = self._totals_batch_size
+                self.totals_progress.configure(value=done)
+                if done >= expected:
+                    self._computing_all_totals = False
+                    # Reset back to the same empty (0/1) state _totals_progress starts in
+                    # (see __init__) -- left at full/expected otherwise, a completed scan
+                    # would leave the bar sitting permanently full, which reads as "still
+                    # busy" even though nothing is running.
+                    self.totals_progress.configure(maximum=1, value=0)
+                    self.status.set(
+                        T("primes.status_grand_total", count=expected,
+                          sum=f"{self._grand_total_sum:,}",
+                          duration=format_duration(self._grand_total_seconds)))
+                else:
+                    self.status.set(
+                        T("primes.status_partial_totals", done=done, total=expected,
+                          sum=f"{self._grand_total_sum:,}"))
+            else:
+                extra = T("primes.status_extra_new_files", count=new_read) if new_read else ""
+                self.status.set(
+                    T("primes.status_pietro_total", base_exponent=base_exponent,
+                      total=f"{total:,}", files=f"{file_count:,}", extra=extra))
+
+        def _compute_all_pietro_totals(self):
+            pietra = list(self._pietro_node_by_exp.keys())
+            if not pietra:
+                self.status.set(T("primes.status_none_to_compute"))
+                return
+            self._computing_all_totals = True
+            self._totals_batch_size = len(pietra)
+            self._grand_total_sum = 0
+            self._grand_total_seconds = 0.0
+            self._grand_total_seen = set()
+            self.totals_progress.configure(maximum=len(pietra), value=0)
+            self.status.set(T("primes.status_batch_start", count=len(pietra)))
+            for base_exponent in pietra:
+                self._totals_work_queue.put(base_exponent)
+
+        # --- Tab 1: Liczby pierwsze (source primes) ---------------------------------
+
+        def _build_primes_tab(self):
+            top = ttk.Frame(self.primes_tab)
+            top.pack(fill="x", padx=6, pady=4)
+            ttk.Button(top, text=T("common.refresh"), command=self.reload_primes_tree).pack(side="left")
+
+            ttk.Label(top, text=T("common.search_label")).pack(side="left")
+            self.search_entry = ttk.Entry(top, width=26)
+            self.search_entry.pack(side="left", padx=(4, 4))
+            self.search_entry.bind("<Return>", lambda _e: self._search_prime())
+            self.search_button = ttk.Button(
+                top, text=T("common.search_button"), command=self._search_prime)
+            self.search_button.pack(side="left")
+
+            # No separate "compute all totals" button --
+            # Refresh already re-runs the totals scan for every piętro (see
+            # reload_primes_tree()), so a second button doing the same thing was redundant.
+            # Re-running costs almost nothing when nothing changed: update_pietro_totals_
+            # cache() only re-reads files NOT already in its cache (a cheap os.listdir() +
+            # in-memory set diff per piętro either way -- see that function's docstring), so
+            # hitting Refresh after generating new windows only pays for the new files, not
+            # a full piętro-by-piętro rescan.
+            paned = ttk.Panedwindow(self.primes_tab, orient="horizontal")
+            paned.pack(fill="both", expand=True, padx=6, pady=4)
+
+            tree_frame = ttk.Frame(paned)
+            paned.add(tree_frame, weight=1)
+
+            # Floor (piętro) pagination -- ABOVE the tree, same Prev/label/Next/goto layout
+            # as the file-preview pane on the right (see btn_row below). A piętro can hold
+            # thousands of source windows -- listing+rendering them all on one expand is
+            # what used to freeze the GUI. Expanding a piętro now only lists filenames
+            # (cheap) and loads ONE page's worth of headers; these controls act on whichever
+            # piętro was most recently opened/clicked (self._active_floor_node) -- multiple
+            # piętra can stay expanded at once, each remembering its own page independently.
+            floor_nav = ttk.Frame(tree_frame)
+            floor_nav.pack(fill="x", pady=(0, 4))
+            self.floor_prev_btn = ttk.Button(
+                floor_nav, text=T("common.prev_page"), command=self._prev_floor_page, state="disabled")
+            self.floor_prev_btn.pack(side="left")
+            self.floor_page_label = tk.StringVar(value="")
+            ttk.Label(floor_nav, textvariable=self.floor_page_label, width=16, anchor="center").pack(side="left")
+            self.floor_next_btn = ttk.Button(
+                floor_nav, text=T("common.next_page"), command=self._next_floor_page, state="disabled")
+            self.floor_next_btn.pack(side="left")
+            ttk.Label(floor_nav, text=T("common.page_prefix")).pack(side="left", padx=(10, 0))
+            self.floor_goto_entry = ttk.Entry(floor_nav, width=6)
+            self.floor_goto_entry.pack(side="left", padx=(4, 0))
+            self.floor_goto_entry.bind("<Return>", lambda _e: self._goto_floor_page())
+            ttk.Button(floor_nav, text=T("common.goto"), command=self._goto_floor_page).pack(side="left", padx=(4, 0))
+
+            # Page subtotal (instant -- sums the headers this page already had to read to
+            # display the file list, no extra I/O) alongside the piętro's OVERALL total,
+            # which is NOT instant for a heavily-populated piętro and gets filled in
+            # asynchronously once the background totals worker finishes (see
+            # _on_pietro_total_ready) -- shows "licze..." until then.
+            self.floor_subtotal_label = tk.StringVar(value="")
+            ttk.Label(floor_nav, textvariable=self.floor_subtotal_label, anchor="w").pack(
+                side="left", padx=(14, 0))
+
+            # 4 value columns: count/files/generated/timer, split apart
+            # because "generated" used to double as BOTH a per-file UTC timestamp (file rows)
+            # AND a file count (piętro summary rows) -- confusing on a collapsed piętro, which
+            # only ever shows the summary row. "files" now always means file count, "generated"
+            # always means a UTC timestamp (blank on piętro rows -- no single date is
+            # meaningful for a whole piętro), "timer" is new: total REAL generation time for
+            # that piętro (write_files=True runs only, see aggregate_write_seconds_by_pietro()).
+            self.tree = ttk.Treeview(
+                tree_frame, columns=("count", "files", "generated", "timer"),
+                show="tree headings")
+            self.tree.heading("#0", text=T("primes.col_pietro"))
+            self.tree.heading("count", text=T("primes.col_count"))
+            self.tree.heading("files", text=T("primes.col_files"))
+            self.tree.heading("generated", text=T("primes.col_generated"))
+            self.tree.heading("timer", text=T("primes.col_timer"))
+            self.tree.column("#0", width=260)
+            self.tree.column("count", width=90, anchor="e")
+            self.tree.column("files", width=90, anchor="e")
+            self.tree.column("generated", width=170)
+            self.tree.column("timer", width=110, anchor="e")
+            vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+            self.tree.configure(yscrollcommand=vsb.set)
+            self.tree.pack(side="left", fill="both", expand=True)
+            vsb.pack(side="right", fill="y")
+
+            self.tree.bind("<<TreeviewOpen>>", self._on_tree_open)
+            self.tree.bind("<<TreeviewClose>>", self._on_tree_close)
+            self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+
+            self._pietro_state = {}         # tree item id -> {base_exponent, filenames,
+                                             # page, total_pages}, or None if checked and
+                                             # found empty. Populated lazily on
+                                             # <<TreeviewOpen>>, dropped entirely (freeing
+                                             # the filename list + tree rows) on
+                                             # <<TreeviewClose>> -- see _on_tree_close.
+            self._active_floor_node = None  # which piętro's page the floor nav buttons
+                                             # above currently operate on
+            self._pietro_node_by_exp = {}   # base_exponent -> tree item id, so a totals
+                                             # result arriving from the background worker
+                                             # (keyed by base_exponent, not tree item id --
+                                             # see _totals_worker_loop) knows which row to
+                                             # update, even after a Refresh rebuilt the tree
+
+            detail_frame = ttk.Frame(paned)
+            paned.add(detail_frame, weight=2)
+
+            self.detail_text = tk.StringVar(value=T("primes.detail_hint"))
+            ttk.Label(detail_frame, textvariable=self.detail_text, justify="left",
+                      anchor="nw", wraplength=560).pack(fill="x", padx=6, pady=6)
+
+            btn_row = ttk.Frame(detail_frame)
+            btn_row.pack(anchor="w", padx=6, fill="x")
+            self.load_preview_btn = ttk.Button(
+                btn_row, text=T("common.load_preview"), command=self._load_preview, state="disabled")
+            self.load_preview_btn.pack(side="left")
+            self.prev_page_btn = ttk.Button(
+                btn_row, text=T("common.prev_page"), command=self._prev_preview_page, state="disabled")
+            self.prev_page_btn.pack(side="left", padx=(10, 0))
+            self.preview_page_label = tk.StringVar(value="")
+            ttk.Label(btn_row, textvariable=self.preview_page_label, width=16, anchor="center").pack(side="left")
+            self.next_page_btn = ttk.Button(
+                btn_row, text=T("common.next_page"), command=self._next_preview_page, state="disabled")
+            self.next_page_btn.pack(side="left")
+            ttk.Label(btn_row, text=T("common.page_prefix")).pack(side="left", padx=(10, 0))
+            self.preview_goto_entry = ttk.Entry(btn_row, width=6)
+            self.preview_goto_entry.pack(side="left", padx=(4, 0))
+            self.preview_goto_entry.bind("<Return>", lambda _e: self._goto_preview_page())
+            ttk.Button(btn_row, text=T("common.goto"), command=self._goto_preview_page).pack(side="left", padx=(4, 0))
+
+            preview_frame = ttk.Frame(detail_frame)
+            preview_frame.pack(fill="both", expand=True, padx=6, pady=6)
+            self.preview_list = tk.Listbox(preview_frame, font=("Consolas", 9))
+            preview_vsb = ttk.Scrollbar(preview_frame, orient="vertical", command=self.preview_list.yview)
+            self.preview_list.configure(yscrollcommand=preview_vsb.set)
+            self.preview_list.pack(side="left", fill="both", expand=True)
+            preview_vsb.pack(side="right", fill="y")
+
+            # Each row here IS a single prime (unlike the Konstelacje tab's rows, which
+            # show a whole reconstructed tuple) -- Ctrl+C and right-click "Kopiuj" both
+            # copy the selected row's actual value to the clipboard. A plain tk.Listbox
+            # has no built-in copy behaviour at all, so without this there was no way to
+            # get a value out of the list except retyping it by hand.
+            self.preview_list.bind("<Control-c>", lambda _e: self._copy_selected_preview_value())
+            self.preview_list.bind("<Button-3>", self._show_preview_context_menu)
+            self._preview_context_menu = tk.Menu(self, tearoff=0)
+            self._preview_context_menu.add_command(label=T("common.copy"), command=self._copy_selected_preview_value)
+
+            self._selected_path = None
+            self._preview_primes = None    # full decoded list for the selected file, cached
+                                            # after "Load preview" so page navigation doesn't
+                                            # re-decode the file from scratch each click
+            self._preview_page = 0
+            self._preview_total_pages = 1
+
+        def reload_primes_tree(self):
+            """Rebuilds the piętro list from disk (picks up newly created/removed 10pN
+            folders) AND re-runs the totals scan for every piętro -- so
+            pressing Refresh after generating new windows is enough to see updated totals,
+            no separate button needed. This is NOT a full re-read of everything: each
+            piętro's total is cached (see update_pietro_totals_cache()'s docstring) keyed by
+            filename, so a piętro with no new files costs one cheap os.listdir() + an
+            in-memory set diff, and a piętro WITH new files only pays for reading THOSE
+            files' headers, not the whole piętro again.
+
+            Also reloads _pietro_total_known/_totals_cache fresh from the CURRENT
+            PORTAL_FOLDER every time -- without this, both would be loaded once at app
+            startup and never touched again, so Refresh after a storage-path change in
+            Ustawienia could show totals left over from the PREVIOUS location for any
+            piętro whose number happened to exist in both (see _reload_totals_caches()'s
+            docstring for the full root-cause writeup)."""
+            self._reload_totals_caches()
+            self.tree.delete(*self.tree.get_children())
+            self._pietro_state = {}
+            self._active_floor_node = None
+            self._path_by_item = {}
+            self._pietro_node_by_exp = {}
+            self._refresh_floor_nav_controls()
+            # Cheap (one small CSV, not a per-piętro disk scan) -- re-read fresh on every
+            # Refresh so a just-finished write_files=True run shows up in the Timer column
+            # immediately, same responsiveness as the totals worker below.
+            self._pietro_gen_seconds = aggregate_write_seconds_by_pietro(
+                read_benchmark_log(PORTAL_FOLDER)[1])
+            pietra = list_pietra(PORTAL_FOLDER)
+            for base_exponent in pietra:
+                # If a previous scan (this session or a past one, via the on-disk cache)
+                # already knows this piętro's total, show it immediately -- otherwise leave
+                # the count column blank until the background worker fills it in (see
+                # _compute_all_pietro_totals() below / _on_pietro_total_ready). Either way
+                # the row is shown right away; only the count itself may lag, and even then
+                # only until the (re-)scan below reaches it.
+                known = self._pietro_total_known.get(base_exponent)
+                gen_seconds = self._pietro_gen_seconds.get(base_exponent)
+                timer_str = format_duration(gen_seconds) if gen_seconds is not None else ""
+                values = ((f"{known[0]:,}", f"{known[1]:,}", "", timer_str) if known
+                          else ("", "", "", timer_str))
+                node = self.tree.insert("", "end", text=f"10p{base_exponent}",
+                                         values=values, open=False, tags=("pietro",))
+                self.tree.insert(node, "end", text=T("common.loading"))
+                self._pietro_node_by_exp[base_exponent] = node
+            self.status.set(T("app.status_portal_with_count", folder=PORTAL_FOLDER, count=len(pietra)))
+            self._compute_all_pietro_totals()
+
+        def _on_tree_open(self, _event):
+            node = self.tree.focus()
+            self._populate_pietro_node(node)
+            self._set_active_floor_node(node)
+            base_exponent = int(self.tree.item(node, "text")[3:])  # "10p{N}"
+            self._totals_work_queue.put(base_exponent)  # always re-check -- cheap no-op if
+                                                          # nothing changed since last time
+                                                          # (see update_pietro_totals_cache)
+
+        def _on_tree_close(self, _event):
+            """Collapsing a piętro drops its whole page/filename-list state and clears its
+            rows back to a single "(loading...)" placeholder -- re-expanding later re-lists
+            from disk instead of holding onto a piętro's data indefinitely just because it
+            was opened once. Other, still-open piętra are untouched."""
+            node = self.tree.focus()
+            if node not in self._pietro_state:
+                return
+            del self._pietro_state[node]
+            self._clear_floor_children(node)
+            self.tree.insert(node, "end", text=T("common.loading"))
+            if self._active_floor_node == node:
+                self._active_floor_node = None
+                self._refresh_floor_nav_controls()
+
+        def _clear_floor_children(self, node):
+            """Removes every current child row of `node` from the tree AND from
+            self._path_by_item -- without this second part, repeated page turns/collapses
+            would leak orphaned item-id -> (path, header) entries for rows that no longer
+            exist in the tree."""
+            path_map = getattr(self, "_path_by_item", {})
+            for child in self.tree.get_children(node):
+                path_map.pop(child, None)
+            self.tree.delete(*self.tree.get_children(node))
+
+        def _populate_pietro_node(self, node):
+            if node in self._pietro_state:
+                return  # already listed in this session -- nothing to redo
+            children = self.tree.get_children(node)
+            if len(children) == 1 and self.tree.item(children[0], "text") == T("common.loading"):
+                self.tree.delete(children[0])
+
+            base_exponent = int(self.tree.item(node, "text")[3:])  # "10p{N}"
+            filenames = list_source_filenames(PORTAL_FOLDER, base_exponent)  # cheap: no
+                                                                              # header I/O
+            if not filenames:
+                self.tree.insert(node, "end", text=T("primes.no_source_files"))
+                self._pietro_state[node] = None
+                return
+
+            total_pages = max(1, (len(filenames) + FLOOR_PAGE_SIZE - 1) // FLOOR_PAGE_SIZE)
+            self._pietro_state[node] = {
+                "base_exponent": base_exponent,
+                "filenames": filenames,
+                "page": 0,
+                "total_pages": total_pages,
+            }
+            self._show_floor_page(node, 0)
+
+        def _show_floor_page(self, node, page):
+            """Renders page `page` (0-indexed) of a piętro's file list: reads headers for
+            ONLY that page's files (bounded I/O, unlike the old read-every-header-on-expand
+            approach) and rebuilds the node's tree rows from scratch."""
+            state = self._pietro_state.get(node)
+            if not state:
+                return
+            total_pages = state["total_pages"]
+            page = max(0, min(page, total_pages - 1))
+            state["page"] = page
+            start = page * FLOOR_PAGE_SIZE
+            end = min(start + FLOOR_PAGE_SIZE, len(state["filenames"]))
+            page_entries = read_source_file_headers(state["filenames"][start:end])
+
+            self._clear_floor_children(node)
+            self._path_by_item = getattr(self, "_path_by_item", {})
+            page_total = 0
+            for name, path, header in page_entries:
+                if header is None:
+                    count_str, gen_str = "?", T("primes.unreadable_header")
+                else:
+                    count_str = f"{header['count']:,}"
+                    gen_str = header["generated_at_iso"]
+                    page_total += header["count"]
+                child = self.tree.insert(node, "end", text=name,
+                                          values=(count_str, "", gen_str, ""), tags=("file",))
+                self._path_by_item[child] = (path, header)
+            state["page_total"] = page_total
+
+            if self._active_floor_node == node:
+                self._refresh_floor_nav_controls()
+
+        def _set_active_floor_node(self, node):
+            self._active_floor_node = node
+            self._refresh_floor_nav_controls()
+
+        def _refresh_floor_nav_controls(self):
+            node = self._active_floor_node
+            state = self._pietro_state.get(node) if node is not None else None
+            if not state:
+                self.floor_page_label.set("")
+                self.floor_subtotal_label.set("")
+                self.floor_prev_btn.configure(state="disabled")
+                self.floor_next_btn.configure(state="disabled")
+                return
+            _update_nav_controls(self.floor_page_label, state["page"], state["total_pages"],
+                                  self.floor_prev_btn, self.floor_next_btn)
+            page_total = state.get("page_total", 0)
+            known = self._pietro_total_known.get(state["base_exponent"])
+            overall = f"{known[0]:,}" if known else T("common.computing")
+            self.floor_subtotal_label.set(
+                T("primes.page_total", page_total=f"{page_total:,}", overall=overall))
+
+        def _prev_floor_page(self):
+            node = self._active_floor_node
+            if node is not None and self._pietro_state.get(node):
+                self._show_floor_page(node, self._pietro_state[node]["page"] - 1)
+
+        def _next_floor_page(self):
+            node = self._active_floor_node
+            if node is not None and self._pietro_state.get(node):
+                self._show_floor_page(node, self._pietro_state[node]["page"] + 1)
+
+        def _goto_floor_page(self):
+            raw = self.floor_goto_entry.get().strip()
+            if not raw.isdigit():
+                return
+            node = self._active_floor_node
+            if node is not None and self._pietro_state.get(node):
+                self._show_floor_page(node, int(raw) - 1)
+
+        def _on_tree_select(self, _event):
+            selection = self.tree.selection()
+            if not selection:
+                return
+            item = selection[0]
+            if "pietro" in self.tree.item(item, "tags"):
+                # Clicking a piętro header (whether just opened or already expanded) makes
+                # it the target of the floor-pagination controls above the tree, without
+                # touching the file-preview state on the right.
+                self._set_active_floor_node(item)
+                return
+            path_map = getattr(self, "_path_by_item", {})
+            self._reset_preview_state()
+            if item not in path_map:
+                self.load_preview_btn.configure(state="disabled")
+                return
+            path, header = path_map[item]
+            self._selected_path = path
+            if header is None:
+                self.detail_text.set(T("primes.header_error", path=path))
+                self.load_preview_btn.configure(state="disabled")
+                return
+            self.detail_text.set(
+                f"{path}\n\n" +
+                T("primes.header_detail",
+                  base_prime=format_big_int(header['base_prime']),
+                  count=f"{header['count']:,}",
+                  generated=header['generated_at_iso'])
+            )
+            self.load_preview_btn.configure(state="normal" if header["count"] > 0 else "disabled")
+
+        def _reset_preview_state(self):
+            self.preview_list.delete(0, "end")
+            self._preview_primes = None
+            self._preview_page = 0
+            self._preview_total_pages = 1
+            self.preview_page_label.set("")
+            self.prev_page_btn.configure(state="disabled")
+            self.next_page_btn.configure(state="disabled")
+            self.load_preview_btn.configure(state="normal" if self._selected_path else "disabled")
+
+        def _load_preview(self):
+            """Decodes the selected file ONCE (cached in self._preview_primes) and shows
+            page 1."""
+            if not self._selected_path:
+                return
+            if self._preview_primes is None:
+                try:
+                    self._preview_primes = prime_sieve_v1.read_prime_window(self._selected_path)
+                except Exception as exc:
+                    messagebox.showerror(T("primes.load_preview_failed_title"), str(exc))
+                    self._preview_primes = None
+                    return
+            self._show_preview_page(0)
+            self.load_preview_btn.configure(state="disabled")
+
+        def _show_preview_page(self, page):
+            if not self._preview_primes:
+                return
+            self._preview_page, self._preview_total_pages = _render_page(
+                self.preview_list, self._preview_primes, page, PAGE_SIZE, str)
+            _update_nav_controls(self.preview_page_label, self._preview_page,
+                                  self._preview_total_pages, self.prev_page_btn, self.next_page_btn)
+
+        def _prev_preview_page(self):
+            self._show_preview_page(self._preview_page - 1)
+
+        def _next_preview_page(self):
+            self._show_preview_page(self._preview_page + 1)
+
+        def _goto_preview_page(self):
+            raw = self.preview_goto_entry.get().strip()
+            if not raw.isdigit():
+                return
+            self._show_preview_page(int(raw) - 1)
+
+        def _search_prime(self):
+            raw = self.search_entry.get().strip()
+            if not raw.isdigit():
+                messagebox.showerror(T("common.dialog_search_title"), T("common.error_invalid_number"))
+                return
+            number = int(raw)
+            base_exponent = digit_count_floor(number)
+            if base_exponent not in list_pietra(PORTAL_FOLDER):
+                messagebox.showinfo(
+                    T("common.dialog_search_title"),
+                    T("common.no_floor", base_exponent=base_exponent, digits=len(raw)))
+                return
+            if self._search_busy:
+                messagebox.showinfo(T("common.dialog_search_title"), T("common.search_already_running"))
+                return
+            self._start_search_job("prime", base_exponent, number)
+
+        def _on_prime_search_result(self, base_exponent, number, result):
+            """Main-thread completion handler for a "prime" search job -- same UI update
+            _search_prime() used to do synchronously right after calling
+            find_prime_in_floor(), now driven by _poll_search_results() once the worker
+            thread hands the (plain-data, no tkinter involved) result back."""
+            if result is None:
+                messagebox.showinfo(
+                    T("common.dialog_search_title"),
+                    T("primes.not_found", number=number, base_exponent=base_exponent))
+                return
+            self._select_primes_file_in_tree(base_exponent, result["name"])
+            self._preview_primes = result["primes"]
+            self._jump_preview_to_index(result["index"])
+            total = len(result["primes"])
+            self.status.set(
+                T("common.found_in_file", number=number, name=result['name'],
+                  base_exponent=base_exponent, position=f"{result['index'] + 1:,}", total=f"{total:,}"))
+
+        # --- Search worker -- shared by both "Liczby pierwsze" and
+        # "Konstelacje" search boxes, see the __init__ comment above _search_worker_loop's
+        # startup for the full rationale. ------------------------------------------------
+
+        def _start_search_job(self, kind, base_exponent, number):
+            """Hands the actual (potentially slow) file-scanning work off to
+            _search_worker_loop's daemon thread. Only fast/instant validation (isdigit,
+            digit_count_floor, list_pietra's no-I/O piętro-existence check) happens on the
+            GUI thread, in the caller, before this is ever reached. Disables BOTH search
+            buttons while a job is in flight -- the two features share one worker thread
+            and one status/progress bar, so only one search runs at a time system-wide,
+            same reasoning _on_quick_generate_clicked already applies to
+            self._loop_runner."""
+            self._search_busy = True
+            self.search_button.configure(state="disabled")
+            self.hits_search_button.configure(state="disabled")
+            self.totals_progress.stop()
+            self.totals_progress.configure(mode="indeterminate")
+            self.totals_progress.start(80)
+            if kind == "prime":
+                self.status.set(T("primes.status_searching", number=number, base_exponent=base_exponent))
+            else:
+                self.status.set(T("const.status_searching", number=number, base_exponent=base_exponent))
+            self._search_work_queue.put(
+                {"kind": kind, "base_exponent": base_exponent, "number": number})
+
+        def _search_worker_loop(self):
+            """Own daemon thread -- same single-owner-per-thread reasoning as
+            _totals_worker_loop (see that method's docstring). While a "const" job is in
+            flight, this thread is ALSO the sole owner of self._hit_set_cache (the GUI
+            thread never mutates it directly anymore, only reads the finished
+            participation list handed back via the result queue) -- _search_busy blocking
+            new searches from the GUI side means only one job is ever in flight, so this
+            never races against itself."""
+            while True:
+                job = self._search_work_queue.get()
+                kind = job["kind"]
+                base_exponent = job["base_exponent"]
+                number = job["number"]
+                try:
+                    if kind == "prime":
+                        result = find_prime_in_floor(PORTAL_FOLDER, base_exponent, number)
+                        self._search_result_queue.put(("prime_done", base_exponent, number, result))
+                    else:
+                        prime_result = find_prime_in_floor(PORTAL_FOLDER, base_exponent, number)
+                        if prime_result is None:
+                            self._search_result_queue.put(
+                                ("const_done", base_exponent, number, None, []))
+                            continue
+
+                        def _progress(done, total, _q=self._search_result_queue):
+                            _q.put(("const_progress", done, total))
+
+                        participation = find_constellation_participation(
+                            PORTAL_FOLDER, base_exponent, number, self._hit_set_cache,
+                            progress_callback=_progress)
+                        self._search_result_queue.put(
+                            ("const_done", base_exponent, number, prime_result, participation))
+                except Exception as e:  # noqa: BLE001 -- must never kill this thread
+                    self._search_result_queue.put((f"{kind}_error", base_exponent, number, str(e)))
+
+        def _poll_search_results(self):
+            """Main-thread side of the search worker -- same 150ms self.after() polling
+            cadence as _poll_totals_results, runs for the whole lifetime of the window."""
+            try:
+                while True:
+                    msg = self._search_result_queue.get_nowait()
+                    kind = msg[0]
+                    if kind == "const_progress":
+                        _kind, done, total = msg
+                        self.totals_progress.stop()
+                        self.totals_progress.configure(
+                            mode="determinate", maximum=max(1, total), value=done)
+                        self.status.set(T("const.status_search_progress", done=done, total=total))
+                    elif kind == "prime_done":
+                        _kind, base_exponent, number, result = msg
+                        self._finish_search_job()
+                        self._on_prime_search_result(base_exponent, number, result)
+                    elif kind == "const_done":
+                        _kind, base_exponent, number, prime_result, participation = msg
+                        self._finish_search_job()
+                        self._on_const_search_result(base_exponent, number, prime_result, participation)
+                    else:  # "prime_error" / "const_error"
+                        _kind, _base_exponent, _number, error = msg
+                        self._finish_search_job()
+                        messagebox.showerror(T("common.dialog_search_title"), error)
+            except queue.Empty:
+                pass
+            self.after(150, self._poll_search_results)
+
+        def _finish_search_job(self):
+            self._search_busy = False
+            self.search_button.configure(state="normal")
+            self.hits_search_button.configure(state="normal")
+            self.totals_progress.stop()
+            # Same "reset back to the empty 0/1 state" reasoning as
+            # _on_pietro_total_ready's grand-total completion branch -- a bar left sitting
+            # full/mid-way reads as "still busy" even though nothing is running.
+            self.totals_progress.configure(mode="determinate", maximum=1, value=0)
+
+        def _select_primes_file_in_tree(self, base_exponent, filename):
+            pietro_item = None
+            for item in self.tree.get_children(""):
+                if self.tree.item(item, "text") == f"10p{base_exponent}":
+                    pietro_item = item
+                    break
+            if pietro_item is None:
+                return
+            self.tree.item(pietro_item, open=True)
+            self._populate_pietro_node(pietro_item)
+            self._set_active_floor_node(pietro_item)
+            state = self._pietro_state.get(pietro_item)
+            if state:
+                # Jump to whichever page actually contains this filename -- search can
+                # land anywhere across a piętro with thousands of paginated files, not
+                # just whatever page happened to be showing (usually page 1).
+                for idx, (name, _path) in enumerate(state["filenames"]):
+                    if name == filename:
+                        self._show_floor_page(pietro_item, idx // FLOOR_PAGE_SIZE)
+                        break
+            target_item = None
+            for child in self.tree.get_children(pietro_item):
+                if self.tree.item(child, "text") == filename:
+                    target_item = child
+                    break
+            if target_item is None:
+                return
+            # selection_set() queues an async <<TreeviewSelect>> virtual event rather than
+            # dispatching it immediately -- Tk resolves the bound handler at DISPATCH time,
+            # not at generation time, so even unbind()-ing around this call doesn't help
+            # (the event still fires, against whatever's bound once event processing
+            # resumes). If the caller sets up search-specific preview state (jump to a
+            # specific index) right after this returns, that queued event would fire
+            # later and silently wipe it out via _on_tree_select's _reset_preview_state().
+            # Flushing the event queue with update() here forces it to fire and run its
+            # course NOW, before this function returns -- so any later state changes are
+            # safe.
+            self.tree.see(target_item)
+            self.tree.selection_set(target_item)
+            self.tree.focus(target_item)
+            self.update()
+
+        def _jump_preview_to_index(self, index):
+            if not self._preview_primes:
+                return
+            page = index // PAGE_SIZE
+            self._show_preview_page(page)
+            self.load_preview_btn.configure(state="disabled")
+            local = index - self._preview_page * PAGE_SIZE
+            self.preview_list.selection_clear(0, "end")
+            self.preview_list.selection_set(local)
+            self.preview_list.see(local)
+
+        def _show_preview_context_menu(self, event):
+            # Right-clicking an unselected row should select IT (not whatever was
+            # selected before), matching how most list/tree widgets behave elsewhere.
+            index = self.preview_list.nearest(event.y)
+            if index >= 0:
+                self.preview_list.selection_clear(0, "end")
+                self.preview_list.selection_set(index)
+            self._preview_context_menu.tk_popup(event.x_root, event.y_root)
+
+        def _copy_selected_preview_value(self):
+            sel = self.preview_list.curselection()
+            if not sel or not self._preview_primes:
+                return
+            global_index = self._preview_page * PAGE_SIZE + sel[0]
+            if global_index >= len(self._preview_primes):
+                return
+            self.clipboard_clear()
+            self.clipboard_append(str(self._preview_primes[global_index]))
+
+        # --- Tab 2: Konstelacje (constellation hits) ---------------------------------
+
+        def _build_constellations_tab(self):
+            top = ttk.Frame(self.constellations_tab)
+            top.pack(fill="x", padx=6, pady=4)
+            ttk.Button(top, text=T("common.refresh"), command=self.reload_constellations_tree).pack(side="left")
+
+            ttk.Label(top, text=T("common.search_label")).pack(side="left")
+            self.hits_search_entry = ttk.Entry(top, width=26)
+            self.hits_search_entry.pack(side="left", padx=(4, 4))
+            self.hits_search_entry.bind("<Return>", lambda _e: self._search_constellation())
+            self.hits_search_button = ttk.Button(
+                top, text=T("common.search_button"), command=self._search_constellation)
+            self.hits_search_button.pack(side="left")
+
+            paned = ttk.Panedwindow(self.constellations_tab, orient="horizontal")
+            paned.pack(fill="both", expand=True, padx=6, pady=4)
+
+            tree_frame = ttk.Frame(paned)
+            paned.add(tree_frame, weight=1)
+
+            self.hits_tree = ttk.Treeview(tree_frame, columns=("count", "generated"), show="tree headings")
+            self.hits_tree.heading("#0", text=T("const.col_pietro"))
+            self.hits_tree.heading("count", text=T("const.col_count"))
+            self.hits_tree.heading("generated", text=T("const.col_generated"))
+            self.hits_tree.column("#0", width=280)
+            self.hits_tree.column("count", width=90, anchor="e")
+            self.hits_tree.column("generated", width=170)
+            hvsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.hits_tree.yview)
+            self.hits_tree.configure(yscrollcommand=hvsb.set)
+            self.hits_tree.pack(side="left", fill="both", expand=True)
+            hvsb.pack(side="right", fill="y")
+
+            self.hits_tree.bind("<<TreeviewOpen>>", self._on_hits_tree_open)
+            self.hits_tree.bind("<<TreeviewSelect>>", self._on_hits_tree_select)
+
+            detail_frame = ttk.Frame(paned)
+            paned.add(detail_frame, weight=2)
+
+            self.hits_detail_text = tk.StringVar(value=T("const.detail_hint"))
+            ttk.Label(detail_frame, textvariable=self.hits_detail_text, justify="left",
+                      anchor="nw", wraplength=560).pack(fill="x", padx=6, pady=6)
+
+            # Populated only after a search (empty during normal tree browsing): one row
+            # per pattern the searched number participates in. Double-click (or Enter)
+            # jumps straight to that exact hit's row in the preview below, mirroring how
+            # the Liczby pierwsze tab's search lands directly on the found number.
+            self.search_results_list = tk.Listbox(detail_frame, height=5, font=("Consolas", 9))
+            self.search_results_list.pack(fill="x", padx=6, pady=(0, 6))
+            self.search_results_list.bind("<Double-Button-1>", self._on_search_result_activate)
+            self.search_results_list.bind("<Return>", self._on_search_result_activate)
+            self._search_results_data = []  # parallel to search_results_list rows
+
+            btn_row = ttk.Frame(detail_frame)
+            btn_row.pack(anchor="w", padx=6, fill="x")
+            self.hits_load_preview_btn = ttk.Button(
+                btn_row, text=T("common.load_preview"), command=self._load_hits_preview, state="disabled")
+            self.hits_load_preview_btn.pack(side="left")
+            self.hits_prev_page_btn = ttk.Button(
+                btn_row, text=T("common.prev_page"), command=self._prev_hits_page, state="disabled")
+            self.hits_prev_page_btn.pack(side="left", padx=(10, 0))
+            self.hits_page_label = tk.StringVar(value="")
+            ttk.Label(btn_row, textvariable=self.hits_page_label, width=16, anchor="center").pack(side="left")
+            self.hits_next_page_btn = ttk.Button(
+                btn_row, text=T("common.next_page"), command=self._next_hits_page, state="disabled")
+            self.hits_next_page_btn.pack(side="left")
+            ttk.Label(btn_row, text=T("common.page_prefix")).pack(side="left", padx=(10, 0))
+            self.hits_goto_entry = ttk.Entry(btn_row, width=6)
+            self.hits_goto_entry.pack(side="left", padx=(4, 0))
+            self.hits_goto_entry.bind("<Return>", lambda _e: self._goto_hits_page())
+            ttk.Button(btn_row, text=T("common.goto"), command=self._goto_hits_page).pack(side="left", padx=(4, 0))
+
+            hits_preview_frame = ttk.Frame(detail_frame)
+            hits_preview_frame.pack(fill="both", expand=True, padx=6, pady=6)
+            self.hits_preview_list = tk.Listbox(hits_preview_frame, font=("Consolas", 9))
+            hits_preview_vsb = ttk.Scrollbar(hits_preview_frame, orient="vertical",
+                                              command=self.hits_preview_list.yview)
+            self.hits_preview_list.configure(yscrollcommand=hits_preview_vsb.set)
+            self.hits_preview_list.pack(side="left", fill="both", expand=True)
+            hits_preview_vsb.pack(side="right", fill="y")
+
+            # Each row here is ONE number (the pattern's position/offset context is shown
+            # alongside it, not merged into a single copy-unfriendly comma-joined tuple
+            # string) -- same Ctrl+C / right-click "Kopiuj" convenience as the primes tab.
+            self.hits_preview_list.bind("<Control-c>", lambda _e: self._copy_selected_hits_value())
+            self.hits_preview_list.bind("<Button-3>", self._show_hits_context_menu)
+            self._hits_context_menu = tk.Menu(self, tearoff=0)
+            self._hits_context_menu.add_command(label=T("common.copy"), command=self._copy_selected_hits_value)
+
+            self._selected_hit_path = None
+            self._selected_hit_pattern = None  # dict from pattern_catalog_v1, needed to
+                                                # know each position's offset within a tuple
+            self._hit_values = None    # raw decoded starting values for the selected
+                                        # pattern's hit file, sorted ascending
+            self._hit_rows = None      # flattened (value, hit_base, position, offset) --
+                                        # one entry PER TUPLE POSITION, not per hit, so each
+                                        # preview row is a single number like the primes tab
+            self._hit_page = 0
+            self._hit_total_pages = 1
+            self._hit_set_cache = {}  # (base_exponent, k, id) -> set(starting values),
+                                       # reused across searches within this session
+
+        def reload_constellations_tree(self):
+            self.hits_tree.delete(*self.hits_tree.get_children())
+            pietra = list_pietra(PORTAL_FOLDER)
+            for base_exponent in pietra:
+                node = self.hits_tree.insert("", "end", text=f"10p{base_exponent}",
+                                              values=("", ""), open=False, tags=("pietro",))
+                self.hits_tree.insert(node, "end", text=T("common.loading"))
+            self._hit_set_cache = {}  # data on disk may have changed since last refresh
+
+        def _on_hits_tree_open(self, _event):
+            node = self.hits_tree.focus()
+            self._populate_hits_pietro_node(node)
+
+        def _populate_hits_pietro_node(self, node):
+            children = self.hits_tree.get_children(node)
+            if len(children) != 1:
+                return
+            if self.hits_tree.item(children[0], "text") != T("common.loading"):
+                return
+            self.hits_tree.delete(children[0])
+
+            base_exponent = int(self.hits_tree.item(node, "text")[3:])  # "10p{N}"
+            entries = list_constellation_hits(PORTAL_FOLDER, base_exponent)
+            if not entries:
+                self.hits_tree.insert(node, "end", text=T("const.no_hits"))
+                return
+
+            # Nested by k, each with its own subtotal -- otherwise every
+            # variant is a flat sibling row ("k=7 v=1", "k=7 v=2", ...) with no way to see
+            # how many k-tuples exist IN TOTAL for a given k without adding the variant
+            # counts up by hand. group_constellation_hits_by_k() re-groups what
+            # list_constellation_hits() already fetched -- no extra I/O, the pattern catalog
+            # is small enough that every existing hit file's header is already read above.
+            # The piętro row itself is also updated here to the grand total across every k
+            # (sum of every k-group's own subtotal) -- for the SAME reason: previously blank.
+            grand_total = 0
+            self._hit_path_by_item = getattr(self, "_hit_path_by_item", {})
+            for k, k_total, variants in group_constellation_hits_by_k(entries):
+                grand_total += k_total
+                k_node = self.hits_tree.insert(
+                    node, "end", text=T("const.k_total", k=k, total=f"{k_total:,}"),
+                    values=("", ""), tags=("k_group",), open=True)
+                for pattern, path, header in variants:
+                    label_text = f"v={pattern['id']}"
+                    if header is None:
+                        count_str, gen_str = "?", T("primes.unreadable_header")
+                    else:
+                        count_str = f"{header['count']:,}"
+                        gen_str = header["generated_at_iso"]
+                    child = self.hits_tree.insert(
+                        k_node, "end", text=label_text,
+                        values=(count_str, gen_str), tags=("pattern",))
+                    self._hit_path_by_item[child] = (pattern, path, header)
+            self.hits_tree.item(node, values=(f"{grand_total:,}", ""))
+
+        def _on_hits_tree_select(self, _event):
+            selection = self.hits_tree.selection()
+            if not selection:
+                return
+            item = selection[0]
+            path_map = getattr(self, "_hit_path_by_item", {})
+            self._reset_hits_preview_state()
+            if item not in path_map:
+                self.hits_load_preview_btn.configure(state="disabled")
+                return
+            pattern, path, header = path_map[item]
+            self._selected_hit_path = path
+            self._selected_hit_pattern = pattern
+            if header is None:
+                self.hits_detail_text.set(T("primes.header_error", path=path))
+                self.hits_load_preview_btn.configure(state="disabled")
+                return
+            offsets_str = ", ".join(f"+{d}" for d in pattern["offsets"])
+            if pattern["record_digits"] is not None:
+                record_line = T("const.record_known", digits=pattern['record_digits'],
+                                 discoverer=pattern['discoverer'], date=pattern['date'])
+            else:
+                record_line = T("const.record_untracked")
+            self.hits_detail_text.set(
+                f"{path}\n\n" +
+                T("const.header_detail", k=pattern['k'], variant=pattern['id'],
+                  offsets=offsets_str, count=f"{header['count']:,}",
+                  generated=header['generated_at_iso']) +
+                f"\n{record_line}"
+            )
+            self.hits_load_preview_btn.configure(state="normal" if header["count"] > 0 else "disabled")
+
+        def _reset_hits_preview_state(self):
+            self.hits_preview_list.delete(0, "end")
+            self._hit_values = None
+            self._hit_rows = None
+            self._hit_page = 0
+            self._hit_total_pages = 1
+            self.hits_page_label.set("")
+            self.hits_prev_page_btn.configure(state="disabled")
+            self.hits_next_page_btn.configure(state="disabled")
+            self.hits_load_preview_btn.configure(state="normal" if self._selected_hit_path else "disabled")
+
+        def _hit_row_formatter(self, row):
+            """Each row is (value, hit_base, position, offset) -- ONE tuple element, not
+            the whole tuple (that used to be a single comma-joined string per row, which
+            meant selecting/copying a row always grabbed every number in the tuple at
+            once). `value` is what a copy action grabs; the rest is just context."""
+            value, hit_base, position, offset = row
+            total = len(self._selected_hit_pattern["offsets"])
+            if offset == 0:
+                return T("const.hit_row_base", value=value, position=position + 1, total=total)
+            return T("const.hit_row_offset", value=value, position=position + 1, total=total,
+                     offset=offset, hit_base=hit_base)
+
+        def _load_hits_preview(self):
+            if not self._selected_hit_path:
+                return
+            if self._hit_values is None:
+                try:
+                    self._hit_values = prime_sieve_v1.read_prime_window(self._selected_hit_path)
+                except Exception as exc:
+                    messagebox.showerror(T("primes.load_preview_failed_title"), str(exc))
+                    self._hit_values = None
+                    return
+                offsets = self._selected_hit_pattern["offsets"]
+                self._hit_rows = [(hit_base + offset, hit_base, position, offset)
+                                   for hit_base in self._hit_values
+                                   for position, offset in enumerate(offsets)]
+            self._show_hits_page(0)
+            self.hits_load_preview_btn.configure(state="disabled")
+
+        def _show_hits_page(self, page):
+            if not self._hit_rows:
+                return
+            self._hit_page, self._hit_total_pages = _render_page(
+                self.hits_preview_list, self._hit_rows, page, PAGE_SIZE, self._hit_row_formatter)
+            _update_nav_controls(self.hits_page_label, self._hit_page,
+                                  self._hit_total_pages, self.hits_prev_page_btn, self.hits_next_page_btn)
+
+        def _prev_hits_page(self):
+            self._show_hits_page(self._hit_page - 1)
+
+        def _next_hits_page(self):
+            self._show_hits_page(self._hit_page + 1)
+
+        def _goto_hits_page(self):
+            raw = self.hits_goto_entry.get().strip()
+            if not raw.isdigit():
+                return
+            self._show_hits_page(int(raw) - 1)
+
+        def _show_hits_context_menu(self, event):
+            index = self.hits_preview_list.nearest(event.y)
+            if index >= 0:
+                self.hits_preview_list.selection_clear(0, "end")
+                self.hits_preview_list.selection_set(index)
+            self._hits_context_menu.tk_popup(event.x_root, event.y_root)
+
+        def _copy_selected_hits_value(self):
+            sel = self.hits_preview_list.curselection()
+            if not sel or not self._hit_rows:
+                return
+            global_index = self._hit_page * PAGE_SIZE + sel[0]
+            if global_index >= len(self._hit_rows):
+                return
+            self.clipboard_clear()
+            self.clipboard_append(str(self._hit_rows[global_index][0]))
+
+        def _select_hits_pattern_in_tree(self, base_exponent, pattern):
+            """Same approach as primes tab's _select_primes_file_in_tree(): expand the
+            pietro node, select the matching k/variant node, and flush the queued
+            <<TreeviewSelect>> event with update() so _on_hits_tree_select runs to
+            completion (resetting/populating self._selected_hit_* etc.) before the caller
+            proceeds to load+jump the preview."""
+            pietro_item = None
+            for item in self.hits_tree.get_children(""):
+                if self.hits_tree.item(item, "text") == f"10p{base_exponent}":
+                    pietro_item = item
+                    break
+            if pietro_item is None:
+                return
+            self.hits_tree.item(pietro_item, open=True)
+            self._populate_hits_pietro_node(pietro_item)
+            # Patterns are nested one level deeper, under a "k={k} (razem: N)" group node
+            # (per-k subtotals -- see _populate_hits_pietro_node) --
+            # find that k-group first, then the v=id leaf underneath it.
+            k_prefix = f"k={pattern['k']}  "
+            k_node = None
+            for child in self.hits_tree.get_children(pietro_item):
+                if self.hits_tree.item(child, "text").startswith(k_prefix):
+                    k_node = child
+                    break
+            if k_node is None:
+                return
+            self.hits_tree.item(k_node, open=True)
+            target_item = None
+            label = f"v={pattern['id']}"
+            for child in self.hits_tree.get_children(k_node):
+                if self.hits_tree.item(child, "text") == label:
+                    target_item = child
+                    break
+            if target_item is None:
+                return
+            self.hits_tree.see(target_item)
+            self.hits_tree.selection_set(target_item)
+            self.hits_tree.focus(target_item)
+            self.update()
+
+        def _jump_hits_preview_to_row(self, hit_base, position):
+            """Locates the flattened row for (hit_base, position) via bisect over the
+            sorted starting values (same technique as find_prime_in_floor), then jumps
+            the preview to the page/row containing it and selects just that one row --
+            i.e. just that one number, not the whole tuple it belongs to."""
+            if not self._hit_values or not self._hit_rows or self._selected_hit_pattern is None:
+                return
+            hit_index = bisect.bisect_left(self._hit_values, hit_base)
+            if hit_index >= len(self._hit_values) or self._hit_values[hit_index] != hit_base:
+                return
+            total_positions = len(self._selected_hit_pattern["offsets"])
+            target_index = hit_index * total_positions + position
+            if target_index >= len(self._hit_rows):
+                return
+            page = target_index // PAGE_SIZE
+            self._show_hits_page(page)
+            self.hits_load_preview_btn.configure(state="disabled")
+            local = target_index - self._hit_page * PAGE_SIZE
+            self.hits_preview_list.selection_clear(0, "end")
+            self.hits_preview_list.selection_set(local)
+            self.hits_preview_list.see(local)
+
+        def _on_search_result_activate(self, _event):
+            sel = self.search_results_list.curselection()
+            if not sel or sel[0] >= len(self._search_results_data):
+                return
+            data = self._search_results_data[sel[0]]
+            self._select_hits_pattern_in_tree(data["base_exponent"], data["pattern"])
+            self._load_hits_preview()
+            self._jump_hits_preview_to_row(data["hit_base"], data["position"])
+
+        def _search_constellation(self):
+            raw = self.hits_search_entry.get().strip()
+            if not raw.isdigit():
+                messagebox.showerror(T("common.dialog_search_title"), T("common.error_invalid_number"))
+                return
+            number = int(raw)
+            base_exponent = digit_count_floor(number)
+            if base_exponent not in list_pietra(PORTAL_FOLDER):
+                messagebox.showinfo(
+                    T("common.dialog_search_title"),
+                    T("common.no_floor", base_exponent=base_exponent, digits=len(raw)))
+                return
+            if self._search_busy:
+                messagebox.showinfo(T("common.dialog_search_title"), T("common.search_already_running"))
+                return
+
+            self.search_results_list.delete(0, "end")
+            self._search_results_data = []
+            self._start_search_job("const", base_exponent, number)
+
+        def _on_const_search_result(self, base_exponent, number, prime_result, participation):
+            """Main-thread completion handler for a "const" search job -- same UI update
+            _search_constellation() used to do synchronously right after calling
+            find_prime_in_floor()/find_constellation_participation(), now driven by
+            _poll_search_results() once the worker thread hands the (plain-data) results
+            back."""
+            if prime_result is None:
+                self.hits_detail_text.set(
+                    T("const.not_found_detail", number=number, base_exponent=base_exponent)
+                )
+                self._reset_hits_preview_state()
+                self.hits_load_preview_btn.configure(state="disabled")
+                return
+
+            lines = [T("const.number_line", number=number),
+                     T("const.found_in", name=prime_result['name'], base_exponent=base_exponent), ""]
+            if not participation:
+                lines.append(T("const.no_participation"))
+            else:
+                lines.append(T("const.participation_intro", count=len(participation)))
+                for rec in sorted(participation, key=lambda r: (r["pattern"]["k"], r["pattern"]["id"])):
+                    pattern = rec["pattern"]
+                    pos_1based = rec["position"] + 1
+                    total_positions = len(pattern["offsets"])
+                    if rec["offset"] == 0:
+                        lines.append(T("const.participation_base_detail",
+                                        k=pattern['k'], variant=pattern['id'],
+                                        pos=pos_1based, total=total_positions))
+                        row_text = T("const.row_base", k=pattern['k'], variant=pattern['id'],
+                                     pos=pos_1based, total=total_positions)
+                    else:
+                        lines.append(T("const.participation_offset_detail",
+                                        k=pattern['k'], variant=pattern['id'],
+                                        pos=pos_1based, total=total_positions,
+                                        offset=rec['offset'], base=rec['base']))
+                        row_text = T("const.row_offset", k=pattern['k'], variant=pattern['id'],
+                                     pos=pos_1based, total=total_positions,
+                                     offset=rec['offset'], base=rec['base'])
+                    self.search_results_list.insert("end", row_text)
+                    self._search_results_data.append({
+                        "base_exponent": base_exponent, "pattern": pattern, "position": rec["position"],
+                        "hit_base": rec["base"],
+                    })
+            self.hits_detail_text.set("\n".join(lines))
+            self._reset_hits_preview_state()
+            self._selected_hit_path = None
+            self._selected_hit_pattern = None
+            self.hits_load_preview_btn.configure(state="disabled")
+            self.status.set(T("const.status_search", number=number, count=len(participation)))
+
+        # --- Tab 3: Generowanie (launch orchestrator_loop_v2 / constellation_finder) --
+
+        def _build_generation_tab(self):
+            """Two independent sections ("Osobne wywołania i parametryzacja"):
+            orchestrator_loop_v2.py's full generation pipeline on
+            top, constellation_finder_v1.py's k-tuple search below -- each with its own
+            form (every CLI parameter those scripts expose, including the ones that used
+            to require editing source files -- see orchestrator_v3.py's/orchestrator_
+            loop_v2.py's workers/batches_per_worker/window_count_per_run CLI-exposure
+            changes), its own Uruchom/Zatrzymaj pair, and its own live output pane. Form
+            values are loaded from .portal_generation_settings.json once here and
+            persisted again every time Uruchom is pressed (see _on_run_loop/
+            _on_run_constellation) -- so the next portal_browser start reopens with
+            whatever was last used, no re-typing needed."""
+            self._generation_settings = load_generation_settings(PORTAL_FOLDER)
+
+            quick_outer = ttk.Labelframe(self.generation_tab, text=T("quick.section_title"))
+            quick_outer.pack(fill="x", padx=6, pady=(6, 0))
+            self._build_quick_generation_panel(quick_outer)
+
+            paned = ttk.Panedwindow(self.generation_tab, orient="vertical")
+            paned.pack(fill="both", expand=True, padx=6, pady=6)
+
+            # --- Section A: orchestrator_loop_v2.py (generation pipeline) ------------
+            loop_outer = ttk.Labelframe(
+                paned, text=T("gen.section_loop"))
+            paned.add(loop_outer, weight=1)
+
+            # These are advanced settings, so base_exponent/run_count/
+            # n_instances/window_count_per_run/workers/batches_per_worker/window_m (plus
+            # the two checkboxes) collapse behind a toggle button, collapsed by default.
+            #
+            # loop_btn_row (Uruchom/Zatrzymaj/status) is hidden along with them: the raw
+            # Uruchom button only makes sense once you can actually SEE what it'll run
+            # with, so loop_btn_row now lives INSIDE the same collapsible block as the
+            # fields, not next to it -- one toggle hides/shows both together. The normal
+            # way to run is now the Quick-gen "Generuj" button above
+            # (_on_quick_generate_or_stop_clicked), which doubles as Stop while a run is
+            # in flight (see _on_run_loop/_on_loop_finished).
+            loop_advanced_row = ttk.Frame(loop_outer)
+            loop_advanced_row.pack(fill="x", padx=8, pady=(6, 0))
+            self._loop_advanced_visible = False
+            self.loop_advanced_toggle_btn = ttk.Button(
+                loop_advanced_row, text=T("gen.advanced_show"),
+                command=self._on_toggle_loop_advanced)
+            self.loop_advanced_toggle_btn.pack(side="left")
+
+            loop_advanced_content = ttk.Frame(loop_outer)
+            self._loop_advanced_content = loop_advanced_content
+            # NOT packed here -- starts collapsed, see _on_toggle_loop_advanced(). Packed
+            # (when shown) with before=self.loop_terminal_row so it always lands right
+            # below the toggle button, above the terminal's own toggle row.
+
+            loop_form = ttk.Frame(loop_advanced_content)
+            loop_form.pack(fill="x")
+
+            self._loop_vars = {}
+            loop_settings = self._generation_settings["loop"]
+
+            def add_loop_field(row, col, key, label, width=10):
+                ttk.Label(loop_form, text=label).grid(
+                    row=row, column=col * 2, sticky="w", padx=(0, 4), pady=2)
+                var = tk.StringVar(value=str(loop_settings.get(key, "")))
+                ttk.Entry(loop_form, textvariable=var, width=width).grid(
+                    row=row, column=col * 2 + 1, sticky="w", padx=(0, 20), pady=2)
+                self._loop_vars[key] = var
+
+            add_loop_field(0, 0, "base_exponent", T("gen.field_base_exponent"))
+            add_loop_field(0, 1, "run_count", T("gen.field_run_count"))
+            add_loop_field(1, 0, "n_instances", T("gen.field_n_instances"))
+            add_loop_field(1, 1, "window_count_per_run", T("gen.field_window_count"))
+            add_loop_field(2, 0, "workers", T("gen.field_workers"))
+            add_loop_field(2, 1, "batches_per_worker", T("gen.field_batches"))
+            # window_m: was hardcoded to 10,000,000 in three separate scanner/orchestrator
+            # files -- now a real CLI-overridable parameter, threaded all the way down to
+            # prime_sieve_v3.py (see build_loop_argv()'s docstring for the full chain and
+            # the "only safe to change for a piętro with no existing data" caveat).
+            add_loop_field(3, 0, "window_m", T("gen.field_window_m"), width=14)
+
+            self._loop_write_files_var = tk.BooleanVar(
+                value=bool(loop_settings.get("write_files", True)))
+            ttk.Checkbutton(loop_form, text=T("gen.check_write_files"),
+                             variable=self._loop_write_files_var).grid(
+                row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            self._loop_count_sieving_var = tk.BooleanVar(
+                value=bool(loop_settings.get("compute_sieving_primes_count", False)))
+            ttk.Checkbutton(
+                loop_form, text=T("gen.check_count_sieving"),
+                variable=self._loop_count_sieving_var).grid(
+                row=4, column=2, columnspan=2, sticky="w", pady=(6, 0))
+
+            loop_btn_row = ttk.Frame(loop_advanced_content)
+            loop_btn_row.pack(fill="x", pady=(6, 0))
+            self.loop_run_btn = ttk.Button(loop_btn_row, text=T("common.run"), command=self._on_run_loop)
+            self.loop_run_btn.pack(side="left")
+            self.loop_stop_btn = ttk.Button(
+                loop_btn_row, text=T("common.stop"), command=self._on_stop_loop, state="disabled")
+            self.loop_stop_btn.pack(side="left", padx=(6, 0))
+            self.loop_status_label = tk.StringVar(value=T("common.ready"))
+            ttk.Label(loop_btn_row, textvariable=self.loop_status_label).pack(
+                side="left", padx=(12, 0))
+
+            # Each terminal pane (loop and constellation) has its own collapse toggle,
+            # collapsed whenever its script isn't running: own toggle, collapsed on every
+            # app start (no persisted state), auto-expanded by _show_loop_terminal() the
+            # moment a run actually starts (_on_run_loop), and deliberately left alone
+            # (never auto-collapsed) once it finishes -- see _on_loop_finished.
+            self.loop_terminal_row = ttk.Frame(loop_outer)
+            self.loop_terminal_row.pack(fill="x", padx=8, pady=(4, 0))
+            self._loop_terminal_visible = False
+            self.loop_terminal_toggle_btn = ttk.Button(
+                self.loop_terminal_row, text=T("gen.terminal_show"),
+                command=self._on_toggle_loop_terminal)
+            self.loop_terminal_toggle_btn.pack(side="left")
+
+            self.loop_output = ScrolledText(
+                loop_outer, height=10, font=("Consolas", 9), state="disabled",
+                background="#111318", foreground="#d8d8d8")
+            # NOT packed here -- starts collapsed, see _on_toggle_loop_terminal().
+
+            self._loop_runner = None
+            self._loop_output_queue = queue.Queue()
+
+            # --- Section B: constellation_finder_v1.py (k-tuple search) --------------
+            const_outer = ttk.Labelframe(
+                paned, text=T("gen.section_const"))
+            paned.add(const_outer, weight=1)
+
+            const_form = ttk.Frame(const_outer)
+            const_form.pack(fill="x", padx=8, pady=6)
+            const_settings = self._generation_settings["constellation"]
+            ttk.Label(const_form, text=T("gen.const_field_base_exponent")).pack(
+                side="left")
+            self._const_base_exponent_var = tk.StringVar(
+                value=str(const_settings.get("base_exponent", "")))
+            ttk.Entry(const_form, textvariable=self._const_base_exponent_var, width=10).pack(
+                side="left", padx=(6, 0))
+
+            const_btn_row = ttk.Frame(const_outer)
+            const_btn_row.pack(fill="x", padx=8, pady=(0, 4))
+            self.const_run_btn = ttk.Button(
+                const_btn_row, text=T("common.run"), command=self._on_run_constellation)
+            self.const_run_btn.pack(side="left")
+            self.const_stop_btn = ttk.Button(
+                const_btn_row, text=T("common.stop"), command=self._on_stop_constellation,
+                state="disabled")
+            self.const_stop_btn.pack(side="left", padx=(6, 0))
+            self.const_status_label = tk.StringVar(value=T("common.ready"))
+            ttk.Label(const_btn_row, textvariable=self.const_status_label).pack(
+                side="left", padx=(12, 0))
+
+            # Collapsible terminal, same as the pipeline section's loop_output above --
+            # see the comment there for the full rationale.
+            const_terminal_row = ttk.Frame(const_outer)
+            const_terminal_row.pack(fill="x", padx=8, pady=(4, 0))
+            self._const_terminal_visible = False
+            self.const_terminal_toggle_btn = ttk.Button(
+                const_terminal_row, text=T("gen.terminal_show"),
+                command=self._on_toggle_const_terminal)
+            self.const_terminal_toggle_btn.pack(side="left")
+
+            self.const_output = ScrolledText(
+                const_outer, height=10, font=("Consolas", 9), state="disabled",
+                background="#111318", foreground="#d8d8d8")
+            # NOT packed here -- starts collapsed, see _on_toggle_const_terminal().
+
+            self._const_runner = None
+            self._const_output_queue = queue.Queue()
+
+            self.after(150, self._poll_loop_output)
+            self.after(150, self._poll_constellation_output)
+
+        def _on_toggle_loop_advanced(self):
+            """Shows/hides loop_advanced_content -- the fields AND the raw Uruchom/
+            Zatrzymaj/status row together (see _build_generation_tab()'s comment on
+            Section A) -- packed with before=self.loop_terminal_row so it always lands back
+            in the same slot (between the toggle button and the terminal's own toggle row)
+            regardless of how many times it's been forgotten/re-shown."""
+            if self._loop_advanced_visible:
+                self._loop_advanced_content.pack_forget()
+                self._loop_advanced_visible = False
+                self.loop_advanced_toggle_btn.configure(text=T("gen.advanced_show"))
+            else:
+                self._loop_advanced_content.pack(
+                    fill="x", padx=8, pady=(0, 4), before=self.loop_terminal_row)
+                self._loop_advanced_visible = True
+                self.loop_advanced_toggle_btn.configure(text=T("gen.advanced_hide"))
+
+        def _on_toggle_loop_terminal(self):
+            if self._loop_terminal_visible:
+                self.loop_output.pack_forget()
+                self._loop_terminal_visible = False
+                self.loop_terminal_toggle_btn.configure(text=T("gen.terminal_show"))
+            else:
+                self.loop_output.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+                self._loop_terminal_visible = True
+                self.loop_terminal_toggle_btn.configure(text=T("gen.terminal_hide"))
+
+        def _show_loop_terminal(self):
+            """Force-expands loop_output if it's currently collapsed -- called from
+            _on_run_loop() the moment a run actually starts. No-op if already visible
+            (e.g. the user had opened it manually)."""
+            if not self._loop_terminal_visible:
+                self._on_toggle_loop_terminal()
+
+        def _on_toggle_const_terminal(self):
+            if self._const_terminal_visible:
+                self.const_output.pack_forget()
+                self._const_terminal_visible = False
+                self.const_terminal_toggle_btn.configure(text=T("gen.terminal_show"))
+            else:
+                self.const_output.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+                self._const_terminal_visible = True
+                self.const_terminal_toggle_btn.configure(text=T("gen.terminal_hide"))
+
+        def _show_const_terminal(self):
+            if not self._const_terminal_visible:
+                self._on_toggle_const_terminal()
+
+        # --- Quick generation panel (higher-level, sits above the raw pipeline form) ---
+
+        def _build_quick_generation_panel(self, parent):
+            """Higher-level "just tell me the floor / range" panel above the raw
+            orchestrator_loop_v2.py parameter form -- those low-level
+            fields (window_count_per_run, workers, batches_per_worker...) are too
+            low-level for the app/user. This
+            panel lets the person say WHAT they want -- a floor, or a numeric range in
+            Python-expression-friendly notation (e.g. 10**5) -- in one of three ways, and a
+            LATER step will translate that into the low-level fields below automatically:
+            window width capped at QUICK_GEN_MAX_WINDOW_WIDTH (10,000,000), window count
+            derived from the target range so the total comes out right, "exploration" mode
+            appending N further 10-billion-wide chunks to a floor's existing data.
+
+            An earlier "range -- width" mode (floor + a single width
+            field) was dropped -- with no explicit start, it behaved identically to
+            "floor only" (both just continue/create that floor), so it was a redundant
+            duplicate rather than a genuinely different way of specifying the target.
+
+            INTERFACE ONLY for now -- Generuj here
+            only echoes back what was entered via a summary dialog; it does not touch
+            build_loop_argv/WslLoggedRunner or check what's already in storage yet."""
+            ttk.Label(parent, text=T("quick.intro"), foreground="#555555",
+                      wraplength=900, justify="left").pack(
+                anchor="w", padx=8, pady=(6, 4))
+
+            mode_row = ttk.Frame(parent)
+            mode_row.pack(fill="x", padx=8, pady=(0, 2))
+            self.quick_mode_var = tk.StringVar(value="floor")
+            quick_modes = [
+                ("floor", T("quick.mode_floor")),
+                ("range", T("quick.mode_range")),
+                ("explore", T("quick.mode_explore")),
+            ]
+            for value, label in quick_modes:
+                ttk.Radiobutton(mode_row, text=label, value=value, variable=self.quick_mode_var,
+                                 command=self._on_quick_mode_changed).pack(side="left", padx=(0, 16))
+
+            # All three mode sub-frames share the same grid cell (row 0, col 0) and are
+            # switched with .tkraise() -- keeps whichever fields aren't relevant to the
+            # current mode out of the way instead of disabling-in-place, and avoids
+            # reflowing the rest of the panel's layout when the mode changes.
+            fields_container = ttk.Frame(parent)
+            fields_container.pack(fill="x", padx=8, pady=(2, 4))
+            self._quick_mode_frames = {}
+            self._build_quick_mode_floor(fields_container)
+            self._build_quick_mode_range(fields_container)
+            self._build_quick_mode_explore(fields_container)
+
+            self.quick_hint_var = tk.StringVar(value="")
+            ttk.Label(parent, textvariable=self.quick_hint_var, foreground="#555555",
+                      wraplength=900, justify="left").pack(anchor="w", padx=8, pady=(0, 4))
+
+            btn_row = ttk.Frame(parent)
+            btn_row.pack(fill="x", padx=8, pady=(0, 8))
+            # Generuj is the primary Start/Stop control (the raw
+            # Uruchom/Zatrzymaj pair moved inside the collapsible advanced block, see
+            # _build_generation_tab()'s Section A) -- see
+            # _on_quick_generate_or_stop_clicked/_on_run_loop/_on_loop_finished for the
+            # three places that flip its label between quick.generate_button and
+            # common.stop.
+            self.quick_generate_btn = ttk.Button(
+                btn_row, text=T("quick.generate_button"),
+                command=self._on_quick_generate_or_stop_clicked)
+            self.quick_generate_btn.pack(side="left")
+            self.quick_status_var = tk.StringVar(value="")
+            ttk.Label(btn_row, textvariable=self.quick_status_var).pack(side="left", padx=(12, 0))
+
+            self._on_quick_mode_changed()  # show the right sub-frame + hint for the default
+
+        def _build_quick_mode_floor(self, container):
+            """The on-disk window format stays EXACTLY as it is -- always round the
+            requested amount UP to a whole number of QUICK_GEN_MAX_WINDOW_WIDTH
+            (10,000,000) windows, since rounding up costs almost no extra time and keeps
+            file management predictable. So Szerokość here is a MULTIPLIER of that window
+            size, not a raw integer -- entering 1 means one 10-million window, 1000 means
+            1000 of them (10 billion, the max, an explicit input cap). A ttk.Spinbox (not a
+            plain Entry) makes that bounded-multiplier nature visible at a glance and a
+            validatecommand blocks keystrokes that would push it out of [1, 1000].
+
+            Punkt startowy is optional and drives which of its TWO roles the Piętro field
+            plays: blank start -> Piętro is a normal, manually-typed field, and generation
+            continues from that floor's last existing file; a start value -> Piętro
+            becomes a READ-ONLY, auto-computed display of digit_count_floor(start) (also
+            solves "nie jest łatwo liczyć ile jest zer w ciągu dużej liczby" -- counting
+            zeros in a huge number by eye is exactly what this now does for you). See
+            _on_quick_floor_start_changed, wired via a trace on quick_floor_start_var."""
+            frame = ttk.Frame(container)
+            frame.grid(row=0, column=0, sticky="w")
+            ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
+            self.quick_floor_var = tk.StringVar(value="")
+            self.quick_floor_entry = ttk.Entry(frame, textvariable=self.quick_floor_var, width=10)
+            self.quick_floor_entry.pack(side="left", padx=(6, 20))
+            ttk.Label(frame, text=T("quick.field_width")).pack(side="left")
+            self.quick_floor_width_var = tk.StringVar(value="1")
+            width_vcmd = (self.register(self._validate_quick_width_spinbox), "%P")
+            ttk.Spinbox(frame, from_=1, to=1000, textvariable=self.quick_floor_width_var,
+                        width=6, validate="key", validatecommand=width_vcmd).pack(
+                side="left", padx=(6, 20))
+            ttk.Label(frame, text=T("quick.field_start")).pack(side="left")
+            self.quick_floor_start_var = tk.StringVar(value="")
+            ttk.Entry(frame, textvariable=self.quick_floor_start_var, width=20).pack(
+                side="left", padx=(6, 0))
+            self.quick_floor_start_var.trace_add("write", self._on_quick_floor_start_changed)
+            self._quick_mode_frames["floor"] = frame
+
+        def _validate_quick_width_spinbox(self, proposed):
+            """validatecommand for the Szerokość spinbox -- allows an empty field WHILE
+            editing (so the user can select-all-and-retype), otherwise only digit strings
+            in [1, 1000] -- UI-level input restriction only; this is not where the actual
+            1 unit = 10,000,000 translation happens (that's the logic step, not yet
+            written)."""
+            if proposed == "":
+                return True
+            return proposed.isdigit() and 1 <= int(proposed) <= 1000
+
+        def _on_quick_floor_start_changed(self, *_args):
+            """Gives the Piętro field its two roles (see _build_quick_mode_floor's
+            docstring): a parseable punkt startowy value makes it a read-only,
+            auto-computed "which floor is this number in" display; clearing/blanking it
+            (or typing something unparseable) hands control back to the person, since an
+            empty starting point means "continue this floor" and the app has no other way
+            to know WHICH floor that is."""
+            value = _eval_quick_number(self.quick_floor_start_var.get())
+            if value is None:
+                self.quick_floor_var.set("")
+                self.quick_floor_entry.configure(state="normal")
+            else:
+                self.quick_floor_var.set(str(digit_count_floor(value)))
+                self.quick_floor_entry.configure(state="readonly")
+
+        def _build_quick_mode_range(self, container):
+            frame = ttk.Frame(container)
+            frame.grid(row=0, column=0, sticky="w")
+            ttk.Label(frame, text=T("quick.field_from")).pack(side="left")
+            self.quick_from_var = tk.StringVar(value="")
+            ttk.Entry(frame, textvariable=self.quick_from_var, width=20).pack(
+                side="left", padx=(6, 20))
+            ttk.Label(frame, text=T("quick.field_to")).pack(side="left")
+            self.quick_to_var = tk.StringVar(value="")
+            ttk.Entry(frame, textvariable=self.quick_to_var, width=20).pack(
+                side="left", padx=(6, 0))
+            self._quick_mode_frames["range"] = frame
+
+        def _build_quick_mode_explore(self, container):
+            """Eksploracja maps directly onto orchestrator_loop_v2's own
+            run_count/WINDOW_COUNT_PER_RUN loop -- this mode ONLY continues on the given
+            floor -- no create-if-missing, no start-point business, Piętro is required.
+            One iteration, at the loop's defaults (WINDOW_COUNT_PER_RUN=1000 windows x
+            WINDOW_M=10,000,000), is 10 billion -- so Liczba iteracji is a bounded
+            multiplier of that, same pattern as "Tylko piętro"'s Szerokość spinbox:
+            minimum 1 (10 bln), capped at 100 (1,000,000,000,000 upper bound)."""
+            frame = ttk.Frame(container)
+            frame.grid(row=0, column=0, sticky="w")
+            ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
+            self.quick_explore_floor_var = tk.StringVar(value="")
+            ttk.Entry(frame, textvariable=self.quick_explore_floor_var, width=10).pack(
+                side="left", padx=(6, 20))
+            ttk.Label(frame, text=T("quick.field_iterations")).pack(side="left")
+            self.quick_iterations_var = tk.StringVar(value="1")
+            iterations_vcmd = (self.register(self._validate_quick_iterations_spinbox), "%P")
+            ttk.Spinbox(frame, from_=1, to=100, textvariable=self.quick_iterations_var,
+                        width=6, validate="key", validatecommand=iterations_vcmd).pack(
+                side="left", padx=(6, 0))
+            self._quick_mode_frames["explore"] = frame
+
+        def _validate_quick_iterations_spinbox(self, proposed):
+            """validatecommand for the Liczba iteracji spinbox -- same shape as
+            _validate_quick_width_spinbox, bounded to [1, 100] (100 x 10 bln = 1 trillion
+            upper bound)."""
+            if proposed == "":
+                return True
+            return proposed.isdigit() and 1 <= int(proposed) <= 100
+
+        def _on_quick_mode_changed(self):
+            """tkraise() only reorders stacking within the shared grid cell -- it does
+            NOT clip a sibling frame's own size. Since the "floor" sub-frame
+            (Piętro+Szerokość+Punkt startowy) is wider than "range" (Od+Do), raising
+            "range" on top would still leave "floor"'s trailing Punkt startowy label/
+            entry visible past range's right edge. grid_remove()/grid() actually pulls
+            the inactive frames out of the layout instead of just moving them behind."""
+            mode = self.quick_mode_var.get()
+            for name, frame in self._quick_mode_frames.items():
+                if name == mode:
+                    frame.grid(row=0, column=0, sticky="w")
+                else:
+                    frame.grid_remove()
+            hints = {
+                "floor": T("quick.hint_floor"),
+                "range": T("quick.hint_range"),
+                "explore": T("quick.hint_explore"),
+            }
+            self.quick_hint_var.set(hints.get(mode, ""))
+
+        def _on_quick_generate_or_stop_clicked(self):
+            """Dual-function dispatch for the Quick-gen 'Generuj' button: while a
+            pipeline run is in flight, this button IS the stop control
+            (its label already reads Zatrzymaj -- see _on_run_loop); otherwise it's the
+            normal generate path. Checked the same way _on_quick_generate_clicked already
+            guards against double-launch (self._loop_runner.is_running())."""
+            if self._loop_runner is not None and self._loop_runner.is_running():
+                self._on_stop_loop()
+            else:
+                self._on_quick_generate_clicked()
+
+        def _apply_loop_params_and_run(self, base_exponent, run_count, window_count_per_run):
+            """Writes the computed low-level parameters into the EXISTING orchestrator_
+            loop_v2 form fields (self._loop_vars) and fires the same launch path the
+            low-level "Uruchom" button uses (_on_run_loop) -- reuses its validation,
+            settings-persistence, WslLoggedRunner wiring and live-output panel verbatim
+            instead of duplicating any of it (the log pane right below this panel is
+            where the real output shows up). n_instances/write_files/
+            compute_sieving_primes_count/workers/batches_per_worker/window_m are left
+            exactly as they already are in the low-level form -- the app translates the
+            quick-gen inputs into width/window-count in the form below, but quick-gen
+            only ever decides base_exponent/run_count/window_count_per_run, nothing
+            else."""
+            self._loop_vars["base_exponent"].set(str(base_exponent))
+            self._loop_vars["run_count"].set(str(run_count))
+            self._loop_vars["window_count_per_run"].set(str(window_count_per_run))
+            self._on_run_loop()
+
+        def _on_quick_generate_clicked(self):
+            """Real launch path: computes base_exponent/run_count/
+            window_count_per_run for whichever mode is selected and hands them to
+            _apply_loop_params_and_run().
+
+            Tylko piętro and Eksploracja both map onto orchestrator_loop_v2's own
+            continuation-only behavior -- it has NO start/offset override
+            (find_auto_start() is the only thing that ever decides where a run begins:
+            always either "right after the highest existing window", or target_idx=0 if
+            nothing exists yet) -- so both are pure "add N more windows to this piętro"
+            requests, never idempotent range checks. "Punkt startowy" in Tylko piętro
+            therefore only ever picks WHICH piętro to target (via digit_count_floor) --
+            it cannot make generation jump to that literal offset; the hint text says so.
+
+            Zakres -- od/do tries to honor an "already in storage / partial / new"
+            framing, but only where the engine can truthfully deliver
+            it: a single piętro, grid-aligned to WINDOW_M. A request spanning a piętro
+            boundary is rejected outright (base_exponent is one fixed value per run --
+            the engine cannot switch piętro mid-run) rather than silently doing
+            something other than what was asked. A request whose start is AHEAD of
+            what's currently on disk is honored by generating from the real
+            continuation point through the requested end -- covering the requested
+            range plus whatever gap preceded it, never anything outside/before it,
+            consistent with this project's established "always round up, never trim"
+            philosophy (see _round_range_to_window)."""
+            if self._loop_runner is not None and self._loop_runner.is_running():
+                messagebox.showerror(T("quick.dialog_title"), T("quick.error_already_running"))
+                return
+            mode = self.quick_mode_var.get()
+            if mode == "floor":
+                raw_floor = self.quick_floor_var.get().strip()
+                floor_value = _eval_quick_number(raw_floor)
+                if floor_value is None or floor_value < 0:
+                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_floor_required"))
+                    return
+                width_mult = _eval_quick_number(self.quick_floor_width_var.get()) or 1
+                width_total = width_mult * QUICK_GEN_MAX_WINDOW_WIDTH
+                start = self.quick_floor_start_var.get().strip() or T("quick.start_continue_last")
+                existing_count = find_continuation_target_idx(
+                    PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                self.quick_status_var.set(T(
+                    "quick.summary_floor", floor=floor_value, width_mult=width_mult,
+                    width_total=f"{width_total:,}", start=start,
+                    existing_count=existing_count, added_count=width_mult))
+                self._apply_loop_params_and_run(floor_value, 1, width_mult)
+            elif mode == "range":
+                raw_from = self.quick_from_var.get().strip()
+                raw_to = self.quick_to_var.get().strip()
+                start = _eval_quick_number(raw_from)
+                end = _eval_quick_number(raw_to)
+                if not raw_from or not raw_to or start is None or end is None:
+                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_range_required"))
+                    return
+                if start < 0:
+                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_range_negative"))
+                    return
+                if start >= end:
+                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_range_order"))
+                    return
+                rounded_start, rounded_end = _round_range_to_window(start, end)
+                floor_lo = digit_count_floor(rounded_start)
+                floor_hi = digit_count_floor(rounded_end - 1)
+                if floor_lo != floor_hi:
+                    boundary = 10 ** (floor_lo + 1)
+                    messagebox.showerror(
+                        T("quick.dialog_title"),
+                        T("quick.error_range_cross_floor", boundary=f"{boundary:,}"))
+                    return
+                base = 10 ** floor_lo
+                if ((rounded_start - base) % QUICK_GEN_MAX_WINDOW_WIDTH
+                        or (rounded_end - base) % QUICK_GEN_MAX_WINDOW_WIDTH):
+                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_range_misaligned"))
+                    return
+                target_idx_end = (rounded_end - base) // QUICK_GEN_MAX_WINDOW_WIDTH
+                existing_count = find_continuation_target_idx(
+                    PORTAL_FOLDER, floor_lo, QUICK_GEN_MAX_WINDOW_WIDTH)
+                if target_idx_end <= existing_count:
+                    self.quick_status_var.set(T(
+                        "quick.status_already_in_storage",
+                        rounded_start=f"{rounded_start:,}", rounded_end=f"{rounded_end:,}",
+                        existing_count=existing_count))
+                    return
+                window_count_per_run = target_idx_end - existing_count
+                self.quick_status_var.set(T(
+                    "quick.summary_range", start=f"{start:,}", end=f"{end:,}",
+                    rounded_start=f"{rounded_start:,}", rounded_end=f"{rounded_end:,}",
+                    floor=floor_lo, existing_count=existing_count,
+                    added_count=window_count_per_run))
+                self._apply_loop_params_and_run(floor_lo, 1, window_count_per_run)
+            else:
+                raw_floor = self.quick_explore_floor_var.get().strip()
+                floor_value = _eval_quick_number(raw_floor)
+                if not raw_floor or floor_value is None or floor_value < 0:
+                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_explore_floor_required"))
+                    return
+                iterations = _eval_quick_number(self.quick_iterations_var.get()) or 1
+                window_count_per_run = (
+                    QUICK_GEN_EXPLORE_ITERATION_WIDTH // QUICK_GEN_MAX_WINDOW_WIDTH)
+                iterations_total = iterations * QUICK_GEN_EXPLORE_ITERATION_WIDTH
+                existing_count = find_continuation_target_idx(
+                    PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                self.quick_status_var.set(T(
+                    "quick.summary_explore", floor=floor_value, iterations=iterations,
+                    iterations_total=f"{iterations_total:,}", existing_count=existing_count,
+                    added_count=iterations * window_count_per_run))
+                self._apply_loop_params_and_run(floor_value, iterations, window_count_per_run)
+
+        def _collect_loop_settings_from_form(self):
+            """Reads + validates every orchestrator_loop_v2 form field. Returns a dict of
+            parsed values on success, or None (after a messagebox explaining which field
+            is wrong) if anything fails validation -- mirrors the existing "Szukaj"
+            fields' isdigit()-based validation pattern elsewhere in this file."""
+            int_fields = ("base_exponent", "run_count", "n_instances", "window_count_per_run",
+                          "workers", "batches_per_worker", "window_m")
+            parsed = {}
+            for key in int_fields:
+                raw = self._loop_vars[key].get().strip()
+                if not raw.isdigit() or int(raw) <= 0:
+                    messagebox.showerror(
+                        T("gen.dialog_title"), T("gen.error_field_int", field=key))
+                    return None
+                parsed[key] = int(raw)
+            parsed["write_files"] = self._loop_write_files_var.get()
+            parsed["compute_sieving_primes_count"] = self._loop_count_sieving_var.get()
+            return parsed
+
+        def _on_run_loop(self):
+            if self._loop_runner is not None and self._loop_runner.is_running():
+                return
+            parsed = self._collect_loop_settings_from_form()
+            if parsed is None:
+                return
+
+            self._generation_settings["loop"] = {
+                "base_exponent": str(parsed["base_exponent"]),
+                "run_count": str(parsed["run_count"]),
+                "n_instances": str(parsed["n_instances"]),
+                "write_files": parsed["write_files"],
+                "compute_sieving_primes_count": parsed["compute_sieving_primes_count"],
+                "window_count_per_run": str(parsed["window_count_per_run"]),
+                "workers": str(parsed["workers"]),
+                "batches_per_worker": str(parsed["batches_per_worker"]),
+                "window_m": str(parsed["window_m"]),
+            }
+            save_generation_settings(PORTAL_FOLDER, self._generation_settings)
+
+            argv = build_loop_argv(
+                parsed["base_exponent"], parsed["run_count"], parsed["n_instances"],
+                parsed["write_files"], parsed["compute_sieving_primes_count"],
+                parsed["window_count_per_run"], parsed["workers"], parsed["batches_per_worker"],
+                parsed["window_m"])
+            log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "loop")
+            cmd = build_wsl_logged_command(argv, log_path, exit_path)
+
+            self.loop_output.configure(state="normal")
+            self.loop_output.delete("1.0", "end")
+            self.loop_output.configure(state="disabled")
+            self._loop_output_queue = queue.Queue()
+            self._loop_runner = WslLoggedRunner(
+                cmd, log_path, exit_path, self._loop_output_queue,
+                kill_pattern="orchestrator_loop_v2.py")
+            self._loop_runner.start()
+            self.loop_run_btn.configure(state="disabled")
+            self.loop_stop_btn.configure(state="normal")
+            self.loop_status_label.set(T("common.running"))
+            # Generuj doubles as Stop while this runs (see
+            # _on_quick_generate_or_stop_clicked), and the terminal auto-expands the
+            # moment a run actually starts -- reset back to normal in
+            # _on_loop_finished() once it exits.
+            self.quick_generate_btn.configure(text=T("common.stop"))
+            self._show_loop_terminal()
+
+        def _on_stop_loop(self):
+            if self._loop_runner is not None:
+                self._loop_runner.stop()
+                self.loop_status_label.set(T("common.stopping"))
+
+        def _on_loop_finished(self):
+            """_drain_output_queue's on_exit callback for the loop queue -- resets the
+            Quick-gen 'Generuj' button back from its temporary 'Zatrzymaj' label now that
+            nothing is running. Deliberately does NOT touch loop_output's collapse state
+            -- it stays expanded so the final log is still visible after the run
+            finishes."""
+            self.quick_generate_btn.configure(text=T("quick.generate_button"))
+
+        def _poll_loop_output(self):
+            self._drain_output_queue(self._loop_output_queue, self.loop_output,
+                                      self.loop_run_btn, self.loop_stop_btn, self.loop_status_label,
+                                      on_exit=self._on_loop_finished)
+            self.after(150, self._poll_loop_output)
+
+        def _on_run_constellation(self):
+            if self._const_runner is not None and self._const_runner.is_running():
+                return
+            base_exponent = self._const_base_exponent_var.get().strip()
+            if base_exponent and not base_exponent.isdigit():
+                messagebox.showerror(
+                    T("gen.dialog_title"), T("gen.error_base_exponent_int"))
+                return
+
+            self._generation_settings["constellation"] = {"base_exponent": base_exponent}
+            save_generation_settings(PORTAL_FOLDER, self._generation_settings)
+
+            argv = build_constellation_finder_argv(base_exponent if base_exponent else None)
+            log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "constellation")
+            cmd = build_wsl_logged_command(argv, log_path, exit_path)
+
+            self.const_output.configure(state="normal")
+            self.const_output.delete("1.0", "end")
+            self.const_output.configure(state="disabled")
+            self._const_output_queue = queue.Queue()
+            self._const_runner = WslLoggedRunner(
+                cmd, log_path, exit_path, self._const_output_queue,
+                kill_pattern="constellation_finder_v1.py")
+            self._const_runner.start()
+            self.const_run_btn.configure(state="disabled")
+            self.const_stop_btn.configure(state="normal")
+            self.const_status_label.set(T("common.running"))
+            self._show_const_terminal()
+
+        def _on_stop_constellation(self):
+            if self._const_runner is not None:
+                self._const_runner.stop()
+                self.const_status_label.set(T("common.stopping"))
+
+        def _poll_constellation_output(self):
+            self._drain_output_queue(self._const_output_queue, self.const_output,
+                                      self.const_run_btn, self.const_stop_btn,
+                                      self.const_status_label)
+            self.after(150, self._poll_constellation_output)
+
+        def _drain_output_queue(self, q, text_widget, run_btn, stop_btn, status_var, on_exit=None):
+            """Shared by both Generowanie sections: drains whatever output
+            a WslLoggedRunner has pushed onto `q` since the last poll into
+            `text_widget` (autoscrolling to the bottom), and on that runner's
+            ("__exit__", returncode) sentinel, re-enables Uruchom / disables Zatrzymaj and
+            reports the exit code. Same 150ms self.after() polling cadence as the piętro-
+            totals worker (_poll_totals_results) -- this method itself does NOT
+            reschedule; each caller (_poll_loop_output / _poll_constellation_output) owns
+            its own self.after() chain so the two sections' polling stays independent.
+
+            An optional on_exit() callback fires right after the exit-sentinel
+            handling above -- currently only _poll_loop_output uses it (to reset the
+            Quick-gen 'Generuj' button's temporary 'Zatrzymaj' label, see
+            _on_loop_finished); _poll_constellation_output has no equivalent dual-purpose
+            button so it leaves this at its default of None."""
+            try:
+                while True:
+                    item = q.get_nowait()
+                    if isinstance(item, tuple) and item and item[0] == "__exit__":
+                        returncode = item[1]
+                        run_btn.configure(state="normal")
+                        stop_btn.configure(state="disabled")
+                        if returncode is None:
+                            status_var.set(T("common.error_starting_process"))
+                        elif returncode == 0:
+                            status_var.set(T("common.finished_ok"))
+                        else:
+                            status_var.set(T("common.finished_code", code=returncode))
+                        if on_exit is not None:
+                            on_exit()
+                        continue
+                    text_widget.configure(state="normal")
+                    text_widget.insert("end", item)
+                    text_widget.see("end")
+                    text_widget.configure(state="disabled")
+            except queue.Empty:
+                pass
+
+        # --- Tab 5: Ustawienia -----------------------------------------------------
+
+        def _set_portal_folder(self, new_path):
+            """The one place that rebinds the module-level PORTAL_FOLDER global -- passed
+            into SettingsTab as wsl_helpers["set_portal_folder"] so a storage-path change
+            in the Ustawienia tab takes effect immediately for every other tab/function in
+            this file, all of which read the bare name PORTAL_FOLDER at call time (see the
+            APP_SETTINGS/PORTAL_FOLDER comment near this file's top). `global` here binds
+            to this MODULE's namespace regardless of this method's own nesting depth
+            inside _build_gui()/PortalBrowserApp.
+
+            Rebinding the global alone isn't enough: without an explicit reload, a
+            genuinely empty new location would still show the previous location's piętra
+            with real file counts, since nothing else re-scans the Liczby pierwsze /
+            Konstelacje trees after a path change. So this re-triggers both trees'
+            reload itself, right here, the moment the path actually changes (guarded by
+            `changed` so re-saving the SAME path -- e.g. clicking Zapisz again -- doesn't
+            pay for two pointless re-scans). Both reload_*_tree() methods are safe to call
+            here: by the time a user can reach the Ustawienia tab's Zapisz/Reset buttons,
+            every other tab has long since finished its own initial build."""
+            global PORTAL_FOLDER
+            changed = (new_path != PORTAL_FOLDER)
+            PORTAL_FOLDER = new_path
+            self.status.set(T("app.status_portal_initial", folder=PORTAL_FOLDER))
+            if changed:
+                self.reload_primes_tree()
+                self.reload_constellations_tree()
+
+        def _build_settings_tab(self, settings_tab_cls):
+            """Wires SettingsTab (primeatlas/settings_tab.py) into the 5th notebook tab.
+            SettingsTab doesn't know how to launch WSL subprocesses itself -- it reuses
+            THIS file's existing Generowanie-tab machinery (build_loop_argv,
+            build_constellation_finder_argv, build_wsl_logged_command, WslLoggedRunner,
+            generation_log_paths) via this small callable bundle, rather than
+            reimplementing a second copy inside primeatlas/ or creating a circular import
+            back into this module. get_loop_defaults() reads self._generation_settings,
+            which _build_generation_tab() (called just before this method) already
+            populated from .portal_generation_settings.json."""
+            wsl_helpers = {
+                "get_portal_folder": lambda: PORTAL_FOLDER,
+                "set_portal_folder": self._set_portal_folder,
+                "get_loop_defaults": lambda: self._generation_settings.get("loop", {}),
+                "build_loop_argv": build_loop_argv,
+                "build_constellation_finder_argv": build_constellation_finder_argv,
+                "build_wsl_logged_command": build_wsl_logged_command,
+                "WslLoggedRunner": WslLoggedRunner,
+                "generation_log_paths": generation_log_paths,
+            }
+            self.settings_tab = settings_tab_cls(
+                self.settings_tab_container, APP_SETTINGS, wsl_helpers, TRANSLATOR)
+            self.settings_tab.pack(fill="both", expand=True)
+
+        # --- Tab 4: Benchmark ---------------------------------------------------------
+
+        def _build_benchmark_tab(self):
+            top = ttk.Frame(self.benchmark_tab)
+            top.pack(fill="x", padx=6, pady=4)
+            ttk.Button(top, text=T("common.refresh"), command=self.reload_benchmark_log).pack(side="left")
+            ttk.Button(top, text=T("bench.save_pdf"), command=self._export_benchmark_pdf).pack(
+                side="left", padx=(6, 0))
+            ttk.Label(top, text=T("bench.chart_hint")).pack(side="left")
+
+            chart_frame = ttk.Frame(self.benchmark_tab)
+            chart_frame.pack(fill="x", padx=6, pady=(0, 4))
+            self.benchmark_chart = tk.Canvas(chart_frame, height=220, background="white",
+                                              highlightthickness=1, highlightbackground="#cccccc")
+            self.benchmark_chart.pack(fill="x")
+            self.benchmark_chart.bind("<Configure>", lambda _e: self._redraw_benchmark_chart())
+
+            tree_frame = ttk.Frame(self.benchmark_tab)
+            tree_frame.pack(fill="both", expand=True, padx=6, pady=4)
+
+            # Piętro pagination -- ABOVE the tree, same Prev/label/Next/goto layout as the
+            # "Liczby pierwsze" tab's floor nav (see that tab's _build_primes_tab for the
+            # full rationale). benchmark_log.csv now gets a row per orchestrator run
+            # (including cheap, repeatable count-only benchmarking runs -- see the
+            # write_files toggle), so a piętro can accumulate dozens-to-hundreds of rows;
+            # expanding a piętro only lists/groups rows already in memory (cheap -- the
+            # whole CSV is small text) but only INSERTS one page's worth of Treeview rows at
+            # a time, which is the part that used to freeze the old flat, ever-growing table.
+            benchmark_nav = ttk.Frame(tree_frame)
+            benchmark_nav.pack(fill="x", pady=(0, 4))
+            self.benchmark_prev_btn = ttk.Button(
+                benchmark_nav, text=T("common.prev_page"), command=self._prev_benchmark_page,
+                state="disabled")
+            self.benchmark_prev_btn.pack(side="left")
+            self.benchmark_page_label = tk.StringVar(value="")
+            ttk.Label(benchmark_nav, textvariable=self.benchmark_page_label, width=16,
+                      anchor="center").pack(side="left")
+            self.benchmark_next_btn = ttk.Button(
+                benchmark_nav, text=T("common.next_page"), command=self._next_benchmark_page,
+                state="disabled")
+            self.benchmark_next_btn.pack(side="left")
+            ttk.Label(benchmark_nav, text=T("common.page_prefix")).pack(side="left", padx=(10, 0))
+            self.benchmark_goto_entry = ttk.Entry(benchmark_nav, width=6)
+            self.benchmark_goto_entry.pack(side="left", padx=(4, 0))
+            self.benchmark_goto_entry.bind("<Return>", lambda _e: self._goto_benchmark_page())
+            ttk.Button(benchmark_nav, text=T("common.goto"), command=self._goto_benchmark_page).pack(
+                side="left", padx=(4, 0))
+
+            self.benchmark_tree = ttk.Treeview(tree_frame, show="tree headings")
+            self.benchmark_tree.heading("#0", text=T("bench.col_pietro"))
+            self.benchmark_tree.column("#0", width=170, stretch=False)
+            # Horizontal scrollbar -- with 11 data columns + #0, the row is wider than the
+            # tab, and without this the only way to see the columns off the right edge was
+            # shrinking every column's width by hand. stretch=False on every column (set
+            # below, in reload_benchmark_log()) keeps each column at its given width instead
+            # of Tk auto-stretching the last one to fill the widget, which is what makes the
+            # row properly wider than the view and the scrollbar actually needed/usable.
+            vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.benchmark_tree.yview)
+            hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.benchmark_tree.xview)
+            self.benchmark_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+            vsb.pack(side="right", fill="y")
+            hsb.pack(side="bottom", fill="x")
+            self.benchmark_tree.pack(side="left", fill="both", expand=True)
+
+            self.benchmark_tree.tag_configure("pietro", background="#eef3fb")
+            self.benchmark_tree.tag_configure("stat", background="#fff6d8")
+
+            self.benchmark_tree.bind("<<TreeviewOpen>>", self._on_benchmark_tree_open)
+            self.benchmark_tree.bind("<<TreeviewClose>>", self._on_benchmark_tree_close)
+            self.benchmark_tree.bind("<<TreeviewSelect>>", self._on_benchmark_tree_select)
+
+            self._benchmark_growth_points = []
+            self._benchmark_fair_spw_points = []  # loop_seconds_per_window, second chart line
+            self._benchmark_fieldnames = []  # kept in sync by reload_benchmark_log() --
+            self._benchmark_tree_fieldnames = []  # same, minus BENCHMARK_TREE_HIDDEN_COLUMNS
+                                              # -- what the tree itself actually displays
+            self._benchmark_rows = []        # _export_benchmark_pdf reads these (the FULL,
+                                              # ungrouped data) instead of re-parsing the CSV,
+                                              # so the PDF always exports everything, even
+                                              # rows not currently paged into view.
+            self._benchmark_rows_by_pietro = {}   # base_exponent -> [rows...], built by
+                                                   # reload_benchmark_log() via
+                                                   # group_benchmark_rows_by_pietro()
+            self._benchmark_pietro_state = {}     # tree item id -> {base_exponent, rows,
+                                                   # stats, page, total_pages} -- lazily
+                                                   # populated on <<TreeviewOpen>>, dropped on
+                                                   # <<TreeviewClose>>, same lifecycle as the
+                                                   # primes tab's _pietro_state.
+            self._active_benchmark_node = None    # which piętro's page the nav buttons above
+                                                   # currently operate on
+
+        def _redraw_benchmark_chart(self):
+            # Before the window has actually been mapped/laid out by the OS window manager
+            # (e.g. the very first draw, triggered from reload_benchmark_log() during
+            # __init__), winfo_width()/height() can still report the Tk default of 1x1 --
+            # <Configure> will fire and redraw properly once real geometry is assigned, but
+            # falling back to a reasonable size here means the chart doesn't sit blank in
+            # the meantime.
+            width = self.benchmark_chart.winfo_width()
+            height = self.benchmark_chart.winfo_height()
+            if width <= 1:
+                width = 900
+            if height <= 1:
+                height = 220
+            _draw_growth_chart(self.benchmark_chart, self._benchmark_growth_points, width, height,
+                                points2=self._benchmark_fair_spw_points)
+
+        def reload_benchmark_log(self):
+            fieldnames, rows = read_benchmark_log(PORTAL_FOLDER)
+            self._benchmark_fieldnames = fieldnames  # FULL list -- PDF export/growth chart
+                                                       # still use every column, unaffected
+                                                       # by what the tree itself displays
+            self._benchmark_rows = rows
+            self._benchmark_rows_by_pietro = group_benchmark_rows_by_pietro(rows)
+            self._benchmark_tree_fieldnames = _order_benchmark_tree_columns(
+                [c for c in fieldnames if c not in BENCHMARK_TREE_HIDDEN_COLUMNS])
+
+            self._benchmark_growth_points = aggregate_benchmark_growth(rows)
+            self._benchmark_fair_spw_points = aggregate_benchmark_fair_spw(rows)
+            self._redraw_benchmark_chart()
+
+            self.benchmark_tree.delete(*self.benchmark_tree.get_children())
+            self._benchmark_pietro_state = {}
+            self._active_benchmark_node = None
+            self._refresh_benchmark_nav_controls()
+
+            tree_fieldnames = self._benchmark_tree_fieldnames
+            self.benchmark_tree["columns"] = tree_fieldnames
+            for col in tree_fieldnames:
+                self.benchmark_tree.heading(col, text=col)
+                self.benchmark_tree.column(col, width=120, anchor="center", stretch=False)
+
+            if not fieldnames or not self._benchmark_rows_by_pietro:
+                self.benchmark_tree.insert("", "end", text=T("bench.no_data_row"))
+                return
+
+            for base_exponent in sorted(self._benchmark_rows_by_pietro):
+                count = len(self._benchmark_rows_by_pietro[base_exponent])
+                node = self.benchmark_tree.insert(
+                    "", "end", text=T("bench.pietro_measurements", base_exponent=base_exponent, count=count),
+                    values=["" for _ in tree_fieldnames], open=False, tags=("pietro",))
+                self.benchmark_tree.insert(node, "end", text=T("common.loading"))
+
+        def _on_benchmark_tree_open(self, _event):
+            node = self.benchmark_tree.focus()
+            self._populate_benchmark_pietro_node(node)
+            self._set_active_benchmark_node(node)
+
+        def _on_benchmark_tree_close(self, _event):
+            """Same lifecycle as the primes tab's _on_tree_close(): collapsing a piętro drops
+            its row/page state and resets to a single "(loading...)" placeholder, so a piętro
+            that's never re-expanded doesn't hold onto its (already in-memory, but still
+            worth not duplicating into tree-item state) rows indefinitely."""
+            node = self.benchmark_tree.focus()
+            if node not in self._benchmark_pietro_state:
+                return
+            del self._benchmark_pietro_state[node]
+            self.benchmark_tree.delete(*self.benchmark_tree.get_children(node))
+            self.benchmark_tree.insert(node, "end", text=T("common.loading"))
+            if self._active_benchmark_node == node:
+                self._active_benchmark_node = None
+                self._refresh_benchmark_nav_controls()
+
+        def _on_benchmark_tree_select(self, _event):
+            """Clicking a piętro header (whether just opened or already expanded) makes it
+            the target of the pagination controls above the tree -- same behavior as the
+            primes tab's floor nav."""
+            selection = self.benchmark_tree.selection()
+            if not selection:
+                return
+            item = selection[0]
+            if "pietro" in self.benchmark_tree.item(item, "tags"):
+                self._set_active_benchmark_node(item)
+
+        def _populate_benchmark_pietro_node(self, node):
+            if node in self._benchmark_pietro_state:
+                return  # already prepared this session -- nothing to redo
+            children = self.benchmark_tree.get_children(node)
+            if len(children) == 1 and self.benchmark_tree.item(children[0], "text") == T("common.loading"):
+                self.benchmark_tree.delete(children[0])
+
+            text = self.benchmark_tree.item(node, "text")  # "10p{N} (M pomiar(ów))"
+            base_exponent = int(text[3:].split(" ", 1)[0])
+            rows = self._benchmark_rows_by_pietro.get(base_exponent, [])
+            stats = benchmark_row_stats(rows)
+            total_pages = max(1, (len(rows) + BENCHMARK_PAGE_SIZE - 1) // BENCHMARK_PAGE_SIZE)
+            self._benchmark_pietro_state[node] = {
+                "base_exponent": base_exponent,
+                "rows": rows,
+                "stats": stats,
+                "page": 0,
+                "total_pages": total_pages,
+            }
+            self._show_benchmark_page(node, 0)
+
+        def _show_benchmark_page(self, node, page):
+            """Renders page `page` (0-indexed) of a piętro's benchmark rows, PLUS a
+            standalone stats row at the top (min/avg/max seconds_per_window across ALL of
+            that piętro's rows, not just the current page -- re-inserted on every page turn,
+            which costs nothing since it's a single row) -- see benchmark_row_stats()."""
+            state = self._benchmark_pietro_state.get(node)
+            if not state:
+                return
+            total_pages = state["total_pages"]
+            page = max(0, min(page, total_pages - 1))
+            state["page"] = page
+
+            self.benchmark_tree.delete(*self.benchmark_tree.get_children(node))
+            fieldnames = self._benchmark_tree_fieldnames  # display columns only -- see
+                                                            # BENCHMARK_TREE_HIDDEN_COLUMNS
+
+            stats = state["stats"]
+            stat_values = ["" for _ in fieldnames]
+            if stats and "seconds_per_window" in fieldnames:
+                idx = fieldnames.index("seconds_per_window")
+                stat_values[idx] = T("bench.stat_summary", avg=f"{stats['avg']:.4f}",
+                                      min=f"{stats['min']:.4f}", max=f"{stats['max']:.4f}")
+                stat_text = T("bench.stat_row_label", count=stats['count'])
+            else:
+                stat_text = T("bench.stat_no_data")
+            self.benchmark_tree.insert(node, "end", text=stat_text, values=stat_values,
+                                        tags=("stat",))
+
+            rows = state["rows"]
+            start = page * BENCHMARK_PAGE_SIZE
+            end = min(start + BENCHMARK_PAGE_SIZE, len(rows))
+            for row in rows[start:end]:
+                # #0 shows the run's timestamp for individual rows -- run_timestamp_utc is
+                # excluded from the columns list (BENCHMARK_TREE_HIDDEN_COLUMNS) precisely
+                # so it can live here instead, in the column that would otherwise sit empty
+                # for every data row (target_idx_start/target_idx_end are already their own
+                # columns, so #0 had nothing else useful to show).
+                label = row.get("run_timestamp_utc", "")
+                values = [row.get(c, "") for c in fieldnames]
+                self.benchmark_tree.insert(node, "end", text=label, values=values, tags=("row",))
+
+            if self._active_benchmark_node == node:
+                self._refresh_benchmark_nav_controls()
+
+        def _set_active_benchmark_node(self, node):
+            self._active_benchmark_node = node
+            self._refresh_benchmark_nav_controls()
+
+        def _refresh_benchmark_nav_controls(self):
+            node = self._active_benchmark_node
+            state = self._benchmark_pietro_state.get(node) if node is not None else None
+            if not state:
+                self.benchmark_page_label.set("")
+                self.benchmark_prev_btn.configure(state="disabled")
+                self.benchmark_next_btn.configure(state="disabled")
+                return
+            _update_nav_controls(self.benchmark_page_label, state["page"], state["total_pages"],
+                                  self.benchmark_prev_btn, self.benchmark_next_btn)
+
+        def _prev_benchmark_page(self):
+            node = self._active_benchmark_node
+            if node is not None and self._benchmark_pietro_state.get(node):
+                self._show_benchmark_page(node, self._benchmark_pietro_state[node]["page"] - 1)
+
+        def _next_benchmark_page(self):
+            node = self._active_benchmark_node
+            if node is not None and self._benchmark_pietro_state.get(node):
+                self._show_benchmark_page(node, self._benchmark_pietro_state[node]["page"] + 1)
+
+        def _goto_benchmark_page(self):
+            raw = self.benchmark_goto_entry.get().strip()
+            if not raw.isdigit():
+                return
+            node = self._active_benchmark_node
+            if node is not None and self._benchmark_pietro_state.get(node):
+                self._show_benchmark_page(node, int(raw) - 1)
+
+        def _export_benchmark_pdf(self):
+            if not self._benchmark_fieldnames or not self._benchmark_rows:
+                messagebox.showinfo(
+                    T("bench.save_pdf"),
+                    T("bench.no_data_dialog"))
+                return
+            default_name = f"benchmark_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            path = filedialog.asksaveasfilename(
+                title=T("bench.save_dialog_title"),
+                initialdir=PORTAL_FOLDER,
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf"), (T("common.all_files"), "*.*")])
+            if not path:
+                return
+            try:
+                render_benchmark_pdf(path, self._benchmark_growth_points,
+                                      self._benchmark_fieldnames, self._benchmark_rows,
+                                      points2=self._benchmark_fair_spw_points,
+                                      translator=TRANSLATOR)
+            except Exception as exc:
+                messagebox.showerror(T("bench.save_pdf"), T("bench.save_error", error=exc))
+                return
+            self.status.set(T("bench.status_saved", path=path))
+            messagebox.showinfo(T("bench.save_pdf"), T("bench.saved_dialog", path=path))
+
+    return PortalBrowserApp
+
+
+def main():
+    app_cls = _build_gui()
+    app = app_cls()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
