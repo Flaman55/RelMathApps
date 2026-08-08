@@ -389,9 +389,13 @@ def update_pietro_totals_cache(portal_folder, base_exponent, cache):
     scan cost -- callers should run this off the GUI thread (see PortalApp's background
     totals worker) so that cost is never a frozen window.
 
-    Returns (total, file_count, newly_read_count) -- newly_read_count lets a caller report
-    "read 42 new files" instead of re-summarizing the whole floor every time, useful for a
-    status message on the (usual, fast) incremental case.
+    Returns (total, file_count, newly_read_count, total_bytes) -- newly_read_count lets a
+    caller report "read 42 new files" instead of re-summarizing the whole floor every
+    time, useful for a status message on the (usual, fast) incremental case. total_bytes
+    is the floor's on-disk footprint (sum of every source window file's size) -- tracked
+    alongside count/mtime per file so it's free to report without any extra I/O beyond
+    what this function was already doing (the same os.stat() call used for the mtime
+    staleness check below also returns st_size).
 
     STALENESS NOTE: each cached entry also stores the file's mtime at the time its header
     was read, and a file gets RE-read (not just skipped because its name is already cached)
@@ -430,27 +434,42 @@ def update_pietro_totals_cache(portal_folder, base_exponent, cache):
 
     always_refresh = base_exponent < LOW_FLOOR_CUTOFF
     to_read = []
-    mtimes = {}
+    stats = {}
     for name, path in filenames:
         try:
-            mtimes[name] = os.path.getmtime(path)
+            st = os.stat(path)
+            stats[name] = (st.st_mtime, st.st_size)
         except OSError:
-            mtimes[name] = None
+            stats[name] = (None, 0)
         cached = cached_files.get(name)
-        if always_refresh or not isinstance(cached, dict) or cached.get("mtime") != mtimes[name]:
+        mtime, _size = stats[name]
+        if always_refresh or not isinstance(cached, dict) or cached.get("mtime") != mtime:
             to_read.append((name, path))
 
     if to_read:
         for name, path, header in read_source_file_headers(to_read):
+            mtime, size = stats[name]
             cached_files[name] = {
                 "count": header["count"] if header is not None else 0,
-                "mtime": mtimes[name],
+                "mtime": mtime,
+                "size": size,
             }
 
+    # Backfill "size" for entries that were already up to date (mtime matched, so skipped
+    # above) but predate this field being tracked -- keeps total_bytes accurate without
+    # forcing a full header re-read just to learn a file's size, since the size was
+    # already sitting in `stats` from the os.stat() call above regardless.
+    for name, _path in filenames:
+        entry_file = cached_files.get(name)
+        if isinstance(entry_file, dict) and "size" not in entry_file:
+            entry_file["size"] = stats[name][1]
+
     total = sum(v["count"] for v in cached_files.values())
+    total_bytes = sum(v.get("size", 0) for v in cached_files.values())
     entry["total"] = total
     entry["file_count"] = len(cached_files)
-    return total, len(cached_files), len(to_read)
+    entry["total_bytes"] = total_bytes
+    return total, len(cached_files), len(to_read), total_bytes
 
 
 def hit_file_path(portal_folder, base_exponent, k, variant_id):
@@ -620,6 +639,23 @@ def format_duration(seconds):
     if minutes:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def format_bytes(n):
+    """Plain binary-unit (B/KiB/MiB/GiB/TiB) byte count formatter, one decimal place
+    (none for bytes), unit picked by magnitude -- same spirit as format_duration above
+    (small, local, no need to pull in a dependency for something this short). None/
+    negative input -> "?", matching format_duration's own None handling."""
+    if n is None or n < 0:
+        return "?"
+    n = float(n)
+    if n < 1024:
+        return f"{n:.0f} B"
+    for unit in ("KiB", "MiB", "GiB"):
+        n /= 1024
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+    return f"{n / 1024:.1f} TiB"
 
 
 def aggregate_write_seconds_by_pietro(rows):
@@ -1939,6 +1975,10 @@ def _build_gui():
                                            # result, so the progress bar's denominator can't
                                            # shift mid-batch (e.g. after a Refresh)
             self._grand_total_sum = 0
+            self._grand_total_bytes = 0  # on-disk footprint total, mirrors _grand_total_sum
+                                          # but for bytes instead of prime count -- see
+                                          # update_pietro_totals_cache()'s total_bytes and
+                                          # format_bytes()
             self._grand_total_seen = set()
             # base_exponent -> total real generation seconds (write_files=True runs only),
             # from benchmark_log.csv -- read fresh on every reload_primes_tree() (cheap, one
@@ -2001,7 +2041,8 @@ def _build_gui():
             for _key, _entry in load_totals_cache(PORTAL_FOLDER).items():
                 if _key.startswith("10p") and _key[3:].isdigit():
                     self._pietro_total_known[int(_key[3:])] = (
-                        _entry.get("total", 0), _entry.get("file_count", 0))
+                        _entry.get("total", 0), _entry.get("file_count", 0),
+                        _entry.get("total_bytes", 0))
             self._totals_cache = load_totals_cache(PORTAL_FOLDER)  # worker-owned copy
 
         def _totals_worker_loop(self):
@@ -2017,15 +2058,15 @@ def _build_gui():
                 base_exponent = self._totals_work_queue.get()
                 self._totals_result_queue.put(("start", base_exponent))
                 try:
-                    total, file_count, new_read = update_pietro_totals_cache(
+                    total, file_count, new_read, total_bytes = update_pietro_totals_cache(
                         PORTAL_FOLDER, base_exponent, self._totals_cache)
                     if new_read:
                         save_totals_cache(PORTAL_FOLDER, self._totals_cache)
                     self._totals_result_queue.put(
-                        ("done", base_exponent, total, file_count, new_read, None))
+                        ("done", base_exponent, total, file_count, new_read, None, total_bytes))
                 except Exception as e:  # noqa: BLE001 -- must never kill this thread
                     self._totals_result_queue.put(
-                        ("done", base_exponent, None, None, None, str(e)))
+                        ("done", base_exponent, None, None, None, str(e), None))
 
         def _poll_totals_results(self):
             """Main-thread side of the worker: drains whatever "start"/"done" messages have
@@ -2037,12 +2078,13 @@ def _build_gui():
                     if msg[0] == "start":
                         self._on_pietro_total_start(msg[1])
                     else:
-                        _kind, base_exponent, total, file_count, new_read, error = msg
+                        _kind, base_exponent, total, file_count, new_read, error, total_bytes = msg
                         if error is not None:
                             self.status.set(T("primes.status_error_sum", base_exponent=base_exponent, error=error))
                         else:
-                            self._pietro_total_known[base_exponent] = (total, file_count)
-                            self._on_pietro_total_ready(base_exponent, total, file_count, new_read)
+                            self._pietro_total_known[base_exponent] = (total, file_count, total_bytes)
+                            self._on_pietro_total_ready(
+                                base_exponent, total, file_count, new_read, total_bytes)
             except queue.Empty:
                 pass
             self.after(150, self._poll_totals_results)
@@ -2059,12 +2101,13 @@ def _build_gui():
             else:
                 self.status.set(T("primes.status_computing", base_exponent=base_exponent))
 
-        def _on_pietro_total_ready(self, base_exponent, total, file_count, new_read):
+        def _on_pietro_total_ready(self, base_exponent, total, file_count, new_read, total_bytes):
             node = self._pietro_node_by_exp.get(base_exponent)
             gen_seconds = self._pietro_gen_seconds.get(base_exponent)
             timer_str = format_duration(gen_seconds) if gen_seconds is not None else ""
             if node is not None and self.tree.exists(node):
-                self.tree.item(node, values=(f"{total:,}", f"{file_count:,}", "", timer_str))
+                self.tree.item(node, values=(
+                    f"{total:,}", f"{file_count:,}", format_bytes(total_bytes), "", timer_str))
             if self._active_floor_node == node:
                 self._refresh_floor_nav_controls()
 
@@ -2073,6 +2116,7 @@ def _build_gui():
                     self._grand_total_seen.add(base_exponent)
                     self._grand_total_sum += total
                     self._grand_total_seconds += gen_seconds or 0.0
+                    self._grand_total_bytes += total_bytes or 0
                 done = len(self._grand_total_seen)
                 expected = self._totals_batch_size
                 self.totals_progress.configure(value=done)
@@ -2086,16 +2130,19 @@ def _build_gui():
                     self.status.set(
                         T("primes.status_grand_total", count=expected,
                           sum=f"{self._grand_total_sum:,}",
-                          duration=format_duration(self._grand_total_seconds)))
+                          duration=format_duration(self._grand_total_seconds),
+                          size=format_bytes(self._grand_total_bytes)))
                 else:
                     self.status.set(
                         T("primes.status_partial_totals", done=done, total=expected,
-                          sum=f"{self._grand_total_sum:,}"))
+                          sum=f"{self._grand_total_sum:,}",
+                          size=format_bytes(self._grand_total_bytes)))
             else:
                 extra = T("primes.status_extra_new_files", count=new_read) if new_read else ""
                 self.status.set(
                     T("primes.status_pietro_total", base_exponent=base_exponent,
-                      total=f"{total:,}", files=f"{file_count:,}", extra=extra))
+                      total=f"{total:,}", files=f"{file_count:,}",
+                      size=format_bytes(total_bytes), extra=extra))
 
         def _compute_all_pietro_totals(self):
             pietra = list(self._pietro_node_by_exp.keys())
@@ -2106,6 +2153,7 @@ def _build_gui():
             self._totals_batch_size = len(pietra)
             self._grand_total_sum = 0
             self._grand_total_seconds = 0.0
+            self._grand_total_bytes = 0
             self._grand_total_seen = set()
             self.totals_progress.configure(maximum=len(pietra), value=0)
             self.status.set(T("primes.status_batch_start", count=len(pietra)))
@@ -2181,16 +2229,18 @@ def _build_gui():
             # meaningful for a whole floor), "timer" is new: total REAL generation time for
             # that floor (write_files=True runs only, see aggregate_write_seconds_by_pietro()).
             self.tree = ttk.Treeview(
-                tree_frame, columns=("count", "files", "generated", "timer"),
+                tree_frame, columns=("count", "files", "size", "generated", "timer"),
                 show="tree headings")
             self.tree.heading("#0", text=T("primes.col_pietro"))
             self.tree.heading("count", text=T("primes.col_count"))
             self.tree.heading("files", text=T("primes.col_files"))
+            self.tree.heading("size", text=T("primes.col_size"))
             self.tree.heading("generated", text=T("primes.col_generated"))
             self.tree.heading("timer", text=T("primes.col_timer"))
             self.tree.column("#0", width=260)
             self.tree.column("count", width=90, anchor="e")
             self.tree.column("files", width=90, anchor="e")
+            self.tree.column("size", width=90, anchor="e")
             self.tree.column("generated", width=170)
             self.tree.column("timer", width=110, anchor="e")
             vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
@@ -2306,8 +2356,8 @@ def _build_gui():
                 known = self._pietro_total_known.get(base_exponent)
                 gen_seconds = self._pietro_gen_seconds.get(base_exponent)
                 timer_str = format_duration(gen_seconds) if gen_seconds is not None else ""
-                values = ((f"{known[0]:,}", f"{known[1]:,}", "", timer_str) if known
-                          else ("", "", "", timer_str))
+                values = ((f"{known[0]:,}", f"{known[1]:,}", format_bytes(known[2]), "", timer_str)
+                          if known else ("", "", "", "", timer_str))
                 node = self.tree.insert("", "end", text=f"10p{base_exponent}",
                                          values=values, open=False, tags=("pietro",))
                 self.tree.insert(node, "end", text=T("common.loading"))
@@ -2391,6 +2441,10 @@ def _build_gui():
             self._path_by_item = getattr(self, "_path_by_item", {})
             page_total = 0
             for name, path, header in page_entries:
+                try:
+                    size_str = format_bytes(os.path.getsize(path))
+                except OSError:
+                    size_str = "?"
                 if header is None:
                     count_str, gen_str = "?", T("primes.unreadable_header")
                 else:
@@ -2398,7 +2452,8 @@ def _build_gui():
                     gen_str = header["generated_at_iso"]
                     page_total += header["count"]
                 child = self.tree.insert(node, "end", text=name,
-                                          values=(count_str, "", gen_str, ""), tags=("file",))
+                                          values=(count_str, "", size_str, gen_str, ""),
+                                          tags=("file",))
                 self._path_by_item[child] = (path, header)
             state["page_total"] = page_total
 

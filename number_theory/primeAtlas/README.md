@@ -3,47 +3,121 @@
 A desktop application for generating, browsing, and searching large-scale prime number
 and prime-constellation (k-tuple) data. The GUI runs natively on Windows (tkinter);
 the generation pipeline it drives runs under WSL, backed by `libprimesieve` and a set
-of custom C sieve engines.
+of custom C sieve engines (two interchangeable engine generations, v3 and v4).
 
 ## Features
 
-- **Prime numbers** -- browse generated data floor by floor (an exponent range) and
-  file by file, with counts, generation time, a paginated preview, and direct search
-  for a specific value.
+- **Prime numbers** -- browse generated data floor by floor (a digit-count range,
+  floor `N` = `[10^N, 10^(N+1))`) and file by file, with per-floor and per-file prime
+  counts, on-disk size, generation time, a paginated preview, and direct search for a
+  specific value. A background worker computes floor totals (count + disk size)
+  incrementally, so re-checking an already-scanned floor after a small change is cheap
+  rather than a full rescan.
 - **Constellations** -- browse detected k-tuple patterns floor by floor, with hit
   counts, offset/record metadata, a paginated preview that reconstructs each hit's
   full tuple, and a search that reports whether a given number participates in any
   recorded constellation.
-- **Generation** -- launches the sieve/orchestrator pipeline and the constellation
-  finder directly from the GUI over WSL, exposing every CLI parameter of both tools
-  (workers, batch size, window count, etc.) with live streamed output and a stop
-  control, instead of a hand-typed terminal invocation.
+- **Generation** -- two ways to launch the sieve/orchestrator pipeline and the
+  constellation finder over WSL, both with live streamed output (stackable across
+  runs, detachable into its own window) and a stop control:
+  - **Quick generation** -- three simple modes (Floor only, Range from/to,
+    Exploration) that translate a plain request into the right low-level parameters,
+    check what is already on disk first, and report "already in storage" instead of
+    launching a redundant run. An "Auto" button estimates a safe window count from the
+    WSL environment's available RAM (see "Window count, throughput, and RAM" below).
+  - **Low-level form** -- exposes every CLI parameter of the orchestrator and
+    constellation finder directly (workers, batch size, window count, window width,
+    write-files toggle, sieving-prime count diagnostic) for full manual control.
 - **Benchmark** -- a throughput chart (seconds per 10M generated vs. floor depth) plus
   a full benchmark log table, with one-click PDF export of both.
 - **Settings** -- configurable storage location, and backup/restore/delete of the
   generated database, including manifest-based drift detection against what is
   actually on disk.
 
+## Floor semantics
+
+A "floor" is a digit-count range: floor `N` covers `[10^N, 10^(N+1))`. Generation works
+in fixed-width windows (10,000,000 numbers by default); how a floor relates to that
+window width falls into two regimes:
+
+- **Floors 0-6** are each narrower than one window (floor 6 is only 9,000,000 numbers
+  wide), and together span exactly `[1, 10,000,000)` -- one window's worth. Requesting
+  any floor in this range generates and completes, in a single pass, every one of
+  floors 0-6 that is not already on disk, each written to its own `10p{N}/` folder. A
+  floor only partially covered by wherever the batch happens to end is left out
+  entirely rather than written half-finished.
+- **Floors 7 and up** are each an exact multiple of the window width (floor 7 = 9
+  windows, floor 8 = 90 windows, and so on), so a window never straddles a floor
+  boundary at this depth. Floor-only and Range requests are capped at the requested
+  floor's own last window -- anything beyond that boundary is dropped, not silently
+  written under the wrong floor's folder. Exploration mode is the one intentional
+  exception: it is meant to march forward indefinitely across many windows without
+  that cap, since deep, open-ended continuation is its whole purpose.
+
+## Window count, throughput, and RAM
+
+The Quick generation panel's window-count fields (and the low-level form's own) have a
+direct, mechanical relationship to both how fast a run goes and how much RAM it needs.
+Both effects trace back to the same design choice: one invocation of the sieve engine
+processes a whole batch of adjacent windows as a single *combined range*, sieved into
+one shared output buffer, rather than one window at a time.
+
+**Why more windows per run means better throughput.** Splitting the combined range
+across parallel workers is not done window-by-window -- it is split into a small,
+*fixed* number of equal-cost batches (24 parallel processes x 2 batches each by
+default = 48 batches, regardless of how many windows are being generated). Each batch
+pays a real, measurable one-time setup cost inside the C engine (positioning
+`libprimesieve`'s iterator to that batch's own starting point -- a "bootstrap" call).
+That fixed overhead is paid exactly the same number of times whether the run covers 10
+windows or 1,000: the more windows batched into one invocation, the more actual sieved
+output that same fixed setup cost gets amortized over, so numbers-per-second throughput
+improves as window count grows -- up to the point where something else becomes the
+bottleneck.
+
+**Why more windows per run means more RAM.** The combined range is sieved into one
+single, shared, bit-packed buffer (one bit per candidate number -- prime or not),
+allocated once before any worker process starts, so every worker writes directly into
+the same physical memory instead of returning its own private copy. That buffer's size
+is `window_count * window_width / 8` bytes, growing *linearly* with window count. This
+is deliberately much cheaper than it used to be (earlier engine revisions gave every
+worker its own private buffer, multiplying peak RAM by the worker count), but it is
+still the hard ceiling: however much window count helps throughput, the whole combined
+buffer for one run has to fit in RAM at once. The Quick-gen panel's "Auto" button reads
+WSL's currently available memory and suggests a window count against exactly this
+formula (using half the available RAM as a safety margin, since the buffer is not the
+only thing using memory during a run) -- pushing window count past that estimate risks
+an out-of-memory failure rather than a graceful slowdown.
+
+In short: within whatever RAM is available, a larger window count is close to strictly
+better for throughput; RAM is the only reason not to simply set it as high as possible.
+
 ## Architecture
 
 ```
-prime_atlas_v1.py        GUI entry point (tkinter), five tabs listed above
-primeatlas/               backend package used by the GUI, no tkinter dependency
-  app_settings.py         storage path configuration
-  manifest.py             backup manifest / snapshot model
-  backup_store.py         backup creation
-  restore_job.py          restore from backup
-  delete_manager.py       database deletion
-  settings_tab.py         Settings tab controller
-  i18n.py                 translation loading
-  locales/                strings_en.json, strings_pl.json
-prime_sieve/               sieve and orchestration pipeline (invoked via WSL)
-  prime_sieve_v1.py        PGS1 output format, process-pool orchestration
-  prime_sieve_v3.py        PGS2 output format, shared-memory mmap orchestration
-  prime_sieve_engine_v1.c  C sieve core for prime_sieve_v1.py (ctypes)
-  prime_sieve_engine_v3.c  C sieve core for prime_sieve_v3.py (ctypes)
-  orchestrator_v3.py       single-run driver
-  orchestrator_loop_v2.py  continuous-run driver
+prime_atlas_v1.py           GUI entry point (tkinter), five tabs listed above
+primeatlas/                 backend package used by the GUI, no tkinter dependency
+  app_settings.py           storage path configuration
+  manifest.py                backup manifest / snapshot model
+  backup_store.py            backup creation
+  restore_job.py             restore from backup
+  delete_manager.py          database deletion
+  settings_tab.py            Settings tab controller
+  generation_console.py      stacked/detachable live-output console used by both
+                              Generation sections
+  i18n.py                    translation loading
+  locales/                   strings_en.json, strings_pl.json, app_settings.json
+prime_sieve/                 sieve and orchestration pipeline (invoked via WSL)
+  prime_sieve_v1.py          PGS1 output format, process-pool orchestration
+  prime_sieve_v3.py          PGS2 output format, shared-memory mmap orchestration;
+                              also implements low-floor completion (floors 0-6) and
+                              the per-floor sieving-prime-count cache
+  prime_sieve_v4.py          same as v3, plus an inlined fast-path modulo in the C
+                              engine for the per-sieving-prime phase computation
+  prime_sieve_engine_v1.c    C sieve core for prime_sieve_v1.py (ctypes)
+  prime_sieve_engine_v3.c    C sieve core for prime_sieve_v3.py (ctypes)
+  prime_sieve_engine_v4.c    C sieve core for prime_sieve_v4.py (ctypes)
+  orchestrator_v3.py         single-run driver (SCRIPT_NAME selects v3 or v4)
+  orchestrator_loop_v2.py    continuous-run driver
   orchestrator_loop_helpers.py
 constellation/
   constellation_finder_v1.py  k-tuple pattern search over generated prime data
@@ -58,7 +132,9 @@ next to `prime_atlas_v1.py`, so the application is self-contained regardless of 
 its directory is placed on disk. The location can be overridden either through the
 Settings tab or by setting the `CONSTELLATION_PORTAL_DIR` environment variable, which
 the sieve, orchestrator, and constellation-finder scripts also read directly when
-launched by the GUI.
+launched by the GUI. A small `.portal_totals_cache.json` file lives alongside the
+generated data, caching each floor's prime count and on-disk size so the Prime numbers
+tab does not have to re-read every file's header on every visit.
 
 ## Requirements
 
@@ -79,6 +155,7 @@ From WSL, inside `prime_sieve/`:
 ```
 gcc -O3 -shared -fPIC prime_sieve_engine_v1.c -o prime_sieve_engine_v1.so -lprimesieve -lstdc++ -lm
 gcc -O3 -shared -fPIC prime_sieve_engine_v3.c -o prime_sieve_engine_v3.so -lprimesieve -lstdc++ -lm
+gcc -O3 -shared -fPIC prime_sieve_engine_v4.c -o prime_sieve_engine_v4.so -lprimesieve -lstdc++ -lm
 ```
 
 Prebuilt `.so` files are included; rebuild if the WSL environment's glibc/architecture
