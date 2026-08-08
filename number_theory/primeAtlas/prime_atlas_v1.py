@@ -1793,6 +1793,65 @@ def _update_nav_controls(page_label_var, page, total_pages, prev_btn, next_btn):
     next_btn.configure(state="normal" if page < total_pages - 1 else "disabled")
 
 
+class _FlowRow:
+    """A button-row container that wraps its children onto additional lines instead of
+    running them off the edge of the window. The Prime numbers and Constellations tabs'
+    preview-navigation rows (Load preview / Prev / page label / Next / page-goto entry)
+    used a plain ttk.Frame with every child .pack(side="left")'d onto ONE line -- on a
+    narrow window (or a narrow detail pane after the split-view divider is dragged), the
+    rightmost controls simply ran past the frame's right edge and became invisible/
+    unreachable, with no way to get to them short of resizing the whole window. Reported
+    via screenshot: page-nav buttons in the Constellations tab cut off outside the app
+    window's right edge.
+
+    Children are added via .add(widget, padx_left=...) instead of widget.pack(...); this
+    class lays them out itself using place() (which, unlike pack/grid, doesn't force a
+    single line or a fixed grid) and re-flows on every <Configure> of its own frame --
+    same 'safe to call again on resize' pattern already used by _draw_growth_chart's
+    canvas binding. .frame is what the caller packs/grids into its own parent, exactly
+    like a plain ttk.Frame would be."""
+
+    ROW_GAP = 4
+
+    def __init__(self, parent):
+        # Local import, not a module-level `from tkinter import ttk` -- this file
+        # deliberately defers importing tkinter until _build_gui() actually runs (see the
+        # module's own lazy-import convention, also documented in settings_tab.py's
+        # header), so `ttk` is never a module-global name here. Every OTHER module-level
+        # helper in this file that touches tkinter widgets (_update_nav_controls,
+        # _draw_growth_chart, ...) sidesteps this by only ever calling methods on
+        # already-constructed widgets passed in as arguments; this class is the first one
+        # that needs to construct a widget itself, hence the local import.
+        from tkinter import ttk
+        self.frame = ttk.Frame(parent)
+        self._items = []  # [(widget, padx_left)], in add() order
+        self.frame.bind("<Configure>", self._reflow)
+
+    def add(self, widget, padx_left=0):
+        self._items.append((widget, padx_left))
+        return widget
+
+    def _reflow(self, event):
+        width = event.width
+        if width <= 1 or not self._items:
+            return
+        x = 0
+        y = 0
+        row_height = 0
+        for widget, padx_left in self._items:
+            widget.update_idletasks()
+            w = widget.winfo_reqwidth()
+            h = widget.winfo_reqheight()
+            if x > 0 and x + padx_left + w > width:
+                x = 0
+                y += row_height + self.ROW_GAP
+                row_height = 0
+            widget.place(x=x + padx_left, y=y, width=w, height=h)
+            x += padx_left + w
+            row_height = max(row_height, h)
+        self.frame.configure(height=y + row_height)
+
+
 def _draw_growth_chart(canvas, points, width, height, points2=None):
     """Draws (base_exponent, loop_numbers_per_second) points onto `canvas` as a simple axes +
     connected-scatter chart -- x = floor depth, y = numbers swept per second (real
@@ -2321,24 +2380,29 @@ def _build_gui():
             ttk.Label(detail_frame, textvariable=self.detail_text, justify="left",
                       anchor="nw", wraplength=560).pack(fill="x", padx=6, pady=6)
 
-            btn_row = ttk.Frame(detail_frame)
-            btn_row.pack(anchor="w", padx=6, fill="x")
+            # _FlowRow (not a plain pack(side="left") row) so these controls wrap onto a
+            # second line instead of running off the window's right edge on a narrow
+            # width/pane -- see that class's own docstring.
+            btn_row = _FlowRow(detail_frame)
+            btn_row.frame.pack(anchor="w", padx=6, fill="x")
             self.load_preview_btn = ttk.Button(
-                btn_row, text=T("common.load_preview"), command=self._load_preview, state="disabled")
-            self.load_preview_btn.pack(side="left")
+                btn_row.frame, text=T("common.load_preview"), command=self._load_preview, state="disabled")
+            btn_row.add(self.load_preview_btn)
             self.prev_page_btn = ttk.Button(
-                btn_row, text=T("common.prev_page"), command=self._prev_preview_page, state="disabled")
-            self.prev_page_btn.pack(side="left", padx=(10, 0))
+                btn_row.frame, text=T("common.prev_page"), command=self._prev_preview_page, state="disabled")
+            btn_row.add(self.prev_page_btn, padx_left=10)
             self.preview_page_label = tk.StringVar(value="")
-            ttk.Label(btn_row, textvariable=self.preview_page_label, width=16, anchor="center").pack(side="left")
+            btn_row.add(ttk.Label(btn_row.frame, textvariable=self.preview_page_label,
+                                   width=16, anchor="center"))
             self.next_page_btn = ttk.Button(
-                btn_row, text=T("common.next_page"), command=self._next_preview_page, state="disabled")
-            self.next_page_btn.pack(side="left")
-            ttk.Label(btn_row, text=T("common.page_prefix")).pack(side="left", padx=(10, 0))
-            self.preview_goto_entry = ttk.Entry(btn_row, width=6)
-            self.preview_goto_entry.pack(side="left", padx=(4, 0))
+                btn_row.frame, text=T("common.next_page"), command=self._next_preview_page, state="disabled")
+            btn_row.add(self.next_page_btn)
+            btn_row.add(ttk.Label(btn_row.frame, text=T("common.page_prefix")), padx_left=10)
+            self.preview_goto_entry = ttk.Entry(btn_row.frame, width=6)
+            btn_row.add(self.preview_goto_entry, padx_left=4)
             self.preview_goto_entry.bind("<Return>", lambda _e: self._goto_preview_page())
-            ttk.Button(btn_row, text=T("common.goto"), command=self._goto_preview_page).pack(side="left", padx=(4, 0))
+            btn_row.add(ttk.Button(btn_row.frame, text=T("common.goto"),
+                                    command=self._goto_preview_page), padx_left=4)
 
             preview_frame = ttk.Frame(detail_frame)
             preview_frame.pack(fill="both", expand=True, padx=6, pady=6)
@@ -2883,24 +2947,29 @@ def _build_gui():
             self.search_results_list.bind("<Return>", self._on_search_result_activate)
             self._search_results_data = []  # parallel to search_results_list rows
 
-            btn_row = ttk.Frame(detail_frame)
-            btn_row.pack(anchor="w", padx=6, fill="x")
+            # _FlowRow, same reasoning as the Prime numbers tab's own preview-nav row --
+            # see that class's docstring.
+            btn_row = _FlowRow(detail_frame)
+            btn_row.frame.pack(anchor="w", padx=6, fill="x")
             self.hits_load_preview_btn = ttk.Button(
-                btn_row, text=T("common.load_preview"), command=self._load_hits_preview, state="disabled")
-            self.hits_load_preview_btn.pack(side="left")
+                btn_row.frame, text=T("common.load_preview"), command=self._load_hits_preview,
+                state="disabled")
+            btn_row.add(self.hits_load_preview_btn)
             self.hits_prev_page_btn = ttk.Button(
-                btn_row, text=T("common.prev_page"), command=self._prev_hits_page, state="disabled")
-            self.hits_prev_page_btn.pack(side="left", padx=(10, 0))
+                btn_row.frame, text=T("common.prev_page"), command=self._prev_hits_page, state="disabled")
+            btn_row.add(self.hits_prev_page_btn, padx_left=10)
             self.hits_page_label = tk.StringVar(value="")
-            ttk.Label(btn_row, textvariable=self.hits_page_label, width=16, anchor="center").pack(side="left")
+            btn_row.add(ttk.Label(btn_row.frame, textvariable=self.hits_page_label,
+                                   width=16, anchor="center"))
             self.hits_next_page_btn = ttk.Button(
-                btn_row, text=T("common.next_page"), command=self._next_hits_page, state="disabled")
-            self.hits_next_page_btn.pack(side="left")
-            ttk.Label(btn_row, text=T("common.page_prefix")).pack(side="left", padx=(10, 0))
-            self.hits_goto_entry = ttk.Entry(btn_row, width=6)
-            self.hits_goto_entry.pack(side="left", padx=(4, 0))
+                btn_row.frame, text=T("common.next_page"), command=self._next_hits_page, state="disabled")
+            btn_row.add(self.hits_next_page_btn)
+            btn_row.add(ttk.Label(btn_row.frame, text=T("common.page_prefix")), padx_left=10)
+            self.hits_goto_entry = ttk.Entry(btn_row.frame, width=6)
+            btn_row.add(self.hits_goto_entry, padx_left=4)
             self.hits_goto_entry.bind("<Return>", lambda _e: self._goto_hits_page())
-            ttk.Button(btn_row, text=T("common.goto"), command=self._goto_hits_page).pack(side="left", padx=(4, 0))
+            btn_row.add(ttk.Button(btn_row.frame, text=T("common.goto"),
+                                    command=self._goto_hits_page), padx_left=4)
 
             hits_preview_frame = ttk.Frame(detail_frame)
             hits_preview_frame.pack(fill="both", expand=True, padx=6, pady=6)
@@ -4516,6 +4585,15 @@ def _build_gui():
                 "primesieve_max_stop": PRIMESIEVE_MAX_STOP,
                 "build_primesieve_argv": build_primesieve_argv,
                 "find_continuation_target_idx": find_continuation_target_idx,
+                # Added so SettingsTab can refresh the Prime numbers / Constellations trees
+                # itself after two operations that change disk contents outside those tabs'
+                # own controls: deleting the entire database, and a restore job finishing.
+                # Both trees previously only refreshed via _set_portal_folder (path change)
+                # or _on_loop_finished/_on_constellation_finished (Generation tab runs) --
+                # neither delete-all nor restore-complete touched them at all, so newly
+                # emptied/regenerated floors stayed invisible until a manual Refresh click.
+                "reload_primes_tree": self.reload_primes_tree,
+                "reload_constellations_tree": self.reload_constellations_tree,
             }
             self.settings_tab = settings_tab_cls(
                 self.settings_tab_container, APP_SETTINGS, wsl_helpers, TRANSLATOR)

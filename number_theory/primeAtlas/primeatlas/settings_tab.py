@@ -668,6 +668,13 @@ class SettingsTab(ttk.Frame):
         self._update_restore_progress()
         self._update_restore_buttons()
         self._scan_incomplete_restores()
+        # Same reasoning as _report_delete_result's own call to these two -- a restore run
+        # regenerates/removes real files on disk (source_primes windows, constellation hit
+        # files) that the Prime numbers / Constellations tabs had no way to notice on their
+        # own, so without this they'd keep showing pre-restore counts until a manual
+        # Refresh click.
+        self.wsl["reload_primes_tree"]()
+        self.wsl["reload_constellations_tree"]()
 
     def _scan_incomplete_restores(self):
         portal_folder = self.wsl["get_portal_folder"]()
@@ -786,6 +793,13 @@ class SettingsTab(ttk.Frame):
             messagebox.showinfo(self.T("settings.delete_title"), text)
         self._refresh_backup_list()
         self._scan_incomplete_restores()
+        # The Prime numbers / Constellations tabs previously only refreshed themselves via
+        # a storage-path change or a Generation-tab run finishing -- a full-database delete
+        # left both trees showing the just-deleted floors until a manual Refresh click, even
+        # though the disk was now empty. See wsl_helpers' own comment in prime_atlas_v1.py
+        # for why these two callables are passed in rather than imported directly.
+        self.wsl["reload_primes_tree"]()
+        self.wsl["reload_constellations_tree"]()
 
     # ---- widget construction ---------------------------------------------------------------
 
