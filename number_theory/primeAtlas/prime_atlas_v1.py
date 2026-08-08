@@ -320,6 +320,30 @@ def find_continuation_target_idx(portal_folder, base_exponent, window_m):
     return highest + 1
 
 
+def find_highest_populated_floor(portal_folder):
+    """Highest base_exponent among every 10p{N} folder that actually has at least one
+    PRIME_WINDOW_*.bin file on disk -- an empty/leftover 10p{N} directory with no
+    source_primes files doesn't count. Returns None if nothing has been generated
+    anywhere yet.
+
+    Used by Exploration mode's own blank-Floor auto-continue (see
+    _build_quick_mode_explore's docstring): the same way find_continuation_target_idx()
+    above finds where ONE SPECIFIC floor's own data ends, this finds WHICH floor the
+    whole database's deepest generated data currently sits on, so repeatedly clicking
+    Generate with Floor left blank keeps extending whatever is actually the deepest data
+    right now, without the person having to track and retype that floor number by hand
+    (or getting stuck re-requesting an already-satisfied range on some floor number they
+    typed once and never updated).
+
+    list_pietra() returns folders sorted ascending; checked in reverse so this returns as
+    soon as the first (highest) populated one is found, rather than scanning every floor
+    unconditionally."""
+    for base_exponent in reversed(list_pietra(portal_folder)):
+        if list_source_filenames(portal_folder, base_exponent):
+            return base_exponent
+    return None
+
+
 def read_source_file_headers(entries):
     """Reads headers for a (small, page-sized) list of (name, path) tuples -- the actual
     disk I/O, deliberately kept separate from list_source_filenames() so it only ever runs
@@ -479,6 +503,34 @@ def hit_file_path(portal_folder, base_exponent, k, variant_id):
     return os.path.join(
         portal_folder, f"10p{base_exponent}", "constellations", f"k{k}", f"variant{variant_id}",
         f"HITS_10p{base_exponent}_k{k}_v{variant_id}.bin")
+
+
+def floor_has_constellation_hits(portal_folder, base_exponent):
+    """Cheap existence check -- does floor `base_exponent` have AT LEAST ONE constellation
+    hit file on disk, without reading the pattern catalog or any file header (unlike
+    list_constellation_hits() below, which is only called once a floor's tree node is
+    actually expanded). Used by reload_constellations_tree() to decide which floors to
+    list AT ALL -- a floor can have plenty of prime data but zero constellation hits (the
+    finder hasn't been run against it yet, or ran and found nothing), and listing it
+    anyway with an empty "no hits" placeholder just clutters the tree with entries there is
+    nothing to actually browse. Short-circuits on the first hit file found rather than
+    counting every one, same reasoning find_highest_populated_floor() above short-circuits
+    on the first (highest) populated floor."""
+    const_dir = os.path.join(portal_folder, f"10p{base_exponent}", "constellations")
+    if not os.path.isdir(const_dir):
+        return False
+    for k_name in os.listdir(const_dir):
+        k_path = os.path.join(const_dir, k_name)
+        if not os.path.isdir(k_path):
+            continue
+        for variant_name in os.listdir(k_path):
+            variant_path = os.path.join(k_path, variant_name)
+            if not os.path.isdir(variant_path):
+                continue
+            for fname in os.listdir(variant_path):
+                if fname.startswith("HITS_") and fname.endswith(".bin"):
+                    return True
+    return False
 
 
 def list_constellation_hits(portal_folder, base_exponent):
@@ -3003,7 +3055,14 @@ def _build_gui():
 
         def reload_constellations_tree(self):
             self.hits_tree.delete(*self.hits_tree.get_children())
-            pietra = list_pietra(PORTAL_FOLDER)
+            # Only floors that actually HAVE at least one detected constellation hit --
+            # list_pietra() alone would include every floor with prime data, regardless of
+            # whether the constellation finder has ever been run against it (or ran and
+            # found nothing), cluttering this tree with entries that only ever expand into
+            # an empty "no hits" placeholder. See floor_has_constellation_hits()'s own
+            # docstring.
+            pietra = [be for be in list_pietra(PORTAL_FOLDER)
+                      if floor_has_constellation_hits(PORTAL_FOLDER, be)]
             for base_exponent in pietra:
                 node = self.hits_tree.insert("", "end", text=f"10p{base_exponent}",
                                               values=("", ""), open=False, tags=("pietro",))
@@ -3707,14 +3766,20 @@ def _build_gui():
 
         def _build_quick_mode_explore(self, container, mode_frames):
             """Exploration maps directly onto orchestrator_loop_v2's own
-            run_count/WINDOW_COUNT_PER_RUN loop -- this mode ONLY continues on the given
-            floor -- no create-if-missing, no start-point business, Floor is required.
-            One iteration covers Width x QUICK_GEN_MAX_WINDOW_WIDTH numbers -- same
-            Width spinbox/meaning as "Floor only"'s (reuses
-            _validate_quick_width_spinbox, [1, 1000]), so the per-iteration memory
-            footprint is exactly as user-controllable here as it is there, instead of
-            being pinned to a fixed 1000-window (10 billion) iteration size regardless
-            of how much RAM the machine running the WSL sieve actually has."""
+            run_count/WINDOW_COUNT_PER_RUN loop -- this mode ONLY continues on an EXISTING
+            floor, never creates a new one. Floor can be left blank: the dispatch handler
+            (_on_quick_generate_clicked) then auto-detects the highest 10p{N} folder that
+            actually has data (find_highest_populated_floor()) and continues THAT, re-
+            detected fresh on every click rather than sticky in the entry field -- so
+            repeatedly pressing Generate with nothing typed keeps extending whatever is
+            genuinely the deepest generated data right now. Typing a floor explicitly still
+            works, to explore a specific one instead. One iteration covers
+            Width x QUICK_GEN_MAX_WINDOW_WIDTH numbers -- same Width spinbox/meaning as
+            "Floor only"'s (reuses _validate_quick_width_spinbox, [1, 1000]), so the
+            per-iteration memory footprint is exactly as user-controllable here as it is
+            there, instead of being pinned to a fixed 1000-window (10 billion) iteration
+            size regardless of how much RAM the machine running the WSL sieve actually
+            has."""
             frame = ttk.Frame(container)
             frame.grid(row=0, column=0, sticky="w")
             ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
@@ -4198,10 +4263,28 @@ def _build_gui():
                 self._apply_loop_params_and_run(plan["floor"], 1, plan["window_count_per_run"])
             elif mode == "explore":
                 raw_floor = self.quick_explore_floor_var.get().strip()
-                floor_value = _eval_quick_number(raw_floor)
-                if not raw_floor or floor_value is None or floor_value < 0:
-                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_explore_floor_required"))
-                    return
+                if raw_floor:
+                    floor_value = _eval_quick_number(raw_floor)
+                    if floor_value is None or floor_value < 0:
+                        messagebox.showerror(
+                            T("quick.dialog_title"), T("quick.error_explore_floor_required"))
+                        return
+                else:
+                    # Blank Floor = continue from wherever the deepest generated data in
+                    # the WHOLE database currently sits (the highest 10p{N} folder with any
+                    # files), re-detected fresh on every click rather than sticky in the
+                    # entry field -- so repeatedly pressing Generate with nothing typed
+                    # always keeps extending whatever floor is genuinely deepest right now,
+                    # even if something else (another Quick-gen run, a restore) advanced
+                    # the database in the meantime. See find_highest_populated_floor()'s own
+                    # docstring. Falls through to the same "type one yourself" error as
+                    # before when literally nothing has been generated anywhere yet -- there
+                    # is no floor to continue from in that case.
+                    floor_value = find_highest_populated_floor(PORTAL_FOLDER)
+                    if floor_value is None:
+                        messagebox.showerror(
+                            T("quick.dialog_title"), T("quick.error_explore_floor_required"))
+                        return
                 iterations = _eval_quick_number(self.quick_iterations_var.get()) or 1
                 width_mult = _eval_quick_number(self.quick_explore_width_var.get()) or 1
                 window_count_per_run = width_mult
