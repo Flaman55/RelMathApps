@@ -1725,7 +1725,6 @@ def _draw_growth_chart(canvas, points, width, height, points2=None):
 def _build_gui():
     import tkinter as tk
     from tkinter import ttk, messagebox, filedialog
-    from tkinter.scrolledtext import ScrolledText
     # The Settings tab's widgets live in their own package (primeatlas/) as a
     # proper class (SettingsTab), not more nested functions on PortalBrowserApp -- see
     # this file's module docstring and settings_tab.py's own docstring for the full
@@ -1733,6 +1732,7 @@ def _build_gui():
     # same reason tkinter itself is: it keeps this module's top-level prefix (everything
     # above _build_gui) importable/testable without tkinter installed.
     from primeatlas.settings_tab import SettingsTab
+    from primeatlas.generation_console import GenerationConsole
 
     class PortalBrowserApp(tk.Tk):
         def __init__(self):
@@ -3027,6 +3027,7 @@ def _build_gui():
             whatever was last used, no re-typing needed."""
             self._generation_settings = load_generation_settings(PORTAL_FOLDER)
 
+            self._init_quick_generation_state()
             quick_outer = ttk.Labelframe(self.generation_tab, text=T("quick.section_title"))
             quick_outer.pack(fill="x", padx=6, pady=(6, 0))
             self._build_quick_generation_panel(quick_outer)
@@ -3061,8 +3062,8 @@ def _build_gui():
             loop_advanced_content = ttk.Frame(loop_outer)
             self._loop_advanced_content = loop_advanced_content
             # NOT packed here -- starts collapsed, see _on_toggle_loop_advanced(). Packed
-            # (when shown) with before=self.loop_terminal_row so it always lands right
-            # below the toggle button, above the terminal's own toggle row.
+            # (when shown) with before=self.loop_console.toggle_row so it always lands
+            # right below the toggle button, above the console's own toggle row.
 
             loop_form = ttk.Frame(loop_advanced_content)
             loop_form.pack(fill="x")
@@ -3117,19 +3118,17 @@ def _build_gui():
             # collapsed whenever its script isn't running: own toggle, collapsed on every
             # app start (no persisted state), auto-expanded by _show_loop_terminal() the
             # moment a run actually starts (_on_run_loop), and deliberately left alone
-            # (never auto-collapsed) once it finishes -- see _on_loop_finished.
-            self.loop_terminal_row = ttk.Frame(loop_outer)
-            self.loop_terminal_row.pack(fill="x", padx=8, pady=(4, 0))
-            self._loop_terminal_visible = False
-            self.loop_terminal_toggle_btn = ttk.Button(
-                self.loop_terminal_row, text=T("gen.terminal_show"),
-                command=self._on_toggle_loop_terminal)
-            self.loop_terminal_toggle_btn.pack(side="left")
-
-            self.loop_output = ScrolledText(
-                loop_outer, height=10, font=("Consolas", 9), state="disabled",
-                background="#111318", foreground="#d8d8d8")
-            # NOT packed here -- starts collapsed, see _on_toggle_loop_terminal().
+            # (never auto-collapsed) once it finishes -- see _on_loop_finished. Toggle/
+            # clear/open-in-new-window live together in GenerationConsole (primeatlas/
+            # generation_console.py), reused identically by this section and the
+            # constellation-finder section below. The detached window additionally gets
+            # its own copy of the Quick-gen panel (see _build_detached_quick_panel), bound
+            # to the SAME shared StringVars as the embedded one, so both always show the
+            # same values and a run started from either place behaves identically.
+            self.loop_console = GenerationConsole(
+                loop_outer, TRANSLATOR, height=10,
+                extra_controls_builder=self._build_detached_quick_panel)
+            self.loop_output = self.loop_console.text
 
             self._loop_runner = None
             self._loop_output_queue = queue.Queue()
@@ -3162,20 +3161,12 @@ def _build_gui():
             ttk.Label(const_btn_row, textvariable=self.const_status_label).pack(
                 side="left", padx=(12, 0))
 
-            # Collapsible terminal, same as the pipeline section's loop_output above --
-            # see the comment there for the full rationale.
-            const_terminal_row = ttk.Frame(const_outer)
-            const_terminal_row.pack(fill="x", padx=8, pady=(4, 0))
-            self._const_terminal_visible = False
-            self.const_terminal_toggle_btn = ttk.Button(
-                const_terminal_row, text=T("gen.terminal_show"),
-                command=self._on_toggle_const_terminal)
-            self.const_terminal_toggle_btn.pack(side="left")
-
-            self.const_output = ScrolledText(
-                const_outer, height=10, font=("Consolas", 9), state="disabled",
-                background="#111318", foreground="#d8d8d8")
-            # NOT packed here -- starts collapsed, see _on_toggle_const_terminal().
+            # Collapsible terminal, same as the pipeline section's loop_console above --
+            # see GenerationConsole's docstring for the full rationale. No extra_controls_
+            # builder here -- the constellation-finder section has no Quick-gen-style panel
+            # to duplicate, only its own raw Run/Stop pair above.
+            self.const_console = GenerationConsole(const_outer, TRANSLATOR, height=10)
+            self.const_output = self.const_console.text
 
             self._const_runner = None
             self._const_output_queue = queue.Queue()
@@ -3186,51 +3177,49 @@ def _build_gui():
         def _on_toggle_loop_advanced(self):
             """Shows/hides loop_advanced_content -- the fields AND the raw Run/
             Stop/status row together (see _build_generation_tab()'s comment on
-            Section A) -- packed with before=self.loop_terminal_row so it always lands back
-            in the same slot (between the toggle button and the terminal's own toggle row)
-            regardless of how many times it's been forgotten/re-shown."""
+            Section A) -- packed with before=self.loop_console.toggle_row so it always
+            lands back in the same slot (between the toggle button and the console's own
+            toggle row) regardless of how many times it's been forgotten/re-shown."""
             if self._loop_advanced_visible:
                 self._loop_advanced_content.pack_forget()
                 self._loop_advanced_visible = False
                 self.loop_advanced_toggle_btn.configure(text=T("gen.advanced_show"))
             else:
                 self._loop_advanced_content.pack(
-                    fill="x", padx=8, pady=(0, 4), before=self.loop_terminal_row)
+                    fill="x", padx=8, pady=(0, 4), before=self.loop_console.toggle_row)
                 self._loop_advanced_visible = True
                 self.loop_advanced_toggle_btn.configure(text=T("gen.advanced_hide"))
 
-        def _on_toggle_loop_terminal(self):
-            if self._loop_terminal_visible:
-                self.loop_output.pack_forget()
-                self._loop_terminal_visible = False
-                self.loop_terminal_toggle_btn.configure(text=T("gen.terminal_show"))
-            else:
-                self.loop_output.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-                self._loop_terminal_visible = True
-                self.loop_terminal_toggle_btn.configure(text=T("gen.terminal_hide"))
-
         def _show_loop_terminal(self):
-            """Force-expands loop_output if it's currently collapsed -- called from
-            _on_run_loop() the moment a run actually starts. No-op if already visible
+            """Force-expands the pipeline console if it's currently collapsed -- called
+            from _on_run_loop() the moment a run actually starts. No-op if already visible
             (e.g. the user had opened it manually)."""
-            if not self._loop_terminal_visible:
-                self._on_toggle_loop_terminal()
-
-        def _on_toggle_const_terminal(self):
-            if self._const_terminal_visible:
-                self.const_output.pack_forget()
-                self._const_terminal_visible = False
-                self.const_terminal_toggle_btn.configure(text=T("gen.terminal_show"))
-            else:
-                self.const_output.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-                self._const_terminal_visible = True
-                self.const_terminal_toggle_btn.configure(text=T("gen.terminal_hide"))
+            self.loop_console.show()
 
         def _show_const_terminal(self):
-            if not self._const_terminal_visible:
-                self._on_toggle_const_terminal()
+            self.const_console.show()
 
         # --- Quick generation panel (higher-level, sits above the raw pipeline form) ---
+
+        def _init_quick_generation_state(self):
+            """Creates every Quick-gen StringVar/BooleanVar exactly once, shared by every
+            panel instance _build_quick_generation_panel() builds (the embedded one plus
+            any detached copy, see that method's note below) -- sharing the same Variable
+            objects, rather than one set per instance, is what keeps two simultaneously-
+            visible panels showing identical values without any manual syncing: typing in
+            either copy's Entry widget updates both immediately."""
+            self.quick_mode_var = tk.StringVar(value="floor")
+            self.quick_floor_var = tk.StringVar(value="")
+            self.quick_floor_width_var = tk.StringVar(value="1")
+            self.quick_floor_start_var = tk.StringVar(value="")
+            self.quick_floor_start_var.trace_add("write", self._on_quick_floor_start_changed)
+            self.quick_from_var = tk.StringVar(value="")
+            self.quick_to_var = tk.StringVar(value="")
+            self.quick_explore_floor_var = tk.StringVar(value="")
+            self.quick_iterations_var = tk.StringVar(value="1")
+            self.quick_hint_var = tk.StringVar(value="")
+            self.quick_status_var = tk.StringVar(value="")
+            self._quick_panels = []
 
         def _build_quick_generation_panel(self, parent):
             """Higher-level "just tell me the floor / range" panel above the raw
@@ -3249,16 +3238,22 @@ def _build_gui():
             "floor only" (both just continue/create that floor), so it was a redundant
             duplicate rather than a genuinely different way of specifying the target.
 
-            INTERFACE ONLY for now -- Generate here
-            only echoes back what was entered via a summary dialog; it does not touch
-            build_loop_argv/WslLoggedRunner or check what's already in storage yet."""
+            Callable more than once -- the detached generation window (see
+            _build_detached_quick_panel) gets its own full copy of this panel, built by
+            calling this same method again with a different parent. Every widget it
+            creates is bound to the shared StringVars from _init_quick_generation_state()
+            (called once, before the first call to this method), so typing in either copy
+            updates both immediately; the one thing NOT shared is the widgets themselves,
+            which is why mode-switching (_on_quick_mode_changed), the Floor field's
+            readonly toggle (_on_quick_floor_start_changed), and the Generate/Stop label
+            flip (_on_run_loop/_on_loop_finished) all loop over self._quick_panels instead
+            of touching one fixed widget reference."""
             ttk.Label(parent, text=T("quick.intro"), foreground="#555555",
                       wraplength=900, justify="left").pack(
                 anchor="w", padx=8, pady=(6, 4))
 
             mode_row = ttk.Frame(parent)
             mode_row.pack(fill="x", padx=8, pady=(0, 2))
-            self.quick_mode_var = tk.StringVar(value="floor")
             quick_modes = [
                 ("floor", T("quick.mode_floor")),
                 ("range", T("quick.mode_range")),
@@ -3274,12 +3269,11 @@ def _build_gui():
             # reflowing the rest of the panel's layout when the mode changes.
             fields_container = ttk.Frame(parent)
             fields_container.pack(fill="x", padx=8, pady=(2, 4))
-            self._quick_mode_frames = {}
-            self._build_quick_mode_floor(fields_container)
-            self._build_quick_mode_range(fields_container)
-            self._build_quick_mode_explore(fields_container)
+            mode_frames = {}
+            floor_entry = self._build_quick_mode_floor(fields_container, mode_frames)
+            self._build_quick_mode_range(fields_container, mode_frames)
+            self._build_quick_mode_explore(fields_container, mode_frames)
 
-            self.quick_hint_var = tk.StringVar(value="")
             ttk.Label(parent, textvariable=self.quick_hint_var, foreground="#555555",
                       wraplength=900, justify="left").pack(anchor="w", padx=8, pady=(0, 4))
 
@@ -3290,17 +3284,20 @@ def _build_gui():
             # _build_generation_tab()'s Section A) -- see
             # _on_quick_generate_or_stop_clicked/_on_run_loop/_on_loop_finished for the
             # three places that flip its label between quick.generate_button and
-            # common.stop.
-            self.quick_generate_btn = ttk.Button(
+            # common.stop (looping over self._quick_panels so every copy flips together).
+            generate_btn = ttk.Button(
                 btn_row, text=T("quick.generate_button"),
                 command=self._on_quick_generate_or_stop_clicked)
-            self.quick_generate_btn.pack(side="left")
-            self.quick_status_var = tk.StringVar(value="")
+            generate_btn.pack(side="left")
             ttk.Label(btn_row, textvariable=self.quick_status_var).pack(side="left", padx=(12, 0))
 
-            self._on_quick_mode_changed()  # show the right sub-frame + hint for the default
+            panel = {"mode_frames": mode_frames, "floor_entry": floor_entry,
+                     "generate_btn": generate_btn}
+            self._quick_panels.append(panel)
+            self._sync_quick_panel(panel)  # show the right sub-frame + state for this copy
+            return panel
 
-        def _build_quick_mode_floor(self, container):
+        def _build_quick_mode_floor(self, container, mode_frames):
             """The on-disk window format stays EXACTLY as it is -- always round the
             requested amount UP to a whole number of QUICK_GEN_MAX_WINDOW_WIDTH
             (10,000,000) windows, since rounding up costs almost no extra time and keeps
@@ -3316,25 +3313,26 @@ def _build_gui():
             becomes a READ-ONLY, auto-computed display of digit_count_floor(start) (also
             solves "it's not easy to count how many zeros are in a big number" -- counting
             zeros in a huge number by eye is exactly what this now does for you). See
-            _on_quick_floor_start_changed, wired via a trace on quick_floor_start_var."""
+            _on_quick_floor_start_changed, wired via a trace on quick_floor_start_var
+            (added once, in _init_quick_generation_state).
+
+            Returns the Floor Entry widget so the caller can track it per-panel-instance
+            (see _on_quick_floor_start_changed)."""
             frame = ttk.Frame(container)
             frame.grid(row=0, column=0, sticky="w")
             ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
-            self.quick_floor_var = tk.StringVar(value="")
-            self.quick_floor_entry = ttk.Entry(frame, textvariable=self.quick_floor_var, width=10)
-            self.quick_floor_entry.pack(side="left", padx=(6, 20))
+            floor_entry = ttk.Entry(frame, textvariable=self.quick_floor_var, width=10)
+            floor_entry.pack(side="left", padx=(6, 20))
             ttk.Label(frame, text=T("quick.field_width")).pack(side="left")
-            self.quick_floor_width_var = tk.StringVar(value="1")
             width_vcmd = (self.register(self._validate_quick_width_spinbox), "%P")
             ttk.Spinbox(frame, from_=1, to=1000, textvariable=self.quick_floor_width_var,
                         width=6, validate="key", validatecommand=width_vcmd).pack(
                 side="left", padx=(6, 20))
             ttk.Label(frame, text=T("quick.field_start")).pack(side="left")
-            self.quick_floor_start_var = tk.StringVar(value="")
             ttk.Entry(frame, textvariable=self.quick_floor_start_var, width=20).pack(
                 side="left", padx=(6, 0))
-            self.quick_floor_start_var.trace_add("write", self._on_quick_floor_start_changed)
-            self._quick_mode_frames["floor"] = frame
+            mode_frames["floor"] = frame
+            return floor_entry
 
         def _validate_quick_width_spinbox(self, proposed):
             """validatecommand for the Width spinbox -- allows an empty field WHILE
@@ -3354,27 +3352,24 @@ def _build_gui():
             empty starting point means "continue this floor" and the app has no other way
             to know WHICH floor that is."""
             value = _eval_quick_number(self.quick_floor_start_var.get())
-            if value is None:
-                self.quick_floor_var.set("")
-                self.quick_floor_entry.configure(state="normal")
-            else:
-                self.quick_floor_var.set(str(digit_count_floor(value)))
-                self.quick_floor_entry.configure(state="readonly")
+            new_floor_value = "" if value is None else str(digit_count_floor(value))
+            new_state = "normal" if value is None else "readonly"
+            self.quick_floor_var.set(new_floor_value)
+            for panel in self._quick_panels:
+                panel["floor_entry"].configure(state=new_state)
 
-        def _build_quick_mode_range(self, container):
+        def _build_quick_mode_range(self, container, mode_frames):
             frame = ttk.Frame(container)
             frame.grid(row=0, column=0, sticky="w")
             ttk.Label(frame, text=T("quick.field_from")).pack(side="left")
-            self.quick_from_var = tk.StringVar(value="")
             ttk.Entry(frame, textvariable=self.quick_from_var, width=20).pack(
                 side="left", padx=(6, 20))
             ttk.Label(frame, text=T("quick.field_to")).pack(side="left")
-            self.quick_to_var = tk.StringVar(value="")
             ttk.Entry(frame, textvariable=self.quick_to_var, width=20).pack(
                 side="left", padx=(6, 0))
-            self._quick_mode_frames["range"] = frame
+            mode_frames["range"] = frame
 
-        def _build_quick_mode_explore(self, container):
+        def _build_quick_mode_explore(self, container, mode_frames):
             """Exploration maps directly onto orchestrator_loop_v2's own
             run_count/WINDOW_COUNT_PER_RUN loop -- this mode ONLY continues on the given
             floor -- no create-if-missing, no start-point business, Floor is required.
@@ -3385,16 +3380,14 @@ def _build_gui():
             frame = ttk.Frame(container)
             frame.grid(row=0, column=0, sticky="w")
             ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
-            self.quick_explore_floor_var = tk.StringVar(value="")
             ttk.Entry(frame, textvariable=self.quick_explore_floor_var, width=10).pack(
                 side="left", padx=(6, 20))
             ttk.Label(frame, text=T("quick.field_iterations")).pack(side="left")
-            self.quick_iterations_var = tk.StringVar(value="1")
             iterations_vcmd = (self.register(self._validate_quick_iterations_spinbox), "%P")
             ttk.Spinbox(frame, from_=1, to=100, textvariable=self.quick_iterations_var,
                         width=6, validate="key", validatecommand=iterations_vcmd).pack(
                 side="left", padx=(6, 0))
-            self._quick_mode_frames["explore"] = frame
+            mode_frames["explore"] = frame
 
         def _validate_quick_iterations_spinbox(self, proposed):
             """validatecommand for the Number of iterations spinbox -- same shape as
@@ -3404,25 +3397,54 @@ def _build_gui():
                 return True
             return proposed.isdigit() and 1 <= int(proposed) <= 100
 
-        def _on_quick_mode_changed(self):
+        def _sync_quick_panel(self, panel):
             """tkraise() only reorders stacking within the shared grid cell -- it does
             NOT clip a sibling frame's own size. Since the "floor" sub-frame
             (Floor+Width+Starting point) is wider than "range" (From+To), raising
             "range" on top would still leave "floor"'s trailing Starting point label/
             entry visible past range's right edge. grid_remove()/grid() actually pulls
-            the inactive frames out of the layout instead of just moving them behind."""
+            the inactive frames out of the layout instead of just moving them behind.
+
+            Operates on a single panel's mode_frames -- called for every entry in
+            self._quick_panels so the embedded panel and any open detached copy switch
+            mode together (they share quick_mode_var, but each has its OWN frame
+            widgets, so each needs this applied individually)."""
             mode = self.quick_mode_var.get()
-            for name, frame in self._quick_mode_frames.items():
+            for name, frame in panel["mode_frames"].items():
                 if name == mode:
                     frame.grid(row=0, column=0, sticky="w")
                 else:
                     frame.grid_remove()
+
+        def _on_quick_mode_changed(self):
+            for panel in self._quick_panels:
+                self._sync_quick_panel(panel)
             hints = {
                 "floor": T("quick.hint_floor"),
                 "range": T("quick.hint_range"),
                 "explore": T("quick.hint_explore"),
             }
-            self.quick_hint_var.set(hints.get(mode, ""))
+            self.quick_hint_var.set(hints.get(self.quick_mode_var.get(), ""))
+
+        def _build_detached_quick_panel(self, parent):
+            """extra_controls_builder callback for self.loop_console (see
+            GenerationConsole.open_detached) -- builds a second, independent copy of the
+            Quick-gen panel inside the detached console window, so a run can be started
+            from there without switching back to the main window. Wrapped in its own
+            Labelframe to visually separate it from the mirrored console output below.
+
+            Returns a cleanup closure that GenerationConsole invokes when the detached
+            window closes, removing this copy from self._quick_panels so later
+            mode/state-sync loops don't touch destroyed widgets."""
+            outer = ttk.Labelframe(parent, text=T("quick.section_title"))
+            outer.pack(fill="x", padx=8, pady=(8, 0))
+            panel = self._build_quick_generation_panel(outer)
+
+            def _cleanup():
+                if panel in self._quick_panels:
+                    self._quick_panels.remove(panel)
+
+            return _cleanup
 
         def _on_quick_generate_or_stop_clicked(self):
             """Dual-function dispatch for the Quick-gen 'Generate' button: while a
@@ -3606,9 +3628,7 @@ def _build_gui():
             log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "loop")
             cmd = build_wsl_logged_command(argv, log_path, exit_path)
 
-            self.loop_output.configure(state="normal")
-            self.loop_output.delete("1.0", "end")
-            self.loop_output.configure(state="disabled")
+            self.loop_console.clear()
             self._loop_output_queue = queue.Queue()
             self._loop_runner = WslLoggedRunner(
                 cmd, log_path, exit_path, self._loop_output_queue,
@@ -3620,8 +3640,10 @@ def _build_gui():
             # Generate doubles as Stop while this runs (see
             # _on_quick_generate_or_stop_clicked), and the terminal auto-expands the
             # moment a run actually starts -- reset back to normal in
-            # _on_loop_finished() once it exits.
-            self.quick_generate_btn.configure(text=T("common.stop"))
+            # _on_loop_finished() once it exits. Looped over every currently-open
+            # Quick-gen panel instance (embedded + detached copy, if any).
+            for panel in self._quick_panels:
+                panel["generate_btn"].configure(text=T("common.stop"))
             self._show_loop_terminal()
 
         def _on_stop_loop(self):
@@ -3630,15 +3652,16 @@ def _build_gui():
                 self.loop_status_label.set(T("common.stopping"))
 
         def _on_loop_finished(self):
-            """_drain_output_queue's on_exit callback for the loop queue -- resets the
-            Quick-gen 'Generate' button back from its temporary 'Stop' label now that
-            nothing is running. Deliberately does NOT touch loop_output's collapse state
-            -- it stays expanded so the final log is still visible after the run
-            finishes."""
-            self.quick_generate_btn.configure(text=T("quick.generate_button"))
+            """_drain_output_queue's on_exit callback for the loop queue -- resets every
+            open Quick-gen panel's 'Generate' button back from its temporary 'Stop'
+            label now that nothing is running. Deliberately does NOT touch the console's
+            collapse state -- it stays expanded so the final log is still visible after
+            the run finishes."""
+            for panel in self._quick_panels:
+                panel["generate_btn"].configure(text=T("quick.generate_button"))
 
         def _poll_loop_output(self):
-            self._drain_output_queue(self._loop_output_queue, self.loop_output,
+            self._drain_output_queue(self._loop_output_queue, self.loop_console,
                                       self.loop_run_btn, self.loop_stop_btn, self.loop_status_label,
                                       on_exit=self._on_loop_finished)
             self.after(150, self._poll_loop_output)
@@ -3659,9 +3682,7 @@ def _build_gui():
             log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "constellation")
             cmd = build_wsl_logged_command(argv, log_path, exit_path)
 
-            self.const_output.configure(state="normal")
-            self.const_output.delete("1.0", "end")
-            self.const_output.configure(state="disabled")
+            self.const_console.clear()
             self._const_output_queue = queue.Queue()
             self._const_runner = WslLoggedRunner(
                 cmd, log_path, exit_path, self._const_output_queue,
@@ -3678,15 +3699,16 @@ def _build_gui():
                 self.const_status_label.set(T("common.stopping"))
 
         def _poll_constellation_output(self):
-            self._drain_output_queue(self._const_output_queue, self.const_output,
+            self._drain_output_queue(self._const_output_queue, self.const_console,
                                       self.const_run_btn, self.const_stop_btn,
                                       self.const_status_label)
             self.after(150, self._poll_constellation_output)
 
-        def _drain_output_queue(self, q, text_widget, run_btn, stop_btn, status_var, on_exit=None):
+        def _drain_output_queue(self, q, console, run_btn, stop_btn, status_var, on_exit=None):
             """Shared by both Generation sections: drains whatever output
             a WslLoggedRunner has pushed onto `q` since the last poll into
-            `text_widget` (autoscrolling to the bottom), and on that runner's
+            `console` (a GenerationConsole -- autoscrolling to the bottom is handled by
+            its own append()), and on that runner's
             ("__exit__", returncode) sentinel, re-enables Run / disables Stop and
             reports the exit code. Same 150ms self.after() polling cadence as the floor-
             totals worker (_poll_totals_results) -- this method itself does NOT
@@ -3714,10 +3736,7 @@ def _build_gui():
                         if on_exit is not None:
                             on_exit()
                         continue
-                    text_widget.configure(state="normal")
-                    text_widget.insert("end", item)
-                    text_widget.see("end")
-                    text_widget.configure(state="disabled")
+                    console.append(item)
             except queue.Empty:
                 pass
 
