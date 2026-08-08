@@ -3773,18 +3773,35 @@ def _build_gui():
             detected fresh on every click rather than sticky in the entry field -- so
             repeatedly pressing Generate with nothing typed keeps extending whatever is
             genuinely the deepest generated data right now. Typing a floor explicitly still
-            works, to explore a specific one instead. One iteration covers
-            Width x QUICK_GEN_MAX_WINDOW_WIDTH numbers -- same Width spinbox/meaning as
-            "Floor only"'s (reuses _validate_quick_width_spinbox, [1, 1000]), so the
-            per-iteration memory footprint is exactly as user-controllable here as it is
-            there, instead of being pinned to a fixed 1000-window (10 billion) iteration
-            size regardless of how much RAM the machine running the WSL sieve actually
-            has."""
+            works, to explore a specific one instead -- including a LOW floor (0-6), which
+            legitimately reports "already in storage" once its own small, fixed domain is
+            fully covered (see the low-floor guard in _on_quick_generate_clicked) rather
+            than being treated as some kind of "auto" sentinel value; 0 is a real floor,
+              not a placeholder for blank.
+
+            The Floor field's own "Auto" button (_on_explore_auto_floor_clicked, separate
+            from the Width field's own Auto button further right in this same row) fills
+            it with that SAME auto-detected highest-populated-floor value explicitly --
+            leaving the field blank and clicking Generate directly already does the
+            identical thing, but typing/deleting text to reach an empty field is a much
+            less discoverable way to trigger it than a labeled button, especially compared
+            to every other Quick-gen mode's own Auto button doing something visibly similar
+            for their own fields.
+
+            One iteration covers Width x QUICK_GEN_MAX_WINDOW_WIDTH numbers -- same Width
+            spinbox/meaning as "Floor only"'s (reuses _validate_quick_width_spinbox,
+            [1, 1000]), so the per-iteration memory footprint is exactly as
+            user-controllable here as it is there, instead of being pinned to a fixed
+            1000-window (10 billion) iteration size regardless of how much RAM the machine
+            running the WSL sieve actually has."""
             frame = ttk.Frame(container)
             frame.grid(row=0, column=0, sticky="w")
             ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
             ttk.Entry(frame, textvariable=self.quick_explore_floor_var, width=10).pack(
-                side="left", padx=(6, 20))
+                side="left", padx=(6, 4))
+            ttk.Button(frame, text=T("quick.explore_auto_floor_button"),
+                       command=self._on_explore_auto_floor_clicked).pack(
+                side="left", padx=(0, 20))
             ttk.Label(frame, text=T("quick.field_iterations")).pack(side="left")
             iterations_vcmd = (self.register(self._validate_quick_iterations_spinbox), "%P")
             ttk.Spinbox(frame, from_=1, to=100, textvariable=self.quick_iterations_var,
@@ -3889,6 +3906,30 @@ def _build_gui():
             messagebox.showinfo(T("quick.dialog_title"), T(
                 "quick.primesieve_auto_from_result", floor=floor_value,
                 existing_count=existing_count, continuation_point=f"{continuation_point:,}"))
+
+        def _on_explore_auto_floor_clicked(self):
+            """Exploration mode's OWN Floor-Auto button -- fills quick_explore_floor_var
+            with find_highest_populated_floor()'s result, the SAME value leaving Floor
+            blank and clicking Generate directly already resolves to (see
+            _on_quick_generate_clicked's "explore" branch). This button exists purely for
+            discoverability: an empty text field as the trigger for "auto-continue the
+            deepest floor" turned out to be easy to miss in practice (a person testing this
+            mode typed an explicit "0" rather than clearing the field, which is a
+            perfectly legitimate floor to request -- see this mode's own docstring for why
+            that's NOT the same thing as leaving it blank) -- a labeled button matches
+            every other Quick-gen mode's own Auto convention instead of relying on an
+            invisible one.
+
+            Unlike _on_quick_auto_width_clicked (shared, RAM-based, targets a Width field)
+            and _on_primesieve_auto_from_clicked (fills a From field given an ALREADY-KNOWN
+            Floor), this button determines the Floor itself from scratch by scanning the
+            whole database -- there is no floor to read from the UI first."""
+            highest = find_highest_populated_floor(PORTAL_FOLDER)
+            if highest is None:
+                messagebox.showinfo(
+                    T("quick.dialog_title"), T("quick.explore_auto_floor_empty"))
+                return
+            self.quick_explore_floor_var.set(str(highest))
 
         def _validate_quick_iterations_spinbox(self, proposed):
             """validatecommand for the Number of iterations spinbox -- same shape as
