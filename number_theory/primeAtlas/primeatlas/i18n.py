@@ -8,7 +8,7 @@ startup, by _build_gui() (prime_atlas_v1.py) -- rewriting every already-built wi
 displayed text in place, for every widget in every tab, would be a much larger and
 riskier change to a large file with no way to visually verify tkinter widget layout.
 The language choice persists to AppSettings and takes effect on next launch; the
-Ustawienia tab shows a message saying so when the choice is changed.
+Settings tab shows a message saying so when the choice is changed.
 
 Pure Python, zero tkinter dependency -- exercised directly by unit tests.
 """
@@ -104,7 +104,7 @@ class Translator:
     @staticmethod
     def available_languages():
         """[(code, display_name)] for every locale file that actually exists on disk,
-        in SUPPORTED_LANGUAGES order -- used to populate the Ustawienia tab's language
+        in SUPPORTED_LANGUAGES order -- used to populate the Settings tab's language
         picker without hardcoding the list twice."""
         out = []
         for code in SUPPORTED_LANGUAGES:

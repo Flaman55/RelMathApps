@@ -1,12 +1,11 @@
 """
-manifest.py -- pure-logic, tkinter-free models for the Ustawienia tab's backup/restore
+manifest.py -- pure-logic, tkinter-free models for the Settings tab's backup/restore
 feature.
 
-A "backup" here is NOT a copy of the actual prime/constellation data -- a single piętro can
-be hundreds of GB (see portal_browser_v1.py's own totals-worker comments on per-piętro scan
-cost), copying that wholesale is not realistic. A backup is a MANIFEST: a lightweight JSON
-snapshot of what SHOULD exist on disk (which piętra, which source-window filenames each,
-which constellation k/variant hit files, what each piętro's constellation CHECKPOINT.txt
+A "backup" here is NOT a copy of the actual prime/constellation data -- a single floor can
+be hundreds of GB, so copying that wholesale is not realistic. A backup is a MANIFEST: a lightweight JSON
+snapshot of what SHOULD exist on disk (which floors, which source-window filenames each,
+which constellation k/variant hit files, what each floor's constellation CHECKPOINT.txt
 said) plus a copy of benchmark_log.csv's text. Restoring a backup means comparing this
 manifest against the CURRENT disk state and, if anything is missing, optionally
 regenerating it via the existing orchestrator_loop_v2.py / constellation_finder_v1.py
@@ -26,7 +25,7 @@ _HITS_FILE_RE = re.compile(r"^HITS_10p\d+_k\d+_v\d+\.bin$")
 def _pietra_on_disk(storage_path):
     """Every base_exponent with a 10p{N} folder actually present on disk right now --
     shared by build_from_disk() (what to snapshot) and diff_against_disk() (which also
-    needs this to notice a piętro that exists on disk but was never in the backup at
+    needs this to notice a floor that exists on disk but was never in the backup at
     all -- see that method's docstring)."""
     found = set()
     if os.path.isdir(storage_path):
@@ -38,11 +37,11 @@ def _pietra_on_disk(storage_path):
 
 
 class PietroSnapshot:
-    """What one piętro (10p{N}/source_primes/) looked like on disk at backup time: just
+    """What one floor (10p{N}/source_primes/) looked like on disk at backup time: just
     filenames, not contents -- the filename alone encodes the offset (see
     _SOURCE_WINDOW_RE), and reading every window's header just to build a backup would be
     exactly the expensive per-file I/O the totals-cache background worker already exists to
-    avoid (portal_browser_v1.py, ~78s for one 15,101-file piętro). A backup only needs to
+    avoid (measured at ~78s for one 15,101-file floor). A backup only needs to
     know WHICH files exist -- restoring means regenerating missing ones from scratch, not
     restoring bytes."""
 
@@ -75,9 +74,9 @@ class PietroSnapshot:
 
 
 class ConstellationSnapshot:
-    """What one piętro's constellations/ folder looked like: which (k, variant) hit files
-    exist (as "k{K}/variant{V}/HITS_....bin" relative paths), plus the piętro-level
-    CHECKPOINT.txt text (constellation_finder_v1.py writes ONE checkpoint per piętro, not
+    """What one floor's constellations/ folder looked like: which (k, variant) hit files
+    exist (as "k{K}/variant{V}/HITS_....bin" relative paths), plus the floor-level
+    CHECKPOINT.txt text (constellation_finder_v1.py writes ONE checkpoint per floor, not
     per k/variant -- see that file's own module docstring)."""
 
     def __init__(self, base_exponent, hit_files, checkpoint_text):
@@ -128,10 +127,10 @@ class ConstellationSnapshot:
 
 
 class BackupManifest:
-    """Full snapshot: every piętro's PietroSnapshot + ConstellationSnapshot, plus a copy of
-    benchmark_log.csv's raw text (small -- a few hundred rows even after months of use, see
-    portal_browser_v1.py's own Benchmark tab -- safe to embed directly in the manifest JSON
-    rather than as a separate file to keep track of)."""
+    """Full snapshot: every floor's PietroSnapshot + ConstellationSnapshot, plus a copy of
+    benchmark_log.csv's raw text (small -- a few hundred rows even after months of use --
+    safe to embed directly in the manifest JSON rather than as a separate file to keep
+    track of)."""
 
     def __init__(self, timestamp_utc, storage_path, pietra, constellations, benchmark_csv_text):
         self.timestamp_utc = timestamp_utc
@@ -166,9 +165,9 @@ class BackupManifest:
     def build_from_disk(cls, storage_path):
         """Scans storage_path RIGHT NOW and builds a fresh manifest -- this is what
         "Backup" actually does (see backup_store.py.BackupStore.create()). Cheap: only
-        os.listdir() calls, no per-file header reads (unlike portal_browser_v1.py's totals-
-        cache worker, which needs actual prime counts -- a backup only needs to know WHICH
-        files exist)."""
+        os.listdir() calls, no per-file header reads (unlike the app's totals-cache worker,
+        which needs actual prime counts -- a backup only needs to know WHICH files
+        exist)."""
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         pietra = []
         constellations = []
@@ -188,21 +187,21 @@ class BackupManifest:
     def diff_against_disk(self, storage_path):
         """Compares this manifest against storage_path's CURRENT state. Returns
         {base_exponent: {"missing_windows": [...], "missing_hits": [...],
-        "extra_windows": [...], "extra_hits": [...]}} for every piętro that differs in
+        "extra_windows": [...], "extra_hits": [...]}} for every floor that differs in
         EITHER direction -- an empty dict means the backup and the disk match exactly.
-        Piętra with nothing missing AND nothing extra are simply absent from the result,
-        same reasoning as aggregate_write_seconds_by_pietro() in portal_browser_v1.py only
-        including piętra that actually have data.
+        Floors with nothing missing AND nothing extra are simply absent from the result,
+        same reasoning as the benchmark aggregation elsewhere in this project: only
+        including floors that actually have data.
 
-        The comparison unions self.pietra's keys with EVERY piętro folder actually on
+        The comparison unions self.pietra's keys with EVERY floor folder actually on
         disk right now (_pietra_on_disk()), and computes BOTH directions for each:
         missing_from() (the backup has it, disk doesn't -- restore_job.py's
         regenerate-it path) and its mirror, current.missing_from(snap) (disk has it,
         backup doesn't -- the extra_windows/extra_hits fields, which the caller can
         offer to delete, always with an explicit confirm/cancel prompt -- see
         restore_job.py's delete_extra_files() and settings_tab.py's
-        _on_start_restore()). This also covers a piętro entirely absent from the
-        backup (e.g. one added to the magazyn after the backup was taken, with no
+        _on_start_restore()). This also covers a floor entirely absent from the
+        backup (e.g. one added to the storage after the backup was taken, with no
         entry in self.pietra at all): its snapshot is treated as empty, so ALL of its
         files come back as extra_windows/extra_hits rather than being silently
         invisible to the diff."""

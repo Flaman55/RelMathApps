@@ -4,9 +4,9 @@ app_settings.py -- AppSettings, persisting the user-configurable storage path.
 The settings file (primeatlas/locales/app_settings.json) lives outside the portal
 folder it points at, on purpose -- a "chicken-and-egg" constraint: a setting that
 TELLS you where the portal folder is can't itself live inside that same folder (you'd
-need to already know the path to find the file that tells you the path). Contrast with
-portal_browser_v1.py's .portal_generation_settings.json, which lives INSIDE the portal
-folder on purpose (it's per-portal generation-form state, not "where is the portal").
+need to already know the path to find the file that tells you the path). This is
+distinct from per-portal generation-form state, which is expected to live inside the
+portal folder itself since it's tied to that specific portal, not to locating it.
 
 storage_path lives in primeatlas/locales/, alongside language_settings.json, so every
 small per-install runtime setting lives in ONE place instead of split between the app's
@@ -31,7 +31,7 @@ LEGACY_SETTINGS_FILENAME = ".portal_app_settings.json"  # earlier location, next
 class AppSettings:
     """One JSON file (primeatlas/locales/app_settings.json), holding storage_path
     alongside the language choice. Kept as a class (not a bare dict/function pair) so
-    it's a natural single object to pass around the Ustawienia tab and to the
+    it's a natural single object to pass around the Settings tab and to the
     subprocess-launching code that needs to know the CURRENT storage path to set
     CONSTELLATION_PORTAL_DIR for orchestrator_loop_v2.py/constellation_finder_v1.py."""
 
@@ -44,13 +44,12 @@ class AppSettings:
 
     @property
     def default_storage_path(self):
-        """Same default portal_browser_v1.py has always used -- CONSTELLATION_PORTAL
-        directly under "Liczby pierwsze magazyn". THREE levels up from this script's own
-        folder (prime_atlas_v1.py sits in 04_app/prime_atlas_v1/, not directly in
-        04_app/) -- the depth has to be spelled out here rather than computed from some
-        already-correct reference elsewhere."""
+        """Default storage location: a CONSTELLATION_PORTAL folder directly alongside
+        this application's own files. Self-contained regardless of where the
+        application directory is placed on disk -- no assumption about an enclosing
+        directory structure."""
         return os.path.abspath(
-            os.path.join(self.script_dir, "..", "..", "..", "CONSTELLATION_PORTAL"))
+            os.path.join(self.script_dir, "CONSTELLATION_PORTAL"))
 
     @property
     def storage_path(self):
@@ -62,7 +61,8 @@ class AppSettings:
         return bool(self._data.get("storage_path"))
 
     def set_storage_path(self, path):
-        """path=None or "" resets to the default (three levels up from this script)."""
+        """path=None or "" resets to the default (a CONSTELLATION_PORTAL folder next to
+        this script)."""
         self._data["storage_path"] = path or None
         self.save()
 
@@ -128,10 +128,8 @@ class AppSettings:
             self.save()
 
     def save(self):
-        """Atomic write (temp file + os.replace()), same pattern as
-        portal_browser_v1.py's save_generation_settings()/save_totals_cache(). Best-effort:
-        a failed save just means the next launch falls back to the default path, not a
-        crash."""
+        """Atomic write (temp file + os.replace()). Best-effort: a failed save just
+        means the next launch falls back to the default path, not a crash."""
         tmp_path = f"{self._path}.tmp{os.getpid()}"
         try:
             os.makedirs(LOCALES_DIR, exist_ok=True)

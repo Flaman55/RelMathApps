@@ -29,7 +29,7 @@ import numpy as np
 # rather than quadratic in the hit file's size -- important for patterns like k=2/3/4,
 # which accumulate hits fastest.
 #
-# Progress is tracked with a single checkpoint per piętro
+# Progress is tracked with a single checkpoint per floor
 # (CONSTELLATION_PORTAL/10p{N}/constellations/CHECKPOINT.txt, storing the last fully-
 # processed PGS2 filename), covering every k.
 #
@@ -39,9 +39,9 @@ import numpy as np
 # pattern_catalog_v1.py's record_digits field -- without needing a separate report format
 # maintained here.
 #
-# CLI: running with no piętro argument auto-detects and processes every piętro under the
+# CLI: running with no floor argument auto-detects and processes every floor under the
 # portal that has at least one source window (list_pietra_with_data()); an explicit
-# argument restricts the run to just that one piętro.
+# argument restricts the run to just that one floor.
 #
 # Peek-ahead threshold: uses the NEXT file's header base_prime + MAX_SPAN as the peek
 # threshold (via read_prime_window_head), rather than reconstructing each window's
@@ -59,10 +59,11 @@ import prime_sieve_v1  # noqa: E402
 from pattern_catalog_v1 import PATTERN_CATALOG  # noqa: E402
 
 # CONSTELLATION_PORTAL_DIR: optional override for the portal's root folder, used by the
-# GUI's Settings tab to point at a custom storage location. Falls back to the default
-# path (four levels up from this file, landing on "Liczby pierwsze magazyn") when unset.
+# GUI's Settings tab to point at a custom storage location. Falls back to a
+# CONSTELLATION_PORTAL folder next to the application root (one level up from this
+# file) when unset, matching AppSettings.default_storage_path.
 PORTAL_FOLDER = os.environ.get("CONSTELLATION_PORTAL_DIR") or os.path.abspath(
-    os.path.join(_SCRIPT_DIR, "..", "..", "..", "..", "CONSTELLATION_PORTAL"))
+    os.path.join(_SCRIPT_DIR, "..", "CONSTELLATION_PORTAL"))
 CHECKPOINT_FILENAME = "CHECKPOINT.txt"
 
 
@@ -86,7 +87,7 @@ def list_source_windows(base_exponent):
 
 def list_pietra_with_data():
     """Returns sorted base_exponent ints for every 10p{N} folder under PORTAL_FOLDER that
-    actually has at least one PGS2 source window. Piętro folders can exist as empty
+    actually has at least one PGS2 source window. Floor folders can exist as empty
     source_primes/constellations placeholders ahead of the scanner actually reaching
     them, so folder presence alone doesn't mean there's anything to process."""
     if not os.path.isdir(PORTAL_FOLDER):
@@ -106,7 +107,7 @@ def _checkpoint_path(base_exponent):
 
 
 def read_checkpoint(base_exponent):
-    """Returns the filename of the last fully-processed PGS2 window for this piętro, or
+    """Returns the filename of the last fully-processed PGS2 window for this floor, or
     None if there's no checkpoint yet."""
     path = _checkpoint_path(base_exponent)
     if not os.path.exists(path):
@@ -134,7 +135,7 @@ def hit_file_path(base_exponent, k, variant_id):
 
 def append_hits(base_exponent, k, variant_id, new_sorted_starts, known_last_value=None):
     """Appends newly-found match starting values (already sorted, all greater than
-    anything previously stored for this piętro since windows are processed in increasing
+    anything previously stored for this floor since windows are processed in increasing
     order) to this pattern's cumulative hit file -- creating the k{K}/variant{ID}/ folder
     on first use, same auto-create-what's-missing approach as the scanner uses for
     source_primes/.
@@ -163,8 +164,8 @@ def match_patterns_vectorized(candidates, local_set, active_patterns):
     Returns {(k, id): [[p, p+d2, ..., p+dk], ...]} -- full (absolute) values.
 
     Computes on LOCAL offsets relative to min(candidates) -- not absolute values -- since
-    numpy int64 cannot hold piętro >= 19 magnitudes (see file header on why this matters
-    at all only for piętro >= 19; still correct and cheap either way at shallower depths).
+    numpy int64 cannot hold floor >= 19 magnitudes (see file header on why this matters
+    at all only for floor >= 19; still correct and cheap either way at shallower depths).
     """
     if not candidates or not local_set:
         return {}
@@ -198,7 +199,7 @@ def match_patterns_vectorized(candidates, local_set, active_patterns):
 
 def process_floor(base_exponent):
     """Main entry point: streams through every not-yet-processed PGS2 window for this
-    piętro, in order, matching every catalog pattern (k>=2) and appending new hits."""
+    floor, in order, matching every catalog pattern (k>=2) and appending new hits."""
     windows = list_source_windows(base_exponent)
     if not windows:
         print(f"[!] No source_primes windows found for 10^{base_exponent} "
@@ -234,7 +235,7 @@ def process_floor(base_exponent):
     # Without this, every append re-read the WHOLE growing file (see
     # append_prime_window()'s docstring in prime_sieve_v1.py) -- for common patterns like
     # k=2..5, which pick up new hits on nearly every window, that makes the total append
-    # cost quadratic in the hit file's size over a piętro's lifetime. Bootstrapped lazily
+    # cost quadratic in the hit file's size over a floor's lifetime. Bootstrapped lazily
     # (at most once per pattern per run, from disk) the first time a pattern actually gets
     # a hit in this run.
     last_value_cache = {}
@@ -286,7 +287,6 @@ if __name__ == "__main__":
     print("=" * 70)
     print("[*] CONSTELLATION FINDER -- v1 (PGS2 streaming + unified k=2..21 + "
           "in-place-append hit files)")
-    print("    lineage: Twin_Primes_Searcher_v4_2_1.py (03_mersenne_pierwsze/)")
     print("=" * 70)
 
     print(f"[*] Portal: {PORTAL_FOLDER}")
@@ -295,15 +295,15 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         floors = [int(sys.argv[1])]
     else:
-        # No piętro given -- auto-detect every one that actually has source_primes data.
-        # process_floor() is already a cheap no-op for a piętro whose checkpoint is fully
+        # No floor given -- auto-detect every one that actually has source_primes data.
+        # process_floor() is already a cheap no-op for a floor whose checkpoint is fully
         # caught up, so scanning all of them each run is safe, not just at the moment a
-        # new piętro's data first appears.
+        # new floor's data first appears.
         floors = list_pietra_with_data()
         if not floors:
-            print("[!] No piętro folders with source_primes data found under the portal -- nothing to do.")
+            print("[!] No floor folders with source_primes data found under the portal -- nothing to do.")
         else:
-            print(f"[*] No piętro given on the command line -- auto-detected {len(floors)} "
+            print(f"[*] No floor given on the command line -- auto-detected {len(floors)} "
                   f"with data: {', '.join('10^' + str(n) for n in floors)}")
 
     for base_exponent in floors:

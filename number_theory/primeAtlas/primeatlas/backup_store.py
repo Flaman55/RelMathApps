@@ -35,8 +35,8 @@ class BackupStore:
         return manifest
 
     def save(self, manifest):
-        """Atomic write (temp file + os.replace()), same pattern used throughout this
-        project's checkpoint files (see e.g. portal_browser_v1.py's save_totals_cache())."""
+        """Atomic write (temp file + os.replace()), the same pattern used throughout this
+        project's checkpoint files."""
         os.makedirs(self.backups_dir, exist_ok=True)
         path = os.path.join(self.backups_dir, f"{manifest.name}.json")
         tmp_path = f"{path}.tmp{os.getpid()}"

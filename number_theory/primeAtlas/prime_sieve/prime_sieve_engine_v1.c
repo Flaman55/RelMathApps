@@ -1,15 +1,9 @@
 /* ==========================================================================================
- * prime_sieve_engine_v1.c -- sieve-generation core for the prime warehouse project.
+ * prime_sieve_engine_v1.c -- sieve-generation core for the prime warehouse project, v1.
  *
- * LINEAGE: ported from generuj_i_licz_segment.c (02_skaner_faktory/, Polish-commented,
- * v5.0-v5.3.2 lineage) with NO functional change -- only comments translated to English
- * as part of the project's pivot to English naming/content for the public constellation
- * portal (05_scripts/ tree, git-versioned from here on; see prime_sieve_v1.py header for
- * the versioning-policy change this file is part of).
- *
- * Instead of reading sieving primes from a warehouse file on disk (measured, in an earlier
- * session, as a hard speed ceiling -- ~99% of wall time, ~45s/chunk regardless of
- * language/thread architecture), this GENERATES them on the fly via primesieve_iterator
+ * Instead of reading sieving primes from a warehouse file on disk (measured as a hard
+ * speed ceiling -- ~99% of wall time, ~45s/chunk regardless of language/thread
+ * architecture), this GENERATES them on the fly via primesieve_iterator
  * (segmented sieve of Eratosthenes + mod-210 wheel, zero disk access) and uses them
  * immediately to sieve the combined window [distance, distance+window_m) -- one function,
  * one ctypes call from Python, no intermediate buffers of raw sieving primes.
@@ -29,7 +23,7 @@
  * -> L difference on the order of 10^-6) -- splitting into anchor/layers would be a
  * practically useless micro-optimization at the cost of complexity.
  *
- * BUILD (WSL, after building+installing libprimesieve from H:\primesieve):
+ * BUILD (WSL, after building+installing libprimesieve):
  *   gcc -O3 -shared -fPIC prime_sieve_engine_v1.c -o prime_sieve_engine_v1.so \
  *       -lprimesieve -lstdc++ -lm
  * ========================================================================================== */
@@ -154,7 +148,7 @@ int generate_and_sieve_segment_bits(uint64_t start, uint64_t stop,
  *
  * Thin wrapper around primesieve_count_primes(), which uses libprimesieve's own fast prime-
  * COUNTING algorithm (not iteration/generation) -- negligible cost next to the actual sieve
- * pass above, safe to call once per batch even at deep piętro levels where L_final itself is
+ * pass above, safe to call once per batch even at deep floor levels where L_final itself is
  * large.
  * ========================================================================================== */
 uint64_t count_sieving_primes(uint64_t limit) {

@@ -21,3 +21,10 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# PrimeAtlas generated data (default storage location)
+number_theory/primeAtlas/CONSTELLATION_PORTAL/
+
+# PrimeAtlas local runtime settings (per-install storage path/language choice)
+number_theory/primeAtlas/primeatlas/locales/app_settings.json
+number_theory/primeAtlas/primeatlas/locales/language_settings.json

@@ -37,7 +37,7 @@
  * remains a complete, independently buildable engine, matching v1/v2's own "no cross-file
  * source dependency" convention.
  *
- * BUILD (WSL, after building+installing libprimesieve from H:\primesieve):
+ * BUILD (WSL, after building+installing libprimesieve):
  *   gcc -O3 -shared -fPIC prime_sieve_engine_v3.c -o prime_sieve_engine_v3.so \
  *       -lprimesieve -lstdc++ -lm
  * ========================================================================================== */

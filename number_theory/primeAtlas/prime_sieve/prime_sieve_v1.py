@@ -128,14 +128,14 @@ def format_offset(n):
 #   base_len     1 byte    length in bytes of the base-prime big-endian encoding (0 if
 #                          the window contains zero primes)
 #   base_prime   base_len bytes   the FIRST prime in the window, as a big-endian unsigned
-#                          integer (arbitrary precision -- handles any piętro depth)
+#                          integer (arbitrary precision -- handles any floor depth)
 #   count        4 bytes   uint32, total number of primes in the window (including the
 #                          base prime)
 #   generated_at 4 bytes   uint32, unix epoch seconds (UTC) when this window was written --
 #                          lets every result file self-document when it was generated
 #                          (visible via read_prime_window_header()), useful both as a quick
 #                          sanity check and as raw material for tracking how generation cost
-#                          grows with piętro depth over time.
+#                          grows with floor depth over time.
 #   gaps         (count-1) LEB128 unsigned varints, each = primes[i] - primes[i-1]
 #
 # Reconstructing absolute values is a single cumulative sum from base_prime; reconstructing
@@ -546,7 +546,7 @@ def main_batch_scanner(base_power, target_idx_list, window_m, write_files=True):
                                      bitorder='little').astype(bool)
 
     # PGS2 windows are written directly under BASE_STORAGE_10PN/10p{N}/source_primes/,
-    # matching the CONSTELLATION_PORTAL folder layout (piętro -> source_primes / constellations).
+    # matching the CONSTELLATION_PORTAL folder layout (floor -> source_primes / constellations).
     # write_files=False (write-toggle feature): candidates are still computed in full (needed
     # to know the count), but write_prime_window() is skipped -- no PGS2 files land on disk,
     # only the aggregate count is kept (total_primes_found below), handed back to the caller
@@ -588,7 +588,7 @@ def main_batch_scanner(base_power, target_idx_list, window_m, write_files=True):
             if distance == 1 and w > 0 and not segment[0]:
                 # Edge case: the write_files=True branch excludes candidate value 1 (not
                 # prime) via its "> 1" filter -- only reachable at base_power=0, never at the
-                # piętro depths this project actually runs, but kept exact rather than
+                # floor depths this project actually runs, but kept exact rather than
                 # silently approximate.
                 count -= 1
             total_primes_found += count
@@ -657,13 +657,12 @@ if __name__ == "__main__":
 
     print("=" * 70)
     print("[*] PRIME SIEVE -- v1 (primesieve, LPT + geometric zone A, PGS1 binary output)")
-    print("    lineage: Skaner_Factorization_v5_3_2.py (02_skaner_faktory/)")
     print("=" * 70)
 
     if os.name == "nt":
-        BASE_STORAGE_10PN = r"H:\Liczby pierwsze magazyn\CONSTELLATION_PORTAL"
+        BASE_STORAGE_10PN = os.environ.get("CONSTELLATION_PORTAL_DIR", r"C:\CONSTELLATION_PORTAL")
     else:
-        BASE_STORAGE_10PN = "/mnt/h/Liczby pierwsze magazyn/CONSTELLATION_PORTAL"
+        BASE_STORAGE_10PN = os.environ.get("CONSTELLATION_PORTAL_DIR", "/mnt/c/CONSTELLATION_PORTAL")
     print(f"[*] Windows written to: {BASE_STORAGE_10PN}\\10p{{N}}\\source_primes\\")
 
     if len(sys.argv) > 4:

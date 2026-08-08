@@ -1,5 +1,5 @@
 """
-settings_tab.py -- SettingsTab, the tkinter widgets for the Ustawienia tab: language
+settings_tab.py -- SettingsTab, the tkinter widgets for the Settings tab: language
 switch, storage-path configuration, backup create/list, restore (diff-against-disk ->
 confirm -> checkpointed, pausable/resumable/cancellable regeneration job), and the
 full-database delete button.
@@ -14,21 +14,21 @@ known to be importable; no further lazy-import gymnastics are needed here.
 SettingsTab does NOT know how to launch orchestrator_loop_v2.py / constellation_finder_v1.py
 itself -- prime_atlas_v1.py already owns that machinery (build_loop_argv,
 build_constellation_finder_argv, build_wsl_logged_command, WslLoggedRunner,
-generation_log_paths -- built for the Generowanie tab) and hands it to this class as a
+generation_log_paths -- built for the Generation tab) and hands it to this class as a
 small dict of callables (`wsl_helpers`) at construction time instead of this module
 re-implementing a second copy or importing prime_atlas_v1.py directly (which would be
 circular: that file imports SettingsTab from this package). Expected keys:
   - get_portal_folder() -> str                     current storage path, read at call time
   - set_portal_folder(path) -> None                 rebinds the app's global + status label
-  - get_loop_defaults() -> dict                     current Generowanie-tab loop form values
+  - get_loop_defaults() -> dict                     current Generation-tab loop form values
   - build_loop_argv, build_constellation_finder_argv, build_wsl_logged_command  (functions)
   - WslLoggedRunner                                  (class)
   - generation_log_paths                             (function)
 
 Restore driving semantics: orchestrator_loop_v2.py doesn't accept "regenerate exactly these
-offsets" -- it appends the next N windows from wherever a piętro's file count currently sits.
-Since prime_sieve_v1.py assigns offsets deterministically in a fixed sequence per piętro,
-restarting generation on a piętro with fewer files than the backup recorded reproduces the
+offsets" -- it appends the next N windows from wherever a floor's file count currently sits.
+Since prime_sieve_v1.py assigns offsets deterministically in a fixed sequence per floor,
+restarting generation on a floor with fewer files than the backup recorded reproduces the
 SAME missing filenames in the SAME order -- so "run enough iterations to cover the missing
 count, then re-diff" is a correct (if occasionally slightly wasteful on the last window)
 restore strategy, not an approximation. Each step retries a bounded number of times
@@ -42,7 +42,7 @@ locales/strings_pl.json and locales/strings_en.json. The language PICKER lives i
 tab (top of _build_widgets) but only writes the choice to AppSettings -- it does NOT
 rebuild this tab's own already-built widgets, since a live-relabel of every widget in
 all 5 tabs would be a much larger and riskier change than a restart-required switch
-(see i18n.py's own docstring for the full rationale). The Ustawienia tab shows a note
+(see i18n.py's own docstring for the full rationale). The Settings tab shows a note
 saying the change takes effect after restarting the app.
 """
 import os
@@ -204,10 +204,10 @@ class SettingsTab(ttk.Frame):
     def _on_start_restore(self):
         if not self._selected_backup_name or self._diff_cache is None:
             return
-        # Gdy magazyn ma więcej niż backup (np. nowe piętro dodane po zrobieniu backupu),
-        # restore do tego backupu usunie nadmiar -- to jest destrukcyjne, więc osobne,
-        # jawne ostrzeżenie PRZED ogólnym potwierdzeniem restore, z możliwością
-        # anulowania w tym miejscu.
+        # When storage has more entries than the backup (e.g. a new floor added after the
+        # backup was made), restoring to that backup will delete the surplus -- that's
+        # destructive, so there's a separate, explicit warning BEFORE the general restore
+        # confirmation, with a chance to cancel right here.
         extra_pietra = {
             be: d for be, d in self._diff_cache.items()
             if d.get("extra_windows") or d.get("extra_hits")
@@ -228,7 +228,7 @@ class SettingsTab(ttk.Frame):
                 self.T("settings.restore_confirm", name=self._selected_backup_name)):
             return
         # Restore also swaps in the backup's benchmark_log.csv: its row history for
-        # windows/piętra that never made it into the backup (e.g. a piętro added after
+        # windows/floors that never made it into the backup (e.g. a floor added after
         # the backup was taken) has to go away along with their files, and rows for
         # anything regenerated below get freshly re-appended by that generation run
         # anyway (same WSL pipeline that writes benchmark_log.csv during ordinary
@@ -295,7 +295,7 @@ class SettingsTab(ttk.Frame):
         self._restore_log(self.T("settings.restore_cancelled_note"))
         self._update_restore_buttons()
 
-    # ---- restore: driver (one piętro/step at a time) -------------------------------------
+    # ---- restore: driver (one floor/step at a time) -------------------------------------
 
     def _drive_restore(self):
         """Kicks off the next unit of restore work. No-op if there is no active job, the job

@@ -32,7 +32,7 @@ import prime_sieve_v3  # noqa: E402  -- same-folder module: format_offset() and
 # regardless of which scanner (v2's per-worker-private-buffer return+merge, or v3's shared
 # mmap buffer with atomic OR, no merge step) is doing the actual sieving. All three write to
 # the SAME CONSTELLATION_PORTAL/benchmark_log.csv -- deliberately not forked, so the existing
-# growth chart keeps showing one continuous cross-piętro history.
+# growth chart keeps showing one continuous cross-floor history.
 # ==========================================================================================
 
 
@@ -137,7 +137,7 @@ BENCHMARK_FIELDNAMES = [
     "instance_of_n", "loop_session_seconds", "loop_numbers_per_second",
     "loop_seconds_per_window", "write_files",
 ]
-# write_files: lets the GUI's piętro list show total REAL generation time per piętro, which
+# write_files: lets the GUI's floor list show total REAL generation time per floor, which
 # requires distinguishing actual disk-writing runs from write_files=False count-only
 # benchmark runs (the same base_exponent/range can get run both ways). "1"/"0", same
 # convention as this file's own CLI encoding of the flag (see run_batch()). Rows written
@@ -195,7 +195,7 @@ def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, po
     """Logs to the SAME benchmark_log.csv used by every orchestrator variant (see this file's
     header for why that's deliberately shared, not forked).
 
-    window_m must match whatever WINDOW_M the actual scan used -- reading back a piętro's
+    window_m must match whatever WINDOW_M the actual scan used -- reading back a floor's
     PRIME_WINDOW_*.bin filenames (which encode ABSOLUTE offsets, not window_m itself)
     requires knowing the same window_m used to write them, to recompute each target_idx's
     expected filename below. Defaults to the module WINDOW_M when omitted, same as
@@ -266,7 +266,7 @@ def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, po
                 "max_child_rss_mb": f"{max_child_rss_mb:.1f}" if max_child_rss_mb is not None else "",
                 "write_files": "1" if write_files else "0",
             })
-        print(f"[BENCHMARK] logged to {log_path} (for cross-piętro growth analysis)")
+        print(f"[BENCHMARK] logged to {log_path} (for cross-floor growth analysis)")
     except OSError as e:
         print(f"[BENCHMARK] WARNING: could not write benchmark log ({e})")
 
@@ -277,17 +277,17 @@ def run_orchestrator(base_exponent=None, window_count=None, start_auto=None, sta
     """Returns True/False so __main__ can turn it into a real process exit code.
 
     workers/batches_per_worker/window_m are all CLI-overridable (see __main__ below) rather
-    than fixed module constants, so a caller (e.g. the GUI's Generowanie tab) can set every
+    than fixed module constants, so a caller (e.g. the GUI's Generation tab) can set every
     tunable this pipeline has without touching source. They still default to the module
     constants below when omitted, so direct `python orchestrator_v3.py <base_exponent>
     <window_count>` calls keep working exactly as before.
 
     window_m is how many numbers each target_idx step covers -- threaded from the GUI's
-    "Pipeline generowania" field all the way down through here to prime_sieve_v3.py's own
-    CLI. UWAGA: changing this for a piętro that already has PRIME_WINDOW_*.bin files written
+    "Generation pipeline" field all the way down through here to prime_sieve_v3.py's own
+    CLI. CAUTION: changing this for a floor that already has PRIME_WINDOW_*.bin files written
     with a DIFFERENT window_m will make find_auto_start() below compute a wrong/misaligned
     resume point (it reverse-engineers target_idx from each file's stored absolute offset
-    using THIS window_m) -- only safe to change for a piętro with no existing data yet."""
+    using THIS window_m) -- only safe to change for a floor with no existing data yet."""
     base_exponent = BASE_EXPONENT if base_exponent is None else base_exponent
     window_count = WINDOW_COUNT if window_count is None else window_count
     start_auto = START_WINDOW_AUTO if start_auto is None else start_auto
@@ -308,12 +308,13 @@ def run_orchestrator(base_exponent=None, window_count=None, start_auto=None, sta
     # subprocess (prime_sieve_v3.py, via run_batch() below) inherits this process's
     # environment by default, setting this once in the launching GUI process propagates all
     # the way down through this script to prime_sieve_v3.py without needing to also thread
-    # it through as a CLI arg. Falls back to a path relative to this script's own location
-    # (four levels up to reach the storage root) when the env var isn't set.
+    # it through as a CLI arg. Falls back to a CONSTELLATION_PORTAL folder next to the
+    # application root (one level up from this script) when the env var isn't set, matching
+    # AppSettings.default_storage_path.
     env_override = os.environ.get("CONSTELLATION_PORTAL_DIR")
     portal_folder = (env_override if env_override else
                       os.path.abspath(os.path.join(
-                          script_dir, "..", "..", "..", "..", "CONSTELLATION_PORTAL")))
+                          script_dir, "..", "CONSTELLATION_PORTAL")))
 
     print(f"{'='*60}")
     print(f"[*] ORCHESTRATOR {VERSION} (shared mmap buffer, atomic OR, via prime_sieve_v3.py) | "

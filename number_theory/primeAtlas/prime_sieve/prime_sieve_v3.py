@@ -20,7 +20,7 @@ BATCHES_PER_WORKER = 2    # how many contiguous cost-equal batches per worker --
 # count_sieving_primes(L_final) is a PURE diagnostic/benchmark statistic (pi(L_final) -- how
 # many primes were used AS the sieving tool) -- it is NOT used anywhere in the actual sieve
 # computation or in total_primes_found (the real result). At extreme depth it is NOT cheap:
-# at piętro-scale L_final values (order 10^13 and beyond) this single call can take minutes,
+# at floor-scale L_final values (order 10^13 and beyond) this single call can take minutes,
 # comparable to the parallel sieve pass itself, and it runs BEFORE t_sieve/t_start, so its
 # cost would otherwise be invisible in the "Batch sieve done" timing. Defaulting this OFF
 # keeps normal runs fast; pass compute_sieving_primes_count=True (main_batch_scanner) / CLI
@@ -646,9 +646,9 @@ if __name__ == "__main__":
     if env_override:
         BASE_STORAGE_10PN = env_override
     elif os.name == "nt":
-        BASE_STORAGE_10PN = r"H:\Liczby pierwsze magazyn\CONSTELLATION_PORTAL"
+        BASE_STORAGE_10PN = r"C:\CONSTELLATION_PORTAL"
     else:
-        BASE_STORAGE_10PN = "/mnt/h/Liczby pierwsze magazyn/CONSTELLATION_PORTAL"
+        BASE_STORAGE_10PN = "/mnt/c/CONSTELLATION_PORTAL"
     print(f"[*] Windows written to: {BASE_STORAGE_10PN}\\10p{{N}}\\source_primes\\")
 
     if len(sys.argv) > 4:
@@ -674,14 +674,14 @@ if __name__ == "__main__":
 
     # WINDOW_M: how many numbers each target_idx step covers. The same constant also exists
     # in orchestrator_v3.py/orchestrator_loop_helpers.py -- all copies must be kept in sync.
-    # Optional CLI position 8, threaded down from the GUI's "Pipeline generowania" field
+    # Optional CLI position 8, threaded down from the GUI's "Generation pipeline" field
     # through orchestrator_loop_v2.py -> orchestrator_v3.py -> here (see those files' own
     # comments). Default unchanged (10_000_000) when omitted, so any existing manual
-    # invocation keeps working as before. CAUTION: changing this for a piętro that ALREADY
+    # invocation keeps working as before. CAUTION: changing this for a floor that ALREADY
     # has PRIME_WINDOW_*.bin files written with a DIFFERENT window width will make
     # orchestrator_v3.py's find_auto_start() (which reverse-engineers target_idx from each
     # file's stored ABSOLUTE offset using THIS window_m) compute a wrong/misaligned resume
-    # point -- only safe to change for a piętro with no existing data yet, or right after a
+    # point -- only safe to change for a floor with no existing data yet, or right after a
     # fresh backup/wipe.
     WINDOW_M = int(sys.argv[8]) if len(sys.argv) > 8 else 10 ** 7
     target_idx_list = list(range(target_idx_start, target_idx_stop + 1))

@@ -1,5 +1,5 @@
 """
-primeatlas -- pure-logic (no tkinter) backend package for prime_atlas_v1.py's Ustawienia
+primeatlas -- pure-logic (no tkinter) backend package for prime_atlas_v1.py's Settings
 tab: configurable storage path, backup/restore (as lightweight manifests, not raw data
 copies), full-database delete, and PL/EN language switching. See each module's own
 docstring for details. Every class here is independently unit-testable without a

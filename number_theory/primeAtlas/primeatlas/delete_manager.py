@@ -1,6 +1,6 @@
 """
 delete_manager.py -- PortalWiper, deletes an ENTIRE portal storage location: every
-10p{N} piętro folder (source windows + constellations), and truncates benchmark_log.csv
+10p{N} floor folder (source windows + constellations), and truncates benchmark_log.csv
 back to just its header. Deliberately does NOT touch _backups/ -- backups are the whole
 point of offering this button safely at all.
 

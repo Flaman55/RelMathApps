@@ -58,7 +58,7 @@ import orchestrator_loop_helpers as orch  # noqa: E402  -- doesn't run anything 
 #       [<write_files 0/1> [<compute_sieving_primes_count 0/1> [<window_count_per_run>
 #       [<workers> [<batches_per_worker>]]]]]
 #
-#   base_exponent -- which piętro (10^N) to run against, e.g. 20
+#   base_exponent -- which floor (10^N) to run against, e.g. 20
 #   run_count     -- how many loop ITERATIONS to run. Each iteration launches n_instances
 #                    orchestrators CONCURRENTLY, together covering window_count_per_run
 #                    windows -- so run_count=10 with the default window_count_per_run=1000
@@ -81,7 +81,7 @@ import orchestrator_loop_helpers as orch  # noqa: E402  -- doesn't run anything 
 #
 # Example:
 #   python3 orchestrator_loop_v2.py 20 10 2 0
-#   -> piętro 20, 10 iterations, 2 concurrent instances/iteration (250 windows each),
+#   -> floor 20, 10 iterations, 2 concurrent instances/iteration (250 windows each),
 #      count-only (no PGS2 files written).
 # ==========================================================================================
 
@@ -109,16 +109,17 @@ ORCHESTRATOR_PATH = os.path.join(_SCRIPT_DIR, "orchestrator_v3.py")
 # different disk/folder -- see prime_sieve_v3.py's __main__ block for the full rationale.
 # This process's own subprocesses (orchestrator_v3.py instances, spawned below) inherit this
 # environment automatically, so setting it here once is enough to propagate all the way down
-# the chain to prime_sieve_v3.py too. Falls back to a path relative to this script's own
-# location (four levels up to reach the storage root) when the env var isn't set.
+# the chain to prime_sieve_v3.py too. Falls back to a CONSTELLATION_PORTAL folder next to the
+# application root (one level up from this script) when the env var isn't set, matching
+# AppSettings.default_storage_path.
 PORTAL_FOLDER = os.environ.get("CONSTELLATION_PORTAL_DIR") or os.path.abspath(
-    os.path.join(_SCRIPT_DIR, "..", "..", "..", "..", "CONSTELLATION_PORTAL"))
+    os.path.join(_SCRIPT_DIR, "..", "CONSTELLATION_PORTAL"))
 BENCHMARK_LOG_FILENAME = "benchmark_log.csv"
 
 
 def highest_written_target_idx(base_exponent, window_m=None):
     """Ground truth from disk: the highest PRIME_WINDOW_*.bin target_idx currently written
-    for this piętro, or None if nothing's been written yet. Used ONCE, up front, to find the
+    for this floor, or None if nothing's been written yet. Used ONCE, up front, to find the
     session's starting point; every iteration after that chains from an in-memory cursor
     instead (see this file's header).
 
@@ -384,7 +385,7 @@ def main():
         print(f"Usage: python3 {os.path.basename(__file__)} <base_exponent> <run_count> "
               f"<n_instances> [<write_files 0/1> [<compute_sieving_primes_count 0/1> "
               f"[<window_count_per_run> [<workers> [<batches_per_worker> [<window_m>]]]]]]")
-        print("  base_exponent -- which piętro (10^N) to run against, e.g. 20")
+        print("  base_exponent -- which floor (10^N) to run against, e.g. 20")
         print("  run_count     -- how many loop ITERATIONS to run (each launching")
         print(f"                   n_instances orchestrators concurrently, together covering")
         print(f"                   window_count_per_run windows)")
@@ -406,9 +407,9 @@ def main():
         print("                   own CLI position 5).")
         print(f"  window_m      -- optional, default {orch.WINDOW_M:,}. How many numbers each")
         print("                   target_idx step covers (see prime_sieve_v3.py's __main__")
-        print("                   block). UWAGA: only safe to change for a piętro with NO")
+        print("                   block). CAUTION: only safe to change for a floor with NO")
         print("                   existing PRIME_WINDOW_*.bin files yet -- changing it for a")
-        print("                   piętro that already has data written with a DIFFERENT")
+        print("                   floor that already has data written with a DIFFERENT")
         print("                   window_m breaks auto-resume.")
         sys.exit(1)
 

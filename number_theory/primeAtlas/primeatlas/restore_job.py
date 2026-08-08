@@ -5,10 +5,10 @@ pausable/resumable/cancellable job.
 
 Deliberately does NOT know how to actually launch orchestrator_loop_v2.py /
 constellation_finder_v1.py itself -- that stays in the UI layer (settings_tab.py), which
-already has the WslLoggedRunner subprocess-streaming machinery from the Generowanie tab.
-This class only tracks WHAT needs doing and WHAT's been done, one piętro at a time, and
+already has the WslLoggedRunner subprocess-streaming machinery from the Generation tab.
+This class only tracks WHAT needs doing and WHAT's been done, one floor at a time, and
 persists that to its own small checkpoint file so an interrupted restore resumes from the
-next pending piętro instead of starting over.
+next pending floor instead of starting over.
 """
 import os
 import json
@@ -21,9 +21,9 @@ STATUS_COMPLETED = "completed"
 
 
 class RestoreStep:
-    """One unit of restore work: regenerate a piętro's missing source windows and/or
+    """One unit of restore work: regenerate a floor's missing source windows and/or
     missing constellation hits. A step is only COMPLETED once the caller (settings_tab.py,
-    after its subprocess run(s) for that piętro finish) explicitly calls
+    after its subprocess run(s) for that floor finish) explicitly calls
     RestoreJob.mark_step_done() -- this class never marks itself done."""
 
     def __init__(self, base_exponent, missing_windows, missing_hits, status=STATUS_PENDING,
@@ -32,7 +32,7 @@ class RestoreStep:
         self.missing_windows = missing_windows
         self.missing_hits = missing_hits
         self.status = status
-        # Surplus on disk relative to the backup (e.g. a piętro added AFTER the backup
+        # Surplus on disk relative to the backup (e.g. a floor added AFTER the backup
         # was taken) -- see manifest.py's diff_against_disk() docstring. Deleting these
         # is a pure local file op (delete_extra_files() below), driven from
         # settings_tab.py only after an explicit confirm/cancel prompt.
@@ -72,7 +72,7 @@ class RestoreJob:
     def __init__(self, backup_name, steps, status=STATUS_PENDING, checkpoint_path=None):
         self.backup_name = backup_name
         self.steps = steps  # list[RestoreStep], fixed order (ascending base_exponent --
-                             # smallest piętro first: cheapest, fastest feedback that the
+                             # smallest floor first: cheapest, fastest feedback that the
                              # pipeline actually works before committing to the big ones)
         self.status = status
         self.checkpoint_path = checkpoint_path
@@ -198,7 +198,7 @@ def _prune_if_empty(path):
 
 def delete_extra_files(storage_path, base_exponent, extra_windows, extra_hits):
     """Deletes surplus files (present on disk, absent from the backup manifest) for one
-    piętro. Best-effort, same philosophy as PortalWiper.execute() in delete_manager.py: a
+    floor. Best-effort, same philosophy as PortalWiper.execute() in delete_manager.py: a
     single locked/undeletable file shouldn't abort the whole operation, so errors are
     collected and returned rather than raised. Pure local file removal (os.remove against
     paths under storage_path) -- unlike regenerating missing files, this needs no WSL
@@ -210,11 +210,11 @@ def delete_extra_files(storage_path, base_exponent, extra_windows, extra_hits):
 
     Deleting files can empty out source_primes/, a constellations/k{K}/variant{V}/ leaf,
     its parent k{K} dir, constellations/ itself, and ultimately the whole
-    10p{base_exponent} folder -- this matters in particular for a piętro that was
+    10p{base_exponent} folder -- this matters in particular for a floor that was
     entirely absent from the backup, where ALL of its files come back as
     extra_windows/extra_hits (see manifest.py's diff_against_disk() docstring). So after
     removing the listed files, this function also prunes each of those, deepest first,
-    but ONLY if actually empty (a piętro that still has some backed-up content left over
+    but ONLY if actually empty (a floor that still has some backed-up content left over
     is untouched).
 
     Returns (deleted_count, pruned_count, errors) where errors is a list of

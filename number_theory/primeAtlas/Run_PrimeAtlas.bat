@@ -1,12 +1,12 @@
 @echo off
 setlocal
 
-rem Run_PrimeAtlas.bat -- podwojny klik uruchamia prime_atlas_v1.py bez
-rem recznego wpisywania komendy w terminalu. Przechodzi do folderu, w ktorym lezy ten
-rem plik .bat (%~dp0), wiec dziala niezaleznie od tego, skad zostal odpalony (np. skrot
-rem na Pulpicie). Sam prime_atlas_v1.py i tak liczy wlasne sciezki wzgledem swojego
-rem __file__, wiec ta zmiana katalogu jest tylko po to, zeby "python prime_atlas_v1.py"
-rem ponizej znalazl wlasciwy plik.
+rem Run_PrimeAtlas.bat -- double-click launches prime_atlas_v1.py without
+rem having to type the command into a terminal by hand. Changes to the folder this
+rem .bat file lives in (%~dp0), so it works regardless of where it was launched from
+rem (e.g. a Desktop shortcut). prime_atlas_v1.py itself computes its own paths relative
+rem to its own __file__, so this directory change is only so that "python prime_atlas_v1.py"
+rem below finds the right file.
 
 cd /d "%~dp0"
 
@@ -23,15 +23,15 @@ if %errorlevel%==0 (
 )
 
 echo.
-echo [BLAD] Nie znaleziono Pythona w PATH ^(ani "python", ani "py"^).
-echo Zainstaluj Python albo dodaj go do zmiennej PATH.
+echo [ERROR] Python not found in PATH ^(neither "python" nor "py"^).
+echo Install Python or add it to the PATH variable.
 pause
 exit /b 1
 
 :check
 if not %errorlevel%==0 (
     echo.
-    echo [PrimeAtlas zakonczyl sie bledem, kod %errorlevel%]
+    echo [PrimeAtlas exited with an error, code %errorlevel%]
     pause
 )
 
