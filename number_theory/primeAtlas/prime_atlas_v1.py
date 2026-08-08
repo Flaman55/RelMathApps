@@ -1406,6 +1406,29 @@ ORCHESTRATOR_LOOP_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "prime_sieve", "orchestrator_loop_v2.py"))
 CONSTELLATION_FINDER_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "constellation", "constellation_finder_v1.py"))
+PRIMESIEVE_SCRIPT = os.path.abspath(
+    os.path.join(_SCRIPT_DIR, "prime_sieve", "prime_sieve_primesieve.py"))
+
+# The uint64_t ceiling libprimesieve itself enforces (primesieve_get_max_stop(), which
+# always returns exactly 2**64 - 1) -- duplicated here, not imported, for the same reason
+# LOW_FLOOR_CUTOFF and QUICK_GEN_MAX_WINDOW_WIDTH are duplicated rather than imported: this
+# native-Windows GUI process must not depend on prime_sieve_primesieve.py's ctypes/WSL-only
+# libprimesieve binding just to know a fixed, extremely stable numeric constant. Used only
+# to decide whether to show a pre-flight truncation note before launching -- the actual
+# clamp is entirely backend-side (prime_sieve_primesieve.py's own live
+# primesieve_get_max_stop() call), so this staying correct is not safety-critical, only
+# cosmetic (a stale value here would at worst show/skip the note a run late).
+PRIMESIEVE_MAX_STOP = 2 ** 64 - 1
+
+# Width (multiplier of QUICK_GEN_MAX_WINDOW_WIDTH) spinbox bound for primesieve mode --
+# deliberately NOT the [1, 1000] cap every other mode's Width field uses (that cap exists
+# because those engines pay a real RAM cost of window_count * window_width / 8 bytes for a
+# combined shared buffer -- see README's "Window count, throughput, and RAM"). primesieve
+# mode has no such buffer (see prime_sieve_primesieve.py's module header); its only real
+# limit is libprimesieve's own uint64 ceiling, so the Width field is allowed to reach far
+# enough to cover the WHOLE library range from floor 0's own start -- one extra window of
+# headroom rounds this comfortably past PRIMESIEVE_MAX_STOP // QUICK_GEN_MAX_WINDOW_WIDTH.
+PRIMESIEVE_MAX_WIDTH_MULT = PRIMESIEVE_MAX_STOP // QUICK_GEN_MAX_WINDOW_WIDTH + 1
 
 
 def build_loop_argv(base_exponent, run_count, n_instances, write_files,
@@ -1450,6 +1473,31 @@ def build_loop_argv(base_exponent, run_count, n_instances, write_files,
         "1" if write_files else "0",
         "1" if compute_sieving_primes_count else "0",
         str(window_count_per_run), str(workers), str(batches_per_worker), str(window_m),
+    ]
+
+
+def build_primesieve_argv(base_exponent, target_idx_start, window_count_per_run, window_m,
+                           write_files, script_path=None):
+    """Returns the LINUX-side argv for prime_sieve_primesieve.py -- the 'primesieve mode'
+    engine (see that file's module header for what makes it different from every other
+    engine this app can launch: it calls libprimesieve's own primesieve_generate_primes()
+    directly, no batching/orchestrator of ours involved at all). Argument order matches
+    that script's __main__ CLI exactly: <base_exponent> <target_idx_start>
+    <target_idx_count> <window_m> <write_files 0/1> -- deliberately simpler than
+    build_loop_argv()'s 9 positions, since workers/batches_per_worker/
+    compute_sieving_primes_count have no meaning for this engine.
+
+    Unlike orchestrator_loop_v2.py (which auto-detects its own resume point via
+    find_auto_start()), this script takes target_idx_start explicitly -- the GUI already
+    computes it via find_continuation_target_idx() while planning the request (see
+    _quick_gen_plan_literal_range()), so there's no reason for this simpler script to
+    duplicate that disk-scanning logic itself."""
+    script = script_path if script_path is not None else PRIMESIEVE_SCRIPT
+    script_wsl = windows_path_to_wsl(script)
+    return [
+        "python3", "-u", script_wsl,
+        str(base_exponent), str(target_idx_start), str(window_count_per_run), str(window_m),
+        "1" if write_files else "0",
     ]
 
 
@@ -3404,6 +3452,17 @@ def _build_gui():
             self.quick_explore_floor_var = tk.StringVar(value="")
             self.quick_iterations_var = tk.StringVar(value="1")
             self.quick_explore_width_var = tk.StringVar(value="1")
+            # primesieve mode: deliberately its OWN Floor/From/Width variables rather than
+            # reusing quick_from_var/quick_to_var (an earlier version of this mode did) --
+            # see _build_quick_mode_primesieve's docstring for why: this mode's own Auto
+            # button now has a completely different meaning (fills From with this floor's
+            # storage continuation point, not a RAM-based width suggestion), and Width
+            # replaces the old literal To field entirely, so sharing Range mode's variables
+            # would mean a value typed in one mode's fields could silently mispopulate the
+            # other's on a mode switch.
+            self.quick_primesieve_floor_var = tk.StringVar(value="")
+            self.quick_primesieve_from_var = tk.StringVar(value="")
+            self.quick_primesieve_width_var = tk.StringVar(value="1")
             self.quick_hint_var = tk.StringVar(value="")
             self.quick_status_var = tk.StringVar(value="")
             self._quick_panels = []
@@ -3445,6 +3504,7 @@ def _build_gui():
                 ("floor", T("quick.mode_floor")),
                 ("range", T("quick.mode_range")),
                 ("explore", T("quick.mode_explore")),
+                ("primesieve", T("quick.mode_primesieve")),
             ]
             for value, label in quick_modes:
                 ttk.Radiobutton(mode_row, text=label, value=value, variable=self.quick_mode_var,
@@ -3460,6 +3520,7 @@ def _build_gui():
             floor_entry = self._build_quick_mode_floor(fields_container, mode_frames)
             self._build_quick_mode_range(fields_container, mode_frames)
             self._build_quick_mode_explore(fields_container, mode_frames)
+            self._build_quick_mode_primesieve(fields_container, mode_frames)
 
             ttk.Label(parent, textvariable=self.quick_hint_var, foreground="#555555",
                       wraplength=900, justify="left").pack(anchor="w", padx=8, pady=(0, 4))
@@ -3534,6 +3595,15 @@ def _build_gui():
                 return True
             return proposed.isdigit() and 1 <= int(proposed) <= 1000
 
+        def _validate_primesieve_width_spinbox(self, proposed):
+            """validatecommand for primesieve mode's OWN Width spinbox -- same shape as
+            _validate_quick_width_spinbox, but bounded to PRIMESIEVE_MAX_WIDTH_MULT instead
+            of 1000 (see that constant's own docstring for why this mode's Width field has
+            no RAM-driven reason to stay small)."""
+            if proposed == "":
+                return True
+            return proposed.isdigit() and 1 <= int(proposed) <= PRIMESIEVE_MAX_WIDTH_MULT
+
         def _on_quick_floor_start_changed(self, *_args):
             """Gives the Floor field its two roles (see _build_quick_mode_floor's
             docstring): a parseable starting point value makes it a read-only,
@@ -3596,6 +3666,96 @@ def _build_gui():
                            self.quick_explore_width_var)).pack(side="left")
             mode_frames["explore"] = frame
 
+        def _build_quick_mode_primesieve(self, container, mode_frames):
+            """Floor + From + Width -- NOT the From/To pair the first version of this mode
+            used. From is a literal absolute starting point (like Floor mode's own
+            "Starting point" field), and Width is a multiplier of QUICK_GEN_MAX_WINDOW_WIDTH
+            (same [1, 1000] spinbox convention as Floor/Exploration mode's Width) that
+            replaces having to type a second huge literal number for the end of the range --
+            picking a floor deep in the uint64 range and navigating to an arbitrary point
+              within it is exactly what this mode is FOR, and typing two 19+ digit numbers by
+            hand for every request was real friction that Floor/To-based Range mode doesn't
+            have (a floor's own start already anchors one end there).
+
+            Floor is INDEPENDENT of From -- not derived from it the way Floor mode's own
+            Floor field is derived from its Starting point (see _on_quick_floor_start_changed)
+            -- because this mode's Auto button needs a floor to look up BEFORE a From value
+            necessarily exists yet: click Auto with just a Floor typed in, and it fills From
+            with wherever that floor's storage currently ends (see
+            _on_primesieve_auto_from_clicked), which is the actual point of this layout --
+            orienting yourself on a floor that can hold hundreds of billions of windows
+            without having to compute a resume point by hand. Generation itself derives its
+            real target floor from From alone (via _quick_gen_plan_literal_range ->
+            digit_count_floor), same as Floor mode's own starting-point flow -- the Floor
+            field here is a lookup convenience for Auto, not fed back into the request.
+
+            The attribution label is ALWAYS visible while this mode is selected, not just
+            mentioned in a hint or code comment -- this mode calls directly into a
+            third-party library (libprimesieve, by Kim Walisch) with no engine of ours in
+            between, and that should be visible to whoever clicks Generate, not just to
+            whoever reads the source."""
+            frame = ttk.Frame(container)
+            frame.grid(row=0, column=0, sticky="w")
+            row1 = ttk.Frame(frame)
+            row1.pack(anchor="w")
+            ttk.Label(row1, text=T("quick.field_floor")).pack(side="left")
+            ttk.Entry(row1, textvariable=self.quick_primesieve_floor_var, width=10).pack(
+                side="left", padx=(6, 20))
+            ttk.Label(row1, text=T("quick.field_from")).pack(side="left")
+            ttk.Entry(row1, textvariable=self.quick_primesieve_from_var, width=24).pack(
+                side="left", padx=(6, 4))
+            ttk.Button(row1, text=T("quick.auto_button"),
+                       command=self._on_primesieve_auto_from_clicked).pack(
+                side="left", padx=(0, 20))
+            ttk.Label(row1, text=T("quick.field_width")).pack(side="left")
+            width_vcmd = (self.register(self._validate_primesieve_width_spinbox), "%P")
+            ttk.Spinbox(row1, from_=1, to=PRIMESIEVE_MAX_WIDTH_MULT,
+                        textvariable=self.quick_primesieve_width_var,
+                        width=14, validate="key", validatecommand=width_vcmd).pack(
+                side="left", padx=(6, 0))
+            ttk.Label(frame, text=T("quick.attribution_primesieve"), foreground="#777777",
+                      font=("TkDefaultFont", 8), wraplength=860, justify="left").pack(
+                anchor="w", pady=(4, 0))
+            mode_frames["primesieve"] = frame
+
+        def _on_primesieve_auto_from_clicked(self):
+            """primesieve mode's OWN Auto button -- unlike every other mode's Auto (RAM-
+            based window-count suggestion, see _on_quick_auto_width_clicked), this one fills
+            the From field with wherever the given Floor's storage currently ends (0 if
+            nothing is there yet), computed the exact same way find_continuation_target_idx
+            already does for every other mode's own continuation logic. This is the whole
+            point of splitting Floor out from From (see _build_quick_mode_primesieve's
+            docstring): a floor this deep can hold hundreds of billions of windows, so
+              "where does my data actually stop on floor N" is not something to work out by
+            hand."""
+            raw_floor = self.quick_primesieve_floor_var.get().strip()
+            floor_value = _eval_quick_number(raw_floor)
+            if not raw_floor or floor_value is None or floor_value < 0:
+                messagebox.showerror(T("quick.dialog_title"), T("quick.error_floor_required"))
+                return
+            existing_count = find_continuation_target_idx(
+                PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+            if floor_value < LOW_FLOOR_CUTOFF:
+                # A low floor is AT MOST one combined window wide, ever (see
+                # LOW_FLOOR_CUTOFF) -- existing_count>=1 means it (and every other floor
+                # 0-6) is already fully generated, not "add one more window" the way the
+                # formula below would wrongly compute (10**floor + 10M lands in the NEXT
+                # floor's own territory, not a meaningful continuation point here).
+                continuation_point = 10 ** floor_value
+                self.quick_primesieve_from_var.set(str(continuation_point))
+                if existing_count >= 1:
+                    messagebox.showinfo(T("quick.dialog_title"), T(
+                        "quick.primesieve_auto_from_low_floor_done", floor=floor_value))
+                else:
+                    messagebox.showinfo(T("quick.dialog_title"), T(
+                        "quick.primesieve_auto_from_low_floor_result", floor=floor_value))
+                return
+            continuation_point = 10 ** floor_value + existing_count * QUICK_GEN_MAX_WINDOW_WIDTH
+            self.quick_primesieve_from_var.set(str(continuation_point))
+            messagebox.showinfo(T("quick.dialog_title"), T(
+                "quick.primesieve_auto_from_result", floor=floor_value,
+                existing_count=existing_count, continuation_point=f"{continuation_point:,}"))
+
         def _validate_quick_iterations_spinbox(self, proposed):
             """validatecommand for the Number of iterations spinbox -- same shape as
             _validate_quick_width_spinbox, bounded to [1, 100] (100 x 10 bln = 1 trillion
@@ -3654,6 +3814,7 @@ def _build_gui():
                 "floor": T("quick.hint_floor"),
                 "range": T("quick.hint_range"),
                 "explore": T("quick.hint_explore"),
+                "primesieve": T("quick.hint_primesieve"),
             }
             self.quick_hint_var.set(hints.get(self.quick_mode_var.get(), ""))
 
@@ -3704,6 +3865,52 @@ def _build_gui():
             self._loop_vars["run_count"].set(str(run_count))
             self._loop_vars["window_count_per_run"].set(str(window_count_per_run))
             self._on_run_loop()
+
+        def _apply_primesieve_params_and_run(self, base_exponent, target_idx_start,
+                                              window_count_per_run):
+            """Quick-gen 'primesieve' mode's counterpart to _apply_loop_params_and_run() --
+            this engine has no low-level form of its own (see prime_sieve_primesieve.py's
+            simpler CLI, module header), so there are no self._loop_vars-equivalent fields
+            to round-trip through first; the three values already fully determine the WSL
+            command (see build_primesieve_argv/_on_run_primesieve). write_files is still
+            read from the SAME checkbox the low-level orchestrator form uses
+            (self._loop_write_files_var) -- one general "write files vs. count-only
+            diagnostic" concept shared across every engine this app can launch, not
+            something specific to orchestrator_loop_v2.py."""
+            self._on_run_primesieve(base_exponent, target_idx_start, window_count_per_run)
+
+        def _on_run_primesieve(self, base_exponent, target_idx_start, window_count_per_run):
+            """Launch path for prime_sieve_primesieve.py -- deliberately reuses the SAME
+            self._loop_runner/self._loop_output_queue/self.loop_console/self.loop_run_btn/
+            self.loop_stop_btn/self.loop_status_label/_poll_loop_output/_on_loop_finished
+            plumbing _on_run_loop() uses, rather than a separate runner+console+queue
+            triple: only one Generation run can be in flight at a time regardless of which
+            engine it uses (_on_quick_generate_or_stop_clicked already guards on
+            self._loop_runner.is_running() for exactly this reason), and the live-output
+            console/Stop control/tree-refresh-on-finish behavior are all engine-agnostic --
+            duplicating that machinery for one more script would only add a second place
+            every future change to it has to be made twice."""
+            if self._loop_runner is not None and self._loop_runner.is_running():
+                return
+            write_files = self._loop_write_files_var.get()
+            argv = build_primesieve_argv(
+                base_exponent, target_idx_start, window_count_per_run,
+                QUICK_GEN_MAX_WINDOW_WIDTH, write_files)
+            log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "primesieve")
+            cmd = build_wsl_logged_command(argv, log_path, exit_path)
+
+            self.loop_console.append(self._new_run_separator())
+            self._loop_output_queue = queue.Queue()
+            self._loop_runner = WslLoggedRunner(
+                cmd, log_path, exit_path, self._loop_output_queue,
+                kill_pattern="prime_sieve_primesieve.py")
+            self._loop_runner.start()
+            self.loop_run_btn.configure(state="disabled")
+            self.loop_stop_btn.configure(state="normal")
+            self.loop_status_label.set(T("common.running"))
+            for panel in self._quick_panels:
+                panel["generate_btn"].configure(text=T("common.stop"))
+            self._show_loop_terminal()
 
         def _quick_gen_plan_literal_range(self, start, end):
             """Shared by Range mode and Floor mode WITH a starting point set (see
@@ -3920,7 +4127,7 @@ def _build_gui():
                           boundary=f"{plan['rounded_end']:,}")
                        if plan.get("truncated") else ""))
                 self._apply_loop_params_and_run(plan["floor"], 1, plan["window_count_per_run"])
-            else:
+            elif mode == "explore":
                 raw_floor = self.quick_explore_floor_var.get().strip()
                 floor_value = _eval_quick_number(raw_floor)
                 if not raw_floor or floor_value is None or floor_value < 0:
@@ -3959,6 +4166,105 @@ def _build_gui():
                     width_mult=width_mult, iterations_total=f"{iterations_total:,}",
                     existing_count=existing_count, added_count=iterations * window_count_per_run))
                 self._apply_loop_params_and_run(floor_value, iterations, window_count_per_run)
+            else:
+                # mode == "primesieve": From + Width (NOT From/To -- see
+                # _build_quick_mode_primesieve's docstring for why) determine the literal
+                # [start, end) target the exact same way Floor mode's own "Starting point"
+                # flow does (start_value, start_value + width_total) -- fed into the SAME
+                # _quick_gen_plan_literal_range() Range mode uses, PLUS a check against
+                # libprimesieve's own uint64 ceiling (PRIMESIEVE_MAX_STOP) -- see that
+                # constant's docstring and prime_sieve_primesieve.py's
+                # generate_floor_windows() for where the actual clamp happens (backend-side,
+                # reading the live library value, not this duplicated GUI-side one). Launches
+                # via _apply_primesieve_params_and_run (prime_sieve_primesieve.py) instead of
+                # _apply_loop_params_and_run (orchestrator_loop_v2.py).
+                raw_from = self.quick_primesieve_from_var.get().strip()
+                start = _eval_quick_number(raw_from)
+                width_mult = _eval_quick_number(self.quick_primesieve_width_var.get()) or 1
+                if not raw_from or start is None:
+                    # Blank From with a Floor typed in is NOT an error -- it means the same
+                    # thing blank Floor mode's own Starting point does: continue
+                    # automatically from wherever this floor's storage currently ends (0,
+                    # i.e. the floor's own start, if nothing is there yet). Clicking Auto
+                    # first is a convenience to SEE that number before committing, not a
+                    # required step -- Generate alone should already do the right thing on
+                    # an empty floor, the same way every other mode's blank-continuation
+                    # flow does.
+                    raw_floor = self.quick_primesieve_floor_var.get().strip()
+                    floor_value = _eval_quick_number(raw_floor)
+                    if not raw_floor or floor_value is None or floor_value < 0:
+                        messagebox.showerror(
+                            T("quick.dialog_title"), T("quick.error_primesieve_from_required"))
+                        return
+                    start = 10 ** floor_value
+                    if floor_value >= LOW_FLOOR_CUTOFF:
+                        existing_count = find_continuation_target_idx(
+                            PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                        start = 10 ** floor_value + existing_count * QUICK_GEN_MAX_WINDOW_WIDTH
+                    self.quick_primesieve_from_var.set(str(start))
+                if start < 0:
+                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_range_negative"))
+                    return
+
+                # A low floor (see LOW_FLOOR_CUTOFF) is at most ONE combined window wide,
+                # ever -- Width is meaningless for it (mirrors Floor mode's own blank-
+                # starting-point low-floor branch, which ignores its Width field the same
+                # way). Whatever floor `start` actually falls in decides this, not the
+                # separate Floor field (which is only a lookup convenience for Auto) --
+                # same reasoning Floor mode's own starting-point flow already uses
+                # (digit_count_floor(start), not a separately-typed field).
+                floor_lo = digit_count_floor(start)
+                if floor_lo < LOW_FLOOR_CUTOFF:
+                    existing_count = find_continuation_target_idx(
+                        PORTAL_FOLDER, floor_lo, QUICK_GEN_MAX_WINDOW_WIDTH)
+                    if existing_count >= 1:
+                        rounded_start = 10 ** floor_lo
+                        rounded_end = rounded_start + QUICK_GEN_MAX_WINDOW_WIDTH
+                        self.quick_status_var.set(T(
+                            "quick.status_already_in_storage",
+                            rounded_start=f"{rounded_start:,}", rounded_end=f"{rounded_end:,}",
+                            existing_count=existing_count))
+                        return
+                    self.quick_status_var.set(T(
+                        "quick.summary_floor", floor=floor_lo, width_mult=1,
+                        width_total=f"{QUICK_GEN_MAX_WINDOW_WIDTH:,}",
+                        start=T("quick.start_continue_last"),
+                        existing_count=0, added_count=1))
+                    self._apply_primesieve_params_and_run(floor_lo, 0, 1)
+                    return
+
+                end = start + width_mult * QUICK_GEN_MAX_WINDOW_WIDTH
+                if start > PRIMESIEVE_MAX_STOP:
+                    messagebox.showerror(T("quick.dialog_title"), T(
+                        "quick.error_primesieve_beyond_ceiling",
+                        max_stop=f"{PRIMESIEVE_MAX_STOP:,}"))
+                    return
+                plan = self._quick_gen_plan_literal_range(start, end)
+                if plan.get("error"):
+                    messagebox.showerror(*plan["error"])
+                    return
+                if plan.get("already"):
+                    self.quick_status_var.set(T(
+                        "quick.status_already_in_storage",
+                        rounded_start=f"{plan['rounded_start']:,}",
+                        rounded_end=f"{plan['rounded_end']:,}",
+                        existing_count=plan["existing_count"]))
+                    return
+                ceiling_truncated = (plan["rounded_end"] - 1) > PRIMESIEVE_MAX_STOP
+                self.quick_status_var.set(T(
+                    "quick.summary_range", start=f"{start:,}", end=f"{end:,}",
+                    rounded_start=f"{plan['rounded_start']:,}",
+                    rounded_end=f"{plan['rounded_end']:,}", floor=plan["floor"],
+                    existing_count=plan["existing_count"],
+                    added_count=plan["window_count_per_run"])
+                    + (T("quick.note_truncated_floor_boundary",
+                          boundary=f"{plan['rounded_end']:,}")
+                       if plan.get("truncated") else "")
+                    + (T("quick.note_primesieve_ceiling",
+                          max_stop=f"{PRIMESIEVE_MAX_STOP:,}")
+                       if ceiling_truncated else ""))
+                self._apply_primesieve_params_and_run(
+                    plan["floor"], plan["existing_count"], plan["window_count_per_run"])
 
         def _collect_loop_settings_from_form(self):
             """Reads + validates every orchestrator_loop_v2 form field. Returns a dict of
@@ -4195,6 +4501,21 @@ def _build_gui():
                 "build_wsl_logged_command": build_wsl_logged_command,
                 "WslLoggedRunner": WslLoggedRunner,
                 "generation_log_paths": generation_log_paths,
+                # Added for the restore driver's own RAM-based "auto width" and low-floor
+                # (0-6) cascade-aware batching -- see restore_job.py / settings_tab.py's
+                # _drive_windows_phase() docstring. Passed through rather than imported
+                # directly in settings_tab.py, same reasoning as every other entry here
+                # (see this method's own docstring).
+                "low_floor_cutoff": LOW_FLOOR_CUTOFF,
+                "estimate_wsl_available_ram_bytes": estimate_wsl_available_ram_bytes,
+                "recommended_max_windows": recommended_max_windows,
+                # Added so the restore driver can prefer primesieve mode (much faster,
+                # no RAM-buffer cost) for any floor whose numeric range fits under
+                # libprimesieve's own uint64 ceiling, falling back to the orchestrator
+                # pipeline only for floors that don't -- see _drive_windows_phase().
+                "primesieve_max_stop": PRIMESIEVE_MAX_STOP,
+                "build_primesieve_argv": build_primesieve_argv,
+                "find_continuation_target_idx": find_continuation_target_idx,
             }
             self.settings_tab = settings_tab_cls(
                 self.settings_tab_container, APP_SETTINGS, wsl_helpers, TRANSLATOR)

@@ -77,6 +77,21 @@ class BackupStore:
             data = json.load(f)
         return BackupManifest.from_dict(data)
 
+    def delete(self, name):
+        """Removes one backup's manifest file. Does NOT touch any in-progress restore
+        checkpoint for this backup (settings_tab.py's incomplete-restores list has its own
+        separate delete button for that -- a backup and a restore-in-progress against it
+        are deliberately independent lifecycles, e.g. the user may want to keep resuming a
+        restore after pruning the backup list). Silently no-ops if the file is already
+        gone (matches this project's general best-effort delete philosophy, see
+        delete_manager.py)."""
+        path = os.path.join(self.backups_dir, f"{name}.json")
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+
     def restore_csv(self, manifest):
         """Overwrites the CURRENT benchmark_log.csv with the backup's copy -- a separate,
         explicit step (NOT called automatically by anything else here) since restoring the

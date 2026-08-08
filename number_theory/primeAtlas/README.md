@@ -20,11 +20,13 @@ of custom C sieve engines (two interchangeable engine generations, v3 and v4).
 - **Generation** -- two ways to launch the sieve/orchestrator pipeline and the
   constellation finder over WSL, both with live streamed output (stackable across
   runs, detachable into its own window) and a stop control:
-  - **Quick generation** -- three simple modes (Floor only, Range from/to,
-    Exploration) that translate a plain request into the right low-level parameters,
-    check what is already on disk first, and report "already in storage" instead of
-    launching a redundant run. An "Auto" button estimates a safe window count from the
-    WSL environment's available RAM (see "Window count, throughput, and RAM" below).
+  - **Quick generation** -- four simple modes (Floor only, Range from/to,
+    Exploration, primesieve) that translate a plain request into the right low-level
+    parameters, check what is already on disk first, and report "already in storage"
+    instead of launching a redundant run. An "Auto" button estimates a safe window count
+    from the WSL environment's available RAM (see "Window count, throughput, and RAM"
+    below). See "The primesieve mode" below for how the fourth mode differs from the
+    other three.
   - **Low-level form** -- exposes every CLI parameter of the orchestrator and
     constellation finder directly (workers, batch size, window count, window width,
     write-files toggle, sieving-prime count diagnostic) for full manual control.
@@ -54,7 +56,45 @@ window width falls into two regimes:
   exception: it is meant to march forward indefinitely across many windows without
   that cap, since deep, open-ended continuation is its whole purpose.
 
+## The primesieve mode
+
+Every other engine (Floor only, Range, Exploration -- all three ultimately run
+`orchestrator_loop_v2.py` / `prime_sieve_v3.py` or `v4.py`) links a small custom C wrapper
+around libprimesieve's *internal* segment-sieving functions, wrapped in this project's own
+parallel batching/orchestration machinery (workers, batches, a shared mmap buffer -- see
+"Window count, throughput, and RAM" below). **primesieve mode** is different: it calls
+libprimesieve's own top-level public C API function, `primesieve_generate_primes()`,
+directly -- no custom engine, no batching, no orchestrator in between (see
+`prime_sieve/prime_sieve_primesieve.py`). It maps the result onto exactly the same on-disk
+format and folder layout as every other engine, so a floor generated through this mode is
+indistinguishable, from the rest of the application's point of view, from one generated any
+other way.
+
+The trade is libprimesieve's own domain limit: it operates on the `uint64_t` range, so
+nothing above `primesieve_get_max_stop()` (currently `2**64 - 1` =
+18,446,744,073,709,551,615, which falls in the middle of floor 19, not at a floor boundary)
+can be generated this way. A request that would cross that ceiling is truncated to it --
+the run still launches for whatever part of the request is reachable, and both the Quick
+generation panel (before launching) and the console output (while running) explain the
+truncation and point at Floor/Range/Exploration mode for anything past it, since those three
+have no such ceiling (at the cost of being slower). A request entirely past the ceiling is
+rejected outright before anything launches.
+
+primesieve mode uses the same From/To fields and range-planning (rounding to whole windows,
+capping at the requested floor's own boundary, checking what is already on disk) as Range
+mode -- the only thing that differs is which script actually performs the generation.
+
+libprimesieve is an independent, third-party, open-source project by Kim Walisch
+(https://github.com/kimwalisch/primesieve, BSD 2-Clause License) -- see `NOTICE.md` for the
+full attribution. The Quick generation panel shows this attribution directly whenever
+primesieve mode is selected, not just in source comments.
+
 ## Window count, throughput, and RAM
+
+This section is about Floor only, Range, and Exploration mode -- the three engines that run
+through this project's own batching/orchestration pipeline. primesieve mode (see above) has
+no such relationship: it makes one direct call into libprimesieve's own bulk-generation
+function per run, with no batches, workers, or shared buffer of this project's own involved.
 
 The Quick generation panel's window-count fields (and the low-level form's own) have a
 direct, mechanical relationship to both how fast a run goes and how much RAM it needs.
@@ -113,6 +153,9 @@ prime_sieve/                 sieve and orchestration pipeline (invoked via WSL)
                               the per-floor sieving-prime-count cache
   prime_sieve_v4.py          same as v3, plus an inlined fast-path modulo in the C
                               engine for the per-sieving-prime phase computation
+  prime_sieve_primesieve.py  "primesieve mode" -- calls libprimesieve's own public C API
+                              (primesieve_generate_primes()) directly via ctypes, no custom
+                              engine or batching pipeline; see "The primesieve mode" above
   prime_sieve_engine_v1.c    C sieve core for prime_sieve_v1.py (ctypes)
   prime_sieve_engine_v3.c    C sieve core for prime_sieve_v3.py (ctypes)
   prime_sieve_engine_v4.c    C sieve core for prime_sieve_v4.py (ctypes)
@@ -147,6 +190,10 @@ only the GUI requirements above):
 - WSL with a Linux distribution
 - `gcc`, `libprimesieve` (headers and library) for building the C sieve engines
 - Python 3 with `numpy` inside WSL
+- For primesieve mode specifically: the libprimesieve *shared library* installed where
+  `ctypes.util.find_library("primesieve")` (or a plain `libprimesieve.so` on the linker
+  search path) can find it at runtime -- the same library the `-lprimesieve` build step
+  below links against, just also needed as a runtime `.so`, not only at build time.
 
 ## Building the sieve engines
 
