@@ -1,4 +1,5 @@
 import bisect
+import csv
 import ctypes
 import ctypes.util
 import datetime
@@ -164,6 +165,118 @@ def _low_floor_segments(base_power, combined_lo, combined_hi):
         segments.append((floor, floor_lo, floor_hi))
         floor += 1
     return segments
+
+
+# ------------------------------------------------------------------------------------------
+# benchmark_log.csv logging -- schema/writer duplicated from orchestrator_v3.py's own
+# BENCHMARK_FIELDNAMES / _ensure_benchmark_log_schema / print_benchmark_summary (same "every
+# engine file stays independently runnable, small stable pieces get duplicated rather than
+# cross-imported" convention already used throughout this file -- see the PGS2/low-floor
+# block above). Without this, a floor generated (or restored) through primesieve mode left
+# NO trace in benchmark_log.csv at all: every OTHER engine writes to it through the
+# orchestrator pipeline, but this mode calls straight into libprimesieve with none of that
+# machinery in between, and that machinery used to be the ONLY thing writing this file.
+# Practical consequence this fixes: the Prime numbers tab's per-floor "generation time"
+# column (sourced entirely from benchmark_log.csv, see prime_atlas_v1.py's own
+# aggregate_write_seconds_by_pietro()) stayed blank for anything generated this way, and a
+# backup taken afterward had nothing to preserve for it either (BackupManifest just snapshots
+# benchmark_log.csv's raw text -- see manifest.py's own docstring) -- restoring such a floor
+# via primesieve mode (now the restore driver's own preferred engine for any in-range floor
+# too, see settings_tab.py's _drive_windows_phase()) compounded the gap instead of filling it
+# back in, since restore never measured or recorded a time either.
+# ------------------------------------------------------------------------------------------
+
+BENCHMARK_FIELDNAMES = [
+    "run_timestamp_utc", "base_exponent", "target_idx_start", "target_idx_end",
+    "windows_written", "total_seconds", "seconds_per_window", "total_primes",
+    "avg_primes_per_window", "primes_per_second",
+    "l_final", "sieving_primes_count", "max_child_rss_mb",
+    "instance_of_n", "loop_session_seconds", "loop_numbers_per_second",
+    "loop_seconds_per_window", "write_files",
+]
+
+
+def _ensure_benchmark_log_schema(log_path):
+    """Duplicated verbatim from orchestrator_v3.py -- see that file's own docstring for the
+    full rationale. Rewrite is ATOMIC (temp file + os.replace())."""
+    if not os.path.exists(log_path):
+        return
+    with open(log_path, newline="") as f:
+        reader = csv.DictReader(f)
+        existing_fields = reader.fieldnames or []
+        rows = list(reader)
+    if existing_fields == BENCHMARK_FIELDNAMES:
+        return
+    if not all(field in BENCHMARK_FIELDNAMES for field in existing_fields):
+        return
+    tmp_path = f"{log_path}.tmp{os.getpid()}"
+    with open(tmp_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=BENCHMARK_FIELDNAMES)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in BENCHMARK_FIELDNAMES})
+    os.replace(tmp_path, log_path)
+
+
+def write_benchmark_row(base_exponent, target_idx_start, target_idx_count, total_seconds,
+                         total_primes, windows_written, write_files, portal_folder):
+    """Appends one row to the SAME benchmark_log.csv every other engine in this folder logs
+    to -- mirrors orchestrator_v3.py's print_benchmark_summary(), minus the console-printed
+    summary (this engine already prints its own progress above) and minus every column that
+    function fills in but has no equivalent at this engine's level: l_final,
+    sieving_primes_count, max_child_rss_mb, instance_of_n, and the three loop_*columns are
+    all left blank here, same reasoning write_scan_metrics_handoff() above already documents
+    for the two keys IT omits (this API level exposes none of those diagnostics).
+
+    One row per generate_floor_windows() call, matching the orchestrator's own "one row per
+    run/batch" granularity -- including its low-floor case: orchestrator_v3.py's
+    run_orchestrator() also logs a low-floor combined batch under the single
+    originally-requested base_exponent, not one row per floor it actually completed, so a
+    request that fills floors 0-6 in one call is credited to whichever floor was actually
+    asked for, exactly like the orchestrator pipeline already does.
+
+    No-ops (nothing to log) when windows_written is 0 -- mirrors run_orchestrator() only
+    calling print_benchmark_summary() when `current > actual_start_window`."""
+    if windows_written <= 0:
+        return
+    target_idx_end = target_idx_start + target_idx_count - 1
+    seconds_per_window = total_seconds / windows_written if windows_written else float("nan")
+    primes_per_second = total_primes / total_seconds if total_seconds > 0 else float("nan")
+    avg_primes_per_window = total_primes / windows_written if windows_written else float("nan")
+
+    log_path = os.path.join(portal_folder, "benchmark_log.csv")
+    try:
+        os.makedirs(portal_folder, exist_ok=True)
+        _ensure_benchmark_log_schema(log_path)
+        is_new = not os.path.exists(log_path)
+        with open(log_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=BENCHMARK_FIELDNAMES)
+            if is_new:
+                writer.writeheader()
+            writer.writerow({
+                "run_timestamp_utc": datetime.datetime.now(datetime.timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M:%S UTC"),
+                "base_exponent": base_exponent,
+                "target_idx_start": target_idx_start,
+                "target_idx_end": target_idx_end,
+                "windows_written": windows_written,
+                "total_seconds": f"{total_seconds:.3f}",
+                "seconds_per_window": f"{seconds_per_window:.4f}",
+                "total_primes": total_primes,
+                "avg_primes_per_window": f"{avg_primes_per_window:.1f}",
+                "primes_per_second": f"{primes_per_second:.2f}",
+                "l_final": "",
+                "sieving_primes_count": "",
+                "max_child_rss_mb": "",
+                "instance_of_n": "",
+                "loop_session_seconds": "",
+                "loop_numbers_per_second": "",
+                "loop_seconds_per_window": "",
+                "write_files": "1" if write_files else "0",
+            })
+        print(f"[BENCHMARK] logged to {log_path} (for cross-floor growth analysis)")
+    except OSError as e:
+        print(f"[BENCHMARK] WARNING: could not write benchmark log ({e})")
 
 
 # ------------------------------------------------------------------------------------------
@@ -376,6 +489,8 @@ def generate_floor_windows(base_power, target_idx_start, target_idx_count, windo
           + ("" if write_files else "  (NO FILES WRITTEN -- count-only mode)"))
     write_scan_metrics_handoff(portal_folder, total_primes_found=total_primes_found,
                                 windows_processed=windows_processed, write_files=write_files)
+    write_benchmark_row(base_power, target_idx_start, target_idx_count, t_gen,
+                         total_primes_found, windows_processed, write_files, portal_folder)
     print("=" * 70)
 
 
