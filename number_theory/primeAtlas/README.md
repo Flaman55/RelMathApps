@@ -34,7 +34,10 @@ of custom C sieve engines (two interchangeable engine generations, v3 and v4).
   a full benchmark log table, with one-click PDF export of both.
 - **Settings** -- configurable storage location, and backup/restore/delete of the
   generated database, including manifest-based drift detection against what is
-  actually on disk.
+  actually on disk. Both the backup list and the incomplete-restores list have their
+  own delete button, for pruning old backups or abandoned/paused restore jobs without
+  touching the generated data itself. See "Restore" below for how a restore run is
+  ordered and which engine it uses.
 
 ## Floor semantics
 
@@ -80,9 +83,16 @@ truncation and point at Floor/Range/Exploration mode for anything past it, since
 have no such ceiling (at the cost of being slower). A request entirely past the ceiling is
 rejected outright before anything launches.
 
-primesieve mode uses the same From/To fields and range-planning (rounding to whole windows,
-capping at the requested floor's own boundary, checking what is already on disk) as Range
-mode -- the only thing that differs is which script actually performs the generation.
+primesieve mode's Quick generation fields differ from the other three: instead of a From/To
+range, it takes a Floor + From (starting point) + Width (window-count multiplier) -- the same
+floor-relative navigation Floor-only mode uses, rather than Range mode's absolute pair. Its
+own Auto button fills From with wherever that floor's storage currently ends (not a
+RAM-based suggestion, since this mode has no RAM-driven reason to keep window count small --
+see "Window count, throughput, and RAM" below), making it easy to see where a floor's
+generated data currently stops and extend it without hand-computing the continuation point.
+Because this mode never allocates the combined shared buffer the other three depend on, its
+Width field is not capped at their RAM-driven limit of 1,000 -- it can request as many
+windows in one run as libprimesieve's own `uint64_t` range allows.
 
 libprimesieve is an independent, third-party, open-source project by Kim Walisch
 (https://github.com/kimwalisch/primesieve, BSD 2-Clause License) -- see `NOTICE.md` for the
@@ -130,6 +140,31 @@ an out-of-memory failure rather than a graceful slowdown.
 
 In short: within whatever RAM is available, a larger window count is close to strictly
 better for throughput; RAM is the only reason not to simply set it as high as possible.
+
+## Restore
+
+Restoring from a backup (Settings tab) regenerates whatever a saved manifest says should
+exist but currently does not, as a checkpointed job that can be paused, resumed, or
+cancelled and resumed again in a later session.
+
+A restore run is ordered in two strict phases across every floor named in the diff, rather
+than finishing one floor end-to-end before starting the next: every floor's missing prime
+windows are restored first, in ascending floor order, before any floor's constellation hits
+are touched. This ordering matters because the constellation finder reads a floor's own
+`source_primes` files -- running it against a floor whose windows are not fully back yet
+would either fail outright or silently record an incomplete hit set.
+
+Floors 0-6 restore as a single combined pass, mirroring Quick generation's own low-floor
+completion (see "Floor semantics" above): requesting any one of them fills every other
+floor in 0-6 that is not already on disk in that same run, instead of launching once per
+floor.
+
+For a floor whose range fits entirely under libprimesieve's own ceiling (see "The
+primesieve mode" above), restore uses primesieve mode -- the whole missing range in one
+run, with no RAM-driven window-count chunking needed. Floors above that ceiling fall back
+to the orchestrator pipeline, using a RAM-based automatic window count per run -- the same
+formula behind Quick generation's own "Auto" button, re-evaluated fresh for each floor
+rather than a fixed default.
 
 ## Architecture
 
