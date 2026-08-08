@@ -136,20 +136,30 @@ QUICK_GEN_MAX_WINDOW_WIDTH = 10_000_000  # window width the (future) range ->
                           # editable "window_m" field on the low-level form (see
                           # add_loop_field(3, 0, "window_m", ...) and build_loop_argv()).
                           # Quick-gen does NOT read the value from that form field -- if
-                          # window_m is ever changed there, the Range/Exploration math
-                          # below (and QUICK_GEN_EXPLORE_ITERATION_WIDTH) will silently
-                          # stop matching what orchestrator_loop_v2.py actually scans.
-                          # Safe as long as window_m stays at its default value (as in
+                          # window_m is ever changed there, the Range/Floor/Exploration
+                          # math below will silently stop matching what
+                          # orchestrator_loop_v2.py actually scans. Safe as long as
+                          # window_m stays at its default value (as in
                           # DEFAULT_GENERATION_SETTINGS) -- not fixed here, only noted as
                           # a known limitation.
+                          #
+                          # Exploration's per-iteration width used to be a fixed
+                          # 10,000,000,000 (QUICK_GEN_EXPLORE_ITERATION_WIDTH, since
+                          # removed) -- it now has its own Width spinbox, same [1, 1000]
+                          # x QUICK_GEN_MAX_WINDOW_WIDTH meaning as Floor only's, so the
+                          # per-iteration memory footprint scales with what the machine
+                          # actually has rather than being pinned to one fixed size.
 
-QUICK_GEN_EXPLORE_ITERATION_WIDTH = 10_000_000_000  # one Exploration "iteration" == one
-                          # orchestrator_loop_v2 run_count unit at its own defaults
-                          # (WINDOW_COUNT_PER_RUN=1000 x WINDOW_M=10,000,000), i.e. a
-                          # minimum width of 10 billion. Iterations field is capped at
-                          # 100 (100 x 10 bln = 1 trillion upper bound) -- see
-                          # _validate_quick_iterations_spinbox. Same window_m=10,000,000
-                          # assumption/caveat as QUICK_GEN_MAX_WINDOW_WIDTH above.
+LOW_FLOOR_CUTOFF = 7  # duplicated from prime_sieve_v3.py/v4.py's own LOW_FLOOR_CUTOFF (see
+                      # that constant's docstring for the full rationale: floors 0..6 are
+                      # each narrower than window_m's minimum, 10,000,000, so they always
+                      # get exactly ONE window file rather than window_m-sized chunks). This
+                      # Windows-native module deliberately never imports prime_sieve_v3/v4
+                      # (they ctypes-load a Linux .so -- see find_continuation_target_idx's
+                      # docstring for why), so the value is kept in sync by hand here. Used
+                      # by update_pietro_totals_cache() to decide when its own mtime-based
+                      # staleness check can't be trusted (see that function's LOW-FLOOR
+                      # EXCEPTION docstring paragraph).
 
 BENCHMARK_TREE_HIDDEN_COLUMNS = {"base_exponent", "run_timestamp_utc"}  # columns dropped
                                 # from the Benchmark tab's tree (not from the CSV, PDF
@@ -381,7 +391,32 @@ def update_pietro_totals_cache(portal_folder, base_exponent, cache):
 
     Returns (total, file_count, newly_read_count) -- newly_read_count lets a caller report
     "read 42 new files" instead of re-summarizing the whole floor every time, useful for a
-    status message on the (usual, fast) incremental case."""
+    status message on the (usual, fast) incremental case.
+
+    STALENESS NOTE: each cached entry also stores the file's mtime at the time its header
+    was read, and a file gets RE-read (not just skipped because its name is already cached)
+    if the current on-disk mtime no longer matches. This matters because filenames here are
+    fully deterministic from floor+offset (see prime_sieve_*.py's write_prime_window path),
+    NOT content-addressed -- a low floor (see LOW_FLOOR_CUTOFF in prime_sieve_v3.py/v4.py)
+    always writes to the exact same single filename every time it's regenerated, so an
+    in-place rewrite (e.g. redoing a floor after a bugfix, or after storage was reset and
+    regenerated) previously kept serving the FIRST-ever cached count forever -- the cache
+    only ever checked "have I seen this name before", never "has this name's content
+    changed". Entries from before this check existed are plain ints (old schema) rather than
+    {"count", "mtime"} dicts; any non-dict entry is treated as unconditionally stale so it
+    gets re-read (and migrated to the new shape) the first time this runs against an old
+    cache file, rather than silently trusting a count with no known mtime.
+
+    LOW-FLOOR EXCEPTION: mtime alone turned out to be unreliable in practice for floors
+    below LOW_FLOOR_CUTOFF -- this project's storage drive is FUSE/WSL-mounted (see the
+    known git-on-that-drive unlink/rename quirk elsewhere in this codebase's history), and
+    the Windows-side os.path.getmtime() this function relies on can keep reporting a stale
+    cached stat for a file just rewritten from the WSL side, for longer than this app's
+    Refresh-then-recompute cycle. A low floor never has more than ONE file (its whole width
+    is always < window_m -- see LOW_FLOOR_CUTOFF's own rationale), so the caching this
+    mtime check exists for barely matters there anyway: unconditionally re-reading a low
+    floor's single file every call costs one extra ~5ms open, not the "78s across 15,101
+    files" cost this whole cache exists to avoid for a heavily-populated NORMAL floor."""
     key = f"10p{base_exponent}"
     entry = cache.setdefault(key, {"files": {}})
     cached_files = entry.setdefault("files", {})
@@ -393,12 +428,26 @@ def update_pietro_totals_cache(portal_folder, base_exponent, cache):
         if stale_name not in current_names:
             del cached_files[stale_name]
 
-    to_read = [(name, path) for name, path in filenames if name not in cached_files]
+    always_refresh = base_exponent < LOW_FLOOR_CUTOFF
+    to_read = []
+    mtimes = {}
+    for name, path in filenames:
+        try:
+            mtimes[name] = os.path.getmtime(path)
+        except OSError:
+            mtimes[name] = None
+        cached = cached_files.get(name)
+        if always_refresh or not isinstance(cached, dict) or cached.get("mtime") != mtimes[name]:
+            to_read.append((name, path))
+
     if to_read:
         for name, path, header in read_source_file_headers(to_read):
-            cached_files[name] = header["count"] if header is not None else 0
+            cached_files[name] = {
+                "count": header["count"] if header is not None else 0,
+                "mtime": mtimes[name],
+            }
 
-    total = sum(cached_files.values())
+    total = sum(v["count"] for v in cached_files.values())
     entry["total"] = total
     entry["file_count"] = len(cached_files)
     return total, len(cached_files), len(to_read)
@@ -1061,6 +1110,30 @@ def _round_range_to_window(start, end, window=QUICK_GEN_MAX_WINDOW_WIDTH):
     return rounded_start, rounded_end
 
 
+def _floor_window_count(base_power, window=QUICK_GEN_MAX_WINDOW_WIDTH):
+    """How many `window`-sized windows fit EXACTLY within floor base_power's own numeric
+    domain [10**base_power, 10**(base_power+1)) -- i.e. target_idx 0..(this value - 1) are
+    the only valid window positions for this floor; target_idx >= this value would spill
+    into the NEXT floor's numbers. Returns None for base_power < LOW_FLOOR_CUTOFF -- a low
+    floor is narrower than one window and handled by its own single-window completion path
+    instead (see LOW_FLOOR_CUTOFF), so "how many windows fit" isn't the right question
+    there. For base_power >= LOW_FLOOR_CUTOFF the floor's width (9 * 10**base_power) is
+    ALWAYS an exact multiple of `window` (both sides are powers of 10 at or above 10**7),
+    so this division never has a remainder to worry about -- e.g. floor 7 -> 9 windows
+    (target_idx 0..8), floor 8 -> 90 windows, and so on.
+
+    Exists to stop exactly the bug this was written for: nothing previously checked
+    whether a floor-only/range request's window_count_per_run would push target_idx past
+    a floor's own boundary, so continuing to generate on floor 7 past its 9th window
+    silently wrote floor 8 (and beyond)'s numbers into 10p7's folder, labeled as floor 7.
+    See _quick_gen_plan_literal_range and _on_quick_generate_clicked's blank-starting-
+    point Floor branch for where this gets applied -- Exploration mode deliberately does
+    NOT use this (see that branch's own comment)."""
+    if base_power < LOW_FLOOR_CUTOFF:
+        return None
+    return (9 * 10 ** base_power) // window
+
+
 def _read_base_prime(path):
     """Just the one field find_prime_in_floor's binary search actually needs -- still a
     full header read (there's no cheaper way to get a real base_prime without opening the
@@ -1412,6 +1485,56 @@ def _popen_kwargs_no_window():
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     return kwargs
+
+
+def estimate_wsl_available_ram_bytes(timeout=10):
+    """Best-effort read of MemAvailable from /proc/meminfo INSIDE WSL -- deliberately not
+    the native Windows process's own memory, since the actual sieve run happens as a WSL
+    subprocess (see build_wsl_logged_command above) and WSL2's memory cap is configured
+    independently of the host (.wslconfig, defaults to roughly half the host's RAM) --
+    querying Windows-side RAM would silently overstate what the run this estimate is FOR
+    can actually use. Returns None on any failure (WSL not installed/reachable, parse
+    failure, timeout) -- callers must treat that as "couldn't determine, don't guess",
+    never fall back to a made-up number."""
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        result = subprocess.run(
+            ["wsl.exe", "-e", "bash", "-c", "cat /proc/meminfo"],
+            capture_output=True, text=True, timeout=timeout, **kwargs)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("MemAvailable:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1]) * 1024  # /proc/meminfo reports kB
+    return None
+
+
+def recommended_max_windows(available_ram_bytes, window_m=QUICK_GEN_MAX_WINDOW_WIDTH,
+                             safety_fraction=0.5):
+    """Conservative "how many windows should fit in one run" recommendation. Only the ONE
+    memory cost that's known EXACTLY regardless of floor depth is used as the basis: the
+    shared output buffer the engine allocates up front is windows * (window_m // 8) bytes
+    (see prime_sieve_v3.py/v4.py's own "Shared output buffer" print line -- this mirrors
+    that same arithmetic). Per-worker overhead is NOT modeled here -- it DOES grow with
+    floor depth (each worker walks sieving primes up to L_final = isqrt(combined_hi),
+    which grows with the floor), and there isn't enough calibration data yet to model it
+    honestly. safety_fraction (default 0.5 -- only half of available RAM counted) stands
+    in for that unmodeled cost; treat the result as a starting point to try on a small
+    run first, not a guarantee -- the benchmark log's own peak-RAM column is the real
+    feedback loop for tightening this over time. Returns None if available_ram_bytes is
+    None/non-positive; otherwise an int clamped to the same [1, 1000] range every width
+    spinbox in this panel already enforces."""
+    if not available_ram_bytes or available_ram_bytes <= 0:
+        return None
+    bytes_per_window = window_m // 8
+    windows = int((available_ram_bytes * safety_fraction) // bytes_per_window)
+    return max(1, min(1000, windows))
 
 
 class WslLoggedRunner:
@@ -3199,6 +3322,14 @@ def _build_gui():
         def _show_const_terminal(self):
             self.const_console.show()
 
+        def _new_run_separator(self):
+            """Appended (not clear()'d -- see _on_run_loop/_on_run_constellation) at the
+            start of every run, so several runs' output can stay stacked in the console
+            for comparison instead of being wiped on every click. The Clear button (see
+            GenerationConsole) is the only thing that actually empties the console now."""
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            return "\n" + "=" * 70 + f"\n{T('gen.new_run_marker', time=ts)}\n" + "=" * 70 + "\n"
+
         # --- Quick generation panel (higher-level, sits above the raw pipeline form) ---
 
         def _init_quick_generation_state(self):
@@ -3217,6 +3348,7 @@ def _build_gui():
             self.quick_to_var = tk.StringVar(value="")
             self.quick_explore_floor_var = tk.StringVar(value="")
             self.quick_iterations_var = tk.StringVar(value="1")
+            self.quick_explore_width_var = tk.StringVar(value="1")
             self.quick_hint_var = tk.StringVar(value="")
             self.quick_status_var = tk.StringVar(value="")
             self._quick_panels = []
@@ -3327,7 +3459,10 @@ def _build_gui():
             width_vcmd = (self.register(self._validate_quick_width_spinbox), "%P")
             ttk.Spinbox(frame, from_=1, to=1000, textvariable=self.quick_floor_width_var,
                         width=6, validate="key", validatecommand=width_vcmd).pack(
-                side="left", padx=(6, 20))
+                side="left", padx=(6, 4))
+            ttk.Button(frame, text=T("quick.auto_button"),
+                       command=lambda: self._on_quick_auto_width_clicked(
+                           self.quick_floor_width_var)).pack(side="left", padx=(0, 20))
             ttk.Label(frame, text=T("quick.field_start")).pack(side="left")
             ttk.Entry(frame, textvariable=self.quick_floor_start_var, width=20).pack(
                 side="left", padx=(6, 0))
@@ -3366,17 +3501,26 @@ def _build_gui():
                 side="left", padx=(6, 20))
             ttk.Label(frame, text=T("quick.field_to")).pack(side="left")
             ttk.Entry(frame, textvariable=self.quick_to_var, width=20).pack(
-                side="left", padx=(6, 0))
+                side="left", padx=(6, 20))
+            # Range mode has no window-COUNT field to fill in (From/To are literal
+            # numbers, not a window multiplier) -- Auto here reports the recommendation
+            # via a dialog instead (width_var=None, see _on_quick_auto_width_clicked),
+            # for the person to factor into their own From/To choice.
+            ttk.Button(frame, text=T("quick.auto_button"),
+                       command=lambda: self._on_quick_auto_width_clicked(None)).pack(
+                side="left")
             mode_frames["range"] = frame
 
         def _build_quick_mode_explore(self, container, mode_frames):
             """Exploration maps directly onto orchestrator_loop_v2's own
             run_count/WINDOW_COUNT_PER_RUN loop -- this mode ONLY continues on the given
             floor -- no create-if-missing, no start-point business, Floor is required.
-            One iteration, at the loop's defaults (WINDOW_COUNT_PER_RUN=1000 windows x
-            WINDOW_M=10,000,000), is 10 billion -- so Number of iterations is a bounded
-            multiplier of that, same pattern as "Floor only"'s Width spinbox:
-            minimum 1 (10 bln), capped at 100 (1,000,000,000,000 upper bound)."""
+            One iteration covers Width x QUICK_GEN_MAX_WINDOW_WIDTH numbers -- same
+            Width spinbox/meaning as "Floor only"'s (reuses
+            _validate_quick_width_spinbox, [1, 1000]), so the per-iteration memory
+            footprint is exactly as user-controllable here as it is there, instead of
+            being pinned to a fixed 1000-window (10 billion) iteration size regardless
+            of how much RAM the machine running the WSL sieve actually has."""
             frame = ttk.Frame(container)
             frame.grid(row=0, column=0, sticky="w")
             ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
@@ -3386,7 +3530,15 @@ def _build_gui():
             iterations_vcmd = (self.register(self._validate_quick_iterations_spinbox), "%P")
             ttk.Spinbox(frame, from_=1, to=100, textvariable=self.quick_iterations_var,
                         width=6, validate="key", validatecommand=iterations_vcmd).pack(
-                side="left", padx=(6, 0))
+                side="left", padx=(6, 20))
+            ttk.Label(frame, text=T("quick.field_width")).pack(side="left")
+            width_vcmd = (self.register(self._validate_quick_width_spinbox), "%P")
+            ttk.Spinbox(frame, from_=1, to=1000, textvariable=self.quick_explore_width_var,
+                        width=6, validate="key", validatecommand=width_vcmd).pack(
+                side="left", padx=(6, 4))
+            ttk.Button(frame, text=T("quick.auto_button"),
+                       command=lambda: self._on_quick_auto_width_clicked(
+                           self.quick_explore_width_var)).pack(side="left")
             mode_frames["explore"] = frame
 
         def _validate_quick_iterations_spinbox(self, proposed):
@@ -3396,6 +3548,30 @@ def _build_gui():
             if proposed == "":
                 return True
             return proposed.isdigit() and 1 <= int(proposed) <= 100
+
+        def _on_quick_auto_width_clicked(self, width_var):
+            """Auto button handler, shared by every mode's button (see
+            _build_quick_mode_floor/_build_quick_mode_explore/_build_quick_mode_range).
+            Queries available RAM INSIDE WSL (estimate_wsl_available_ram_bytes -- the
+            sieve itself runs there, not in this native Windows process) and turns it
+            into a recommended window count (recommended_max_windows -- see that
+            function's docstring for exactly what it is and isn't accounting for).
+
+            width_var is the Width spinbox's StringVar to fill in directly (Floor/
+            Exploration modes); pass None for Range mode, which has no window-count
+            field to fill -- there the recommendation is only reported via the dialog,
+            for the person to factor into their own From/To choice."""
+            available = estimate_wsl_available_ram_bytes()
+            if available is None:
+                messagebox.showerror(T("quick.dialog_title"), T("quick.error_ram_probe_failed"))
+                return
+            recommended = recommended_max_windows(available)
+            numbers_total = recommended * QUICK_GEN_MAX_WINDOW_WIDTH
+            if width_var is not None:
+                width_var.set(str(recommended))
+            messagebox.showinfo(T("quick.dialog_title"), T(
+                "quick.auto_ram_result", available_gb=f"{available / 1e9:.1f}",
+                recommended=f"{recommended:,}", numbers_total=f"{numbers_total:,}"))
 
         def _sync_quick_panel(self, panel):
             """tkraise() only reorders stacking within the shared grid cell -- it does
@@ -3474,31 +3650,96 @@ def _build_gui():
             self._loop_vars["window_count_per_run"].set(str(window_count_per_run))
             self._on_run_loop()
 
+        def _quick_gen_plan_literal_range(self, start, end):
+            """Shared by Range mode and Floor mode WITH a starting point set (see
+            _on_quick_generate_clicked): given a literal [start, end) target, rounds it
+            out to whole QUICK_GEN_MAX_WINDOW_WIDTH windows, CLAMPS it to the starting
+            floor's own boundary if it would otherwise cross into the next floor (see the
+            "truncated" note below), rejects it if it can't be grid-aligned even after
+            rounding/clamping (only affects very low floors), and checks it against
+            find_continuation_target_idx -- i.e. against what's ACTUALLY on disk --
+            instead of just handing window_count_per_run to orchestrator_loop_v2's own
+            continuation-only engine and hoping it lines up with what was asked for. That
+            mismatch used to be a real bug for Floor mode: a starting point picked WHICH
+            floor to generate (via digit_count_floor) but was otherwise silently ignored
+            -- generation always just continued from wherever that floor's storage
+            already ended, even if the requested range was already fully covered. This
+            makes both modes report "already in storage" instead of launching a
+            redundant run in that case, and generate only the missing gap otherwise --
+            never anything outside/before what was asked for, consistent with this
+            project's established "always round up, never trim" philosophy (see
+            _round_range_to_window) -- EXCEPT at the far end, where "never trim" would
+            mean silently spilling numbers from the NEXT floor into this one's folder
+            (see the floor-7-with-130M-numbers bug this was written to fix). The floor
+            boundary is the one edge this function always trims TO rather than rounds
+            past.
+
+            CLAMPING NOTE: a requested end past the starting floor's own boundary
+            (10**(floor_lo+1)) gets silently pulled back to that boundary -- e.g. asking
+            for floor 7 with a width that would reach into floor 8's numbers instead
+            stops at floor 7's last window, and whatever was asked for beyond that is
+            simply dropped, never generated under this call. This mirrors exactly what a
+            low floor's own single-window cap already does (see LOW_FLOOR_CUTOFF) --
+            every floor, low or high, now has a firm upper edge this function will not
+            cross. Deliberately GUI-side, not backend: main_batch_scanner itself has no
+            opinion on where a floor ends for base_power >= LOW_FLOOR_CUTOFF (it just
+            writes whatever combined range it's given under the requested folder), so the
+            caller choosing window_count_per_run is what has to stay inside the lines.
+            Exploration mode is NOT routed through this function and is NOT capped this
+            way on purpose -- marching across floor boundaries and picking up wherever
+            the next floor needs filling is that mode's whole point, not a bug to guard
+            against (see _on_quick_generate_clicked's explore branch).
+
+            Returns a dict:
+              {"error": (title, message)}                          -- invalid request,
+                                                                        show it and stop
+              {"already": True, "rounded_start", "rounded_end",
+               "existing_count", "truncated"}                       -- fully covered
+                                                                        already
+              {"floor", "existing_count", "window_count_per_run",
+               "rounded_start", "rounded_end", "truncated"}          -- what to launch
+            "truncated" is True whenever the requested end got clamped back to the
+            floor's own boundary -- callers should mention that in their status message
+            so a shortened run isn't mistaken for the full request having been honored.
+            """
+            rounded_start, rounded_end = _round_range_to_window(start, end)
+            floor_lo = digit_count_floor(rounded_start)
+            floor_boundary = 10 ** (floor_lo + 1)
+            truncated = rounded_end > floor_boundary
+            if truncated:
+                rounded_end = floor_boundary
+            base = 10 ** floor_lo
+            if ((rounded_start - base) % QUICK_GEN_MAX_WINDOW_WIDTH
+                    or (rounded_end - base) % QUICK_GEN_MAX_WINDOW_WIDTH):
+                return {"error": (T("quick.dialog_title"), T("quick.error_range_misaligned"))}
+            target_idx_end = (rounded_end - base) // QUICK_GEN_MAX_WINDOW_WIDTH
+            existing_count = find_continuation_target_idx(
+                PORTAL_FOLDER, floor_lo, QUICK_GEN_MAX_WINDOW_WIDTH)
+            if target_idx_end <= existing_count:
+                return {"already": True, "rounded_start": rounded_start,
+                        "rounded_end": rounded_end, "existing_count": existing_count,
+                        "truncated": truncated}
+            return {"floor": floor_lo, "existing_count": existing_count,
+                     "window_count_per_run": target_idx_end - existing_count,
+                     "rounded_start": rounded_start, "rounded_end": rounded_end,
+                     "truncated": truncated}
+
         def _on_quick_generate_clicked(self):
             """Real launch path: computes base_exponent/run_count/
             window_count_per_run for whichever mode is selected and hands them to
             _apply_loop_params_and_run().
 
-            Floor only and Exploration both map onto orchestrator_loop_v2's own
-            continuation-only behavior -- it has NO start/offset override
-            (find_auto_start() is the only thing that ever decides where a run begins:
-            always either "right after the highest existing window", or target_idx=0 if
-            nothing exists yet) -- so both are pure "add N more windows to this floor"
-            requests, never idempotent range checks. "Starting point" in Floor only
-            therefore only ever picks WHICH floor to target (via digit_count_floor) --
-            it cannot make generation jump to that literal offset; the hint text says so.
+            Floor only: blank starting point is pure "add N more windows to this
+            floor" (orchestrator_loop_v2's own continuation-only behavior -- always
+            either right after the highest existing window, or target_idx=0 if nothing
+            exists yet). A starting point given, though, now means a literal target --
+            handled by _quick_gen_plan_literal_range exactly like Range mode, so it can
+            report "already in storage" instead of silently generating past what was
+            actually asked for.
 
-            Range -- from/to tries to honor an "already in storage / partial / new"
-            framing, but only where the engine can truthfully deliver
-            it: a single floor, grid-aligned to WINDOW_M. A request spanning a floor
-            boundary is rejected outright (base_exponent is one fixed value per run --
-            the engine cannot switch floor mid-run) rather than silently doing
-            something other than what was asked. A request whose start is AHEAD of
-            what's currently on disk is honored by generating from the real
-            continuation point through the requested end -- covering the requested
-            range plus whatever gap preceded it, never anything outside/before it,
-            consistent with this project's established "always round up, never trim"
-            philosophy (see _round_range_to_window)."""
+            Range -- from/to and Exploration (via its own Width field, same meaning as
+            Floor only's) both go through _quick_gen_plan_literal_range /
+            find_continuation_target_idx too -- see that method's docstring."""
             if self._loop_runner is not None and self._loop_runner.is_running():
                 messagebox.showerror(T("quick.dialog_title"), T("quick.error_already_running"))
                 return
@@ -3511,14 +3752,84 @@ def _build_gui():
                     return
                 width_mult = _eval_quick_number(self.quick_floor_width_var.get()) or 1
                 width_total = width_mult * QUICK_GEN_MAX_WINDOW_WIDTH
-                start = self.quick_floor_start_var.get().strip() or T("quick.start_continue_last")
+                raw_start = self.quick_floor_start_var.get().strip()
+                start_value = _eval_quick_number(raw_start)
+                if start_value is not None:
+                    plan = self._quick_gen_plan_literal_range(start_value, start_value + width_total)
+                    if plan.get("error"):
+                        messagebox.showerror(*plan["error"])
+                        return
+                    if plan.get("already"):
+                        self.quick_status_var.set(T(
+                            "quick.status_already_in_storage",
+                            rounded_start=f"{plan['rounded_start']:,}",
+                            rounded_end=f"{plan['rounded_end']:,}",
+                            existing_count=plan["existing_count"]))
+                        return
+                    self.quick_status_var.set(T(
+                        "quick.summary_range", start=f"{start_value:,}",
+                        end=f"{start_value + width_total:,}",
+                        rounded_start=f"{plan['rounded_start']:,}",
+                        rounded_end=f"{plan['rounded_end']:,}", floor=plan["floor"],
+                        existing_count=plan["existing_count"],
+                        added_count=plan["window_count_per_run"])
+                        + (T("quick.note_truncated_floor_boundary",
+                              boundary=f"{plan['rounded_end']:,}")
+                           if plan.get("truncated") else ""))
+                    self._apply_loop_params_and_run(
+                        plan["floor"], 1, plan["window_count_per_run"])
+                    return
                 existing_count = find_continuation_target_idx(
                     PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                if floor_value < LOW_FLOOR_CUTOFF:
+                    # A floor below the cutoff (see LOW_FLOOR_CUTOFF's own docstring) is
+                    # ALWAYS exactly one window wide at most, never continuable past
+                    # target_idx=0 -- treating it like a normal floor here used to let a
+                    # blank-starting-point click keep appending another
+                    # QUICK_GEN_MAX_WINDOW_WIDTH-sized window (e.g. "..._off_10M.bin")
+                    # onto a floor whose real numeric domain is only a few thousand/million
+                    # numbers wide, silently mislabeling a chunk of a HIGHER floor's numbers
+                    # as belonging to this one. existing_count >= 1 means the single
+                    # low-floor window is already there (written by main_batch_scanner's
+                    # low-floor branch, possibly while cascading up from a lower floor's own
+                    # request -- see that function's docstring) -- nothing left to do.
+                    if existing_count >= 1:
+                        rounded_start = 10 ** floor_value
+                        rounded_end = rounded_start + QUICK_GEN_MAX_WINDOW_WIDTH
+                        self.quick_status_var.set(T(
+                            "quick.status_already_in_storage",
+                            rounded_start=f"{rounded_start:,}", rounded_end=f"{rounded_end:,}",
+                            existing_count=existing_count))
+                        return
+                    self.quick_status_var.set(T(
+                        "quick.summary_floor", floor=floor_value, width_mult=1,
+                        width_total=f"{QUICK_GEN_MAX_WINDOW_WIDTH:,}",
+                        start=T("quick.start_continue_last"),
+                        existing_count=0, added_count=1))
+                    self._apply_loop_params_and_run(floor_value, 1, 1)
+                    return
+                # Floor >= LOW_FLOOR_CUTOFF: cap window_count_per_run so target_idx never
+                # crosses into the NEXT floor's own numeric range -- see
+                # _floor_window_count's docstring for the bug this closes (floor 7 ending
+                # up with 130-million-range numbers filed under its folder because nothing
+                # here checked where floor 7 actually ends).
+                floor_window_count = _floor_window_count(floor_value)
+                remaining = floor_window_count - existing_count
+                if remaining <= 0:
+                    self.quick_status_var.set(T(
+                        "quick.status_floor_full", floor=floor_value,
+                        existing_count=existing_count, floor_window_count=floor_window_count))
+                    return
+                capped_width = min(width_mult, remaining)
                 self.quick_status_var.set(T(
-                    "quick.summary_floor", floor=floor_value, width_mult=width_mult,
-                    width_total=f"{width_total:,}", start=start,
-                    existing_count=existing_count, added_count=width_mult))
-                self._apply_loop_params_and_run(floor_value, 1, width_mult)
+                    "quick.summary_floor", floor=floor_value, width_mult=capped_width,
+                    width_total=f"{capped_width * QUICK_GEN_MAX_WINDOW_WIDTH:,}",
+                    start=T("quick.start_continue_last"),
+                    existing_count=existing_count, added_count=capped_width)
+                    + (T("quick.note_truncated_floor_boundary",
+                          boundary=f"{10 ** (floor_value + 1):,}")
+                       if capped_width < width_mult else ""))
+                self._apply_loop_params_and_run(floor_value, 1, capped_width)
             elif mode == "range":
                 raw_from = self.quick_from_var.get().strip()
                 raw_to = self.quick_to_var.get().strip()
@@ -3533,36 +3844,27 @@ def _build_gui():
                 if start >= end:
                     messagebox.showerror(T("quick.dialog_title"), T("quick.error_range_order"))
                     return
-                rounded_start, rounded_end = _round_range_to_window(start, end)
-                floor_lo = digit_count_floor(rounded_start)
-                floor_hi = digit_count_floor(rounded_end - 1)
-                if floor_lo != floor_hi:
-                    boundary = 10 ** (floor_lo + 1)
-                    messagebox.showerror(
-                        T("quick.dialog_title"),
-                        T("quick.error_range_cross_floor", boundary=f"{boundary:,}"))
+                plan = self._quick_gen_plan_literal_range(start, end)
+                if plan.get("error"):
+                    messagebox.showerror(*plan["error"])
                     return
-                base = 10 ** floor_lo
-                if ((rounded_start - base) % QUICK_GEN_MAX_WINDOW_WIDTH
-                        or (rounded_end - base) % QUICK_GEN_MAX_WINDOW_WIDTH):
-                    messagebox.showerror(T("quick.dialog_title"), T("quick.error_range_misaligned"))
-                    return
-                target_idx_end = (rounded_end - base) // QUICK_GEN_MAX_WINDOW_WIDTH
-                existing_count = find_continuation_target_idx(
-                    PORTAL_FOLDER, floor_lo, QUICK_GEN_MAX_WINDOW_WIDTH)
-                if target_idx_end <= existing_count:
+                if plan.get("already"):
                     self.quick_status_var.set(T(
                         "quick.status_already_in_storage",
-                        rounded_start=f"{rounded_start:,}", rounded_end=f"{rounded_end:,}",
-                        existing_count=existing_count))
+                        rounded_start=f"{plan['rounded_start']:,}",
+                        rounded_end=f"{plan['rounded_end']:,}",
+                        existing_count=plan["existing_count"]))
                     return
-                window_count_per_run = target_idx_end - existing_count
                 self.quick_status_var.set(T(
                     "quick.summary_range", start=f"{start:,}", end=f"{end:,}",
-                    rounded_start=f"{rounded_start:,}", rounded_end=f"{rounded_end:,}",
-                    floor=floor_lo, existing_count=existing_count,
-                    added_count=window_count_per_run))
-                self._apply_loop_params_and_run(floor_lo, 1, window_count_per_run)
+                    rounded_start=f"{plan['rounded_start']:,}",
+                    rounded_end=f"{plan['rounded_end']:,}", floor=plan["floor"],
+                    existing_count=plan["existing_count"],
+                    added_count=plan["window_count_per_run"])
+                    + (T("quick.note_truncated_floor_boundary",
+                          boundary=f"{plan['rounded_end']:,}")
+                       if plan.get("truncated") else ""))
+                self._apply_loop_params_and_run(plan["floor"], 1, plan["window_count_per_run"])
             else:
                 raw_floor = self.quick_explore_floor_var.get().strip()
                 floor_value = _eval_quick_number(raw_floor)
@@ -3570,15 +3872,37 @@ def _build_gui():
                     messagebox.showerror(T("quick.dialog_title"), T("quick.error_explore_floor_required"))
                     return
                 iterations = _eval_quick_number(self.quick_iterations_var.get()) or 1
-                window_count_per_run = (
-                    QUICK_GEN_EXPLORE_ITERATION_WIDTH // QUICK_GEN_MAX_WINDOW_WIDTH)
-                iterations_total = iterations * QUICK_GEN_EXPLORE_ITERATION_WIDTH
+                width_mult = _eval_quick_number(self.quick_explore_width_var.get()) or 1
+                window_count_per_run = width_mult
+                iteration_width = width_mult * QUICK_GEN_MAX_WINDOW_WIDTH
+                iterations_total = iterations * iteration_width
                 existing_count = find_continuation_target_idx(
                     PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                if floor_value < LOW_FLOOR_CUTOFF:
+                    # Same low-floor guard as blank-starting-point Floor mode above (see
+                    # that branch's comment for the full rationale) -- Exploration is meant
+                    # for deep/high floors, but nothing stops someone from picking a low one
+                    # here too, and it would hit the exact same "keeps appending
+                    # QUICK_GEN_MAX_WINDOW_WIDTH-sized chunks past a floor's real, much
+                    # smaller domain" bug otherwise.
+                    if existing_count >= 1:
+                        rounded_start = 10 ** floor_value
+                        rounded_end = rounded_start + QUICK_GEN_MAX_WINDOW_WIDTH
+                        self.quick_status_var.set(T(
+                            "quick.status_already_in_storage",
+                            rounded_start=f"{rounded_start:,}", rounded_end=f"{rounded_end:,}",
+                            existing_count=existing_count))
+                        return
+                    self.quick_status_var.set(T(
+                        "quick.summary_explore", floor=floor_value, iterations=1,
+                        width_mult=1, iterations_total=f"{QUICK_GEN_MAX_WINDOW_WIDTH:,}",
+                        existing_count=0, added_count=1))
+                    self._apply_loop_params_and_run(floor_value, 1, 1)
+                    return
                 self.quick_status_var.set(T(
                     "quick.summary_explore", floor=floor_value, iterations=iterations,
-                    iterations_total=f"{iterations_total:,}", existing_count=existing_count,
-                    added_count=iterations * window_count_per_run))
+                    width_mult=width_mult, iterations_total=f"{iterations_total:,}",
+                    existing_count=existing_count, added_count=iterations * window_count_per_run))
                 self._apply_loop_params_and_run(floor_value, iterations, window_count_per_run)
 
         def _collect_loop_settings_from_form(self):
@@ -3586,12 +3910,20 @@ def _build_gui():
             parsed values on success, or None (after a messagebox explaining which field
             is wrong) if anything fails validation -- mirrors the existing "Szukaj"
             fields' isdigit()-based validation pattern elsewhere in this file."""
+            # base_exponent (the floor) is the ONE field here allowed to be 0 -- floor 0
+            # is [10^0, 10^1) = [1, 10), a legitimate floor (holds 2, 3, 5, 7 among
+            # others), not a placeholder/unset value. Every other field genuinely needs
+            # to be strictly positive (0 windows/workers/batches/runs/instances doesn't
+            # mean anything) -- this used to lump base_exponent in with those and reject
+            # it right alongside them, silently making floor 0 impossible to generate.
+            zero_allowed_fields = {"base_exponent"}
             int_fields = ("base_exponent", "run_count", "n_instances", "window_count_per_run",
                           "workers", "batches_per_worker", "window_m")
             parsed = {}
             for key in int_fields:
                 raw = self._loop_vars[key].get().strip()
-                if not raw.isdigit() or int(raw) <= 0:
+                minimum = 0 if key in zero_allowed_fields else 1
+                if not raw.isdigit() or int(raw) < minimum:
                     messagebox.showerror(
                         T("gen.dialog_title"), T("gen.error_field_int", field=key))
                     return None
@@ -3628,7 +3960,7 @@ def _build_gui():
             log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "loop")
             cmd = build_wsl_logged_command(argv, log_path, exit_path)
 
-            self.loop_console.clear()
+            self.loop_console.append(self._new_run_separator())
             self._loop_output_queue = queue.Queue()
             self._loop_runner = WslLoggedRunner(
                 cmd, log_path, exit_path, self._loop_output_queue,
@@ -3656,9 +3988,19 @@ def _build_gui():
             open Quick-gen panel's 'Generate' button back from its temporary 'Stop'
             label now that nothing is running. Deliberately does NOT touch the console's
             collapse state -- it stays expanded so the final log is still visible after
-            the run finishes."""
+            the run finishes.
+
+            Also re-runs reload_primes_tree() -- the SAME rebuild the manual Refresh
+            button on the Prime numbers tab triggers -- so newly written/regenerated
+            windows show up there without the person having to notice the run finished
+            and go click Refresh themselves. Previously nothing here touched that tree at
+            all, so a completed generation (including a low-floor completion/regeneration
+            -- see LOW_FLOOR_CUTOFF) stayed invisible until a manual refresh; this closes
+            that gap the same way _set_portal_folder already does after a storage-path
+            change."""
             for panel in self._quick_panels:
                 panel["generate_btn"].configure(text=T("quick.generate_button"))
+            self.reload_primes_tree()
 
         def _poll_loop_output(self):
             self._drain_output_queue(self._loop_output_queue, self.loop_console,
@@ -3682,7 +4024,7 @@ def _build_gui():
             log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "constellation")
             cmd = build_wsl_logged_command(argv, log_path, exit_path)
 
-            self.const_console.clear()
+            self.const_console.append(self._new_run_separator())
             self._const_output_queue = queue.Queue()
             self._const_runner = WslLoggedRunner(
                 cmd, log_path, exit_path, self._const_output_queue,
@@ -3698,10 +4040,21 @@ def _build_gui():
                 self._const_runner.stop()
                 self.const_status_label.set(T("common.stopping"))
 
+        def _on_constellation_finished(self):
+            """_drain_output_queue's on_exit callback for the constellation queue --
+            mirrors _on_loop_finished's reload_primes_tree() call, but for the
+            Constellations tab: re-runs reload_constellations_tree() so newly found hits
+            show up there the moment a run finishes, without a manual Refresh click.
+            constellation_finder_v1.py has no dual-purpose button label to reset (unlike
+            the Quick-gen 'Generate'/'Stop' one _on_loop_finished handles), so this is
+            otherwise a much shorter version of that method."""
+            self.reload_constellations_tree()
+
         def _poll_constellation_output(self):
             self._drain_output_queue(self._const_output_queue, self.const_console,
                                       self.const_run_btn, self.const_stop_btn,
-                                      self.const_status_label)
+                                      self.const_status_label,
+                                      on_exit=self._on_constellation_finished)
             self.after(150, self._poll_constellation_output)
 
         def _drain_output_queue(self, q, console, run_btn, stop_btn, status_var, on_exit=None):

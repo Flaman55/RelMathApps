@@ -69,8 +69,10 @@ class GenerationConsole:
 
     def clear(self):
         """Clears every currently-registered mirror (embedded pane + detached copy, if
-        open) -- called both by the clear button and at the start of every new run, so a
-        fresh run never shows stale output in either place."""
+        open). Only ever called explicitly, via the Clear button -- a new run does NOT
+        call this (see prime_atlas_v1.py's _on_run_loop/_on_run_constellation, which
+        append a separator line instead), so several runs' output can stay stacked in
+        the console for comparison until the person clears it themselves."""
         for widget in self._mirrors:
             widget.configure(state="normal")
             widget.delete("1.0", "end")

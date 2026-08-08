@@ -25,16 +25,17 @@ BATCHES_PER_WORKER = 2    # how many contiguous cost-equal batches per worker --
 # cost would otherwise be invisible in the "Batch sieve done" timing. Defaulting this OFF
 # keeps normal runs fast; pass compute_sieving_primes_count=True (main_batch_scanner) / CLI
 # position 7 / "1" to compute it exactly when pi(L_final) is actually wanted (e.g. for the
-# benchmark_log.csv column).
+# benchmark_log.csv column). See count_sieving_primes_cached() below for the per-floor caching
+# layer that makes repeat requests on the same floor far cheaper than the first one.
 COMPUTE_SIEVING_PRIMES_COUNT = False
 
 # ==========================================================================================
 # prime_sieve_v4.py
 #
-# LINEAGE: prime_sieve_v3.py (this folder), with ONE change -- see "WHAT CHANGED" below.
-# Everything else (PGS2 format, read/write/append functions, the equal-cost batching model,
-# the shared-mmap/atomic-OR mechanism, the per-window unpacking/file-writing tail of
-# main_batch_scanner()) is copied unchanged from v3. v1/v2/v3 are untouched and remain
+# LINEAGE: prime_sieve_v3.py (this folder), with TWO changes -- see "WHAT CHANGED" and "ALSO
+# ADDED" below. Everything else (PGS2 format, read/write/append functions, the equal-cost
+# batching model, the shared-mmap/atomic-OR mechanism, the per-window unpacking/file-writing
+# tail of main_batch_scanner()) is copied unchanged from v3. v1/v2/v3 are untouched and remain
 # independently runnable.
 #
 # WHAT CHANGED: the per-sieving-prime phase computation inside the C engine
@@ -46,11 +47,32 @@ COMPUTE_SIEVING_PRIMES_COUNT = False
 # guarantees the quotient fits in 64 bits) down to a single hardware `divq` instruction at the
 # call site, with the full u128 division kept as a fallback for the rare case where that
 # guarantee doesn't hold. Verified bit-for-bit identical to v3's output across a battery of
-# differential tests (fast-path and fallback-path cases, both engine variants). Isolated
-# microbenchmark of the phase computation alone measured roughly 1.1x-1.5x faster per call,
-# depending on how much of the 128 bits the combined window's distance actually needs; this
-# has not yet been measured end to end against the real libprimesieve at production floor
-# depth -- do that before treating any wall-clock improvement as confirmed.
+# differential tests (fast-path and fallback-path cases, both engine variants). MEASURED END TO
+# END against real libprimesieve (floor 18, both 10 and 1000 windows): no measurable wall-clock
+# difference from v3 at that depth -- an isolated microbenchmark of the phase computation alone
+# had shown ~1.1x-1.5x faster per call, but that gain is not the bottleneck of this engine, so
+# it does not show up in real runs. Kept as an available alternative engine, not the default.
+#
+# ALSO ADDED (independent of the above, does not touch the sieve/marking path at all):
+# count_sieving_primes_cached(), a per-floor cache for the pi(L_final) diagnostic stat, built
+# on the engine's new additive count_sieving_primes_range(start, stop). Unlike the modulo
+# change, this targets a cost that WAS confirmed real and significant (see the
+# COMPUTE_SIEVING_PRIMES_COUNT comment above -- "can take minutes at extreme depth"): repeat
+# calls on the same floor recount the ENTIRE [0, L_final] range from scratch every time even
+# though L_final barely moves between consecutive runs. Caching the last counted (L, count) per
+# floor and counting only the new sliver above it on subsequent calls should cut that repeat
+# cost roughly in proportion to how little L_final actually grows -- not yet measured at real
+# floor depth, that is the next thing to benchmark.
+#
+# ALSO ADDED (later, purely additive, doesn't touch anything above): low-floor completion,
+# ported verbatim from prime_sieve_v3.py -- see that file's header for the full rationale.
+# window_m's smallest value is 10,000,000, but floors below 7 are each narrower than that
+# (floor 6 = [10**6, 10**7) is only 9,000,000 numbers). _low_floor_segments() + the branch at
+# the top of main_batch_scanner's write step split a low-floor batch by REAL floor boundary,
+# writing each floor that's fully contained in the generated range as its own complete file
+# under its own 10p{floor}/ -- and since floors 0-6 together are exactly 9,999,999 numbers, one
+# minimum-width request against any floor in that range completes ALL of them in a single pass.
+# A floor only partially covered is left out entirely rather than written half-finished.
 #
 # Nothing about batching, the shared buffer, output format, or CLI changed from v3; this file
 # exists so v3 and v4 can be run side by side on the same floor for a direct comparison.
@@ -90,6 +112,8 @@ def _load_lib():
         lib.generate_and_sieve_segment_bits_atomic.restype = ctypes.c_int
         lib.count_sieving_primes.argtypes = [ctypes.c_uint64]
         lib.count_sieving_primes.restype = ctypes.c_uint64
+        lib.count_sieving_primes_range.argtypes = [ctypes.c_uint64, ctypes.c_uint64]
+        lib.count_sieving_primes_range.restype = ctypes.c_uint64
         _lib = lib
     return _lib
 
@@ -98,6 +122,78 @@ def count_sieving_primes(limit):
     """Unchanged from prime_sieve_v3.py -- see that file's docstring."""
     lib = _load_lib()
     return int(lib.count_sieving_primes(limit))
+
+
+def count_sieving_primes_range(start, stop):
+    """pi(stop) - pi(start) -- primes in (start, stop]. Thin wrapper over the engine's
+    additive count_sieving_primes_range(), used by count_sieving_primes_cached() below to
+    count only the NEW territory between a cached L and a larger one, instead of recounting
+    from 0 every time."""
+    lib = _load_lib()
+    return int(lib.count_sieving_primes_range(start, stop))
+
+
+SIEVING_PRIMES_COUNT_CACHE_FILENAME = "sieving_primes_count_cache.json"
+
+
+def count_sieving_primes_cached(portal_folder, base_power, limit):
+    """pi(limit), reusing a per-floor cache instead of recomputing from 0 every call.
+
+    Motivation: repeat calls to this diagnostic on the SAME floor almost always ask for a
+    limit that is equal to, or only marginally larger than, the previous call's limit --
+    L_final = isqrt(combined_hi) grows far slower than the floor's own windows do (going
+    another 10 windows deeper at floor 20 nudges L_final by single digits out of ~10^10).
+    Counting that tiny sliver via count_sieving_primes_range(cached_l, limit) is dramatically
+    cheaper than recounting the whole [0, limit] range from scratch, which is exactly what the
+    plain count_sieving_primes() path (and every version before this one) does on every call.
+
+    Cache is a single small JSON file per floor: {"l_final": <largest L counted to>,
+    "count": <pi(that L)>}. Three cases:
+      - no cache yet for this floor              -> full count(0, limit), cache it
+      - limit == cached l_final                   -> return the cached count, NO primesieve
+                                                       call at all
+      - limit >  cached l_final                   -> cached count + count_range(cached_l, limit),
+                                                       cache the new (limit, count) pair
+      - limit <  cached l_final (rare -- exploring
+        a SMALLER limit than before on this floor) -> falls back to a full recount, since the
+                                                       cache only ever stores a running total up
+                                                       to its largest L, not a queryable prefix
+                                                       count at arbitrary smaller points.
+    Returns (count, mode) where mode is one of "cold" / "cache_hit" / "incremental" / "shrink"
+    -- purely informational, used by main_batch_scanner()'s timing print so a benchmark run can
+    show which path was actually taken.
+    """
+    import json
+    cache_dir = os.path.join(portal_folder, f"10p{base_power}")
+    cache_path = os.path.join(cache_dir, SIEVING_PRIMES_COUNT_CACHE_FILENAME)
+
+    cached = None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+    except (OSError, ValueError):
+        cached = None
+
+    if cached is None or "l_final" not in cached or "count" not in cached:
+        count = count_sieving_primes(limit)
+        mode = "cold"
+    elif limit == cached["l_final"]:
+        return cached["count"], "cache_hit"
+    elif limit > cached["l_final"]:
+        count = cached["count"] + count_sieving_primes_range(cached["l_final"], limit)
+        mode = "incremental"
+    else:
+        count = count_sieving_primes(limit)
+        mode = "shrink"
+
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({"l_final": limit, "count": count}, f)
+    except OSError as e:
+        print(f"[!] WARNING: could not write sieving-primes-count cache ({e})")
+
+    return count, mode
 
 
 def format_offset(n):
@@ -395,6 +491,48 @@ def process_batch(start_stop_list, distance, window_m):
     return had_error
 
 
+LOW_FLOOR_CUTOFF = 7  # floors 0..6 are each narrower than the smallest supported window_m
+                      # (10,000,000): floor 6 = [10**6, 10**7) is only 9,000,000 numbers.
+                      # 10**7 is the first floor boundary that's an exact multiple of that
+                      # width, so from floor 7 on a window can never straddle a floor
+                      # boundary -- see _low_floor_segments()'s docstring for what floors
+                      # below this cutoff need instead. Ported verbatim from
+                      # prime_sieve_v3.py -- see that file's header for the full rationale.
+
+
+def _low_floor_segments(base_power, combined_lo, combined_hi):
+    """For base_power < LOW_FLOOR_CUTOFF, a single combined window can span MULTIPLE
+    actual digit-based floors at once (e.g. requesting floor 0 with the default
+    window_m=10,000,000 produces a combined range covering all of floors 0 through 6,
+    plus one leftover number that's just the start of floor 7). Returns a list of
+    (floor, floor_lo, floor_hi) triples -- one per floor FULLY contained in
+    [combined_lo, combined_hi) -- for the caller to write each as its own complete,
+    self-contained window under its own 10p{floor}/ folder (a low floor never needs
+    more than one file, since its whole width is always < window_m). Any floor only
+    PARTIALLY covered -- the trailing one, cut off by wherever this batch's generated
+    range happens to end -- is simply left out, so it's never written complete OR
+    truncated; a later request that generates far enough picks it up cleanly in one
+    pass instead of this one leaving a half-finished file behind.
+
+    Returns [] (meaning: caller should fall back to the ordinary per-target_idx write
+    path, unchanged) if base_power is already >= LOW_FLOOR_CUTOFF, or if combined_lo
+    doesn't actually align with base_power's own floor start (10**base_power) -- the
+    split only applies to the ordinary "first request for this low floor" shape;
+    anything else is left to the existing logic rather than guessed at."""
+    if base_power >= LOW_FLOOR_CUTOFF or combined_lo != 10 ** base_power:
+        return []
+    segments = []
+    floor = base_power
+    while True:
+        floor_lo = 10 ** floor
+        floor_hi = 10 ** (floor + 1)
+        if floor_hi > combined_hi:
+            break
+        segments.append((floor, floor_lo, floor_hi))
+        floor += 1
+    return segments
+
+
 def main_batch_scanner(base_power, target_idx_list, window_m, write_files=True,
                         compute_sieving_primes_count=True):
     target_idx_list = sorted(target_idx_list)
@@ -427,10 +565,17 @@ def main_batch_scanner(base_power, target_idx_list, window_m, write_files=True,
     print(f"[*] L_final (sieving-prime base limit): {L_final:,}")
     if compute_sieving_primes_count:
         t_count_start = time.perf_counter()
-        sieving_primes_count = count_sieving_primes(L_final)
+        sieving_primes_count, count_mode = count_sieving_primes_cached(
+            BASE_STORAGE_10PN, base_power, L_final)
         t_count = time.perf_counter() - t_count_start
+        mode_note = {
+            "cold": "full count, no cache yet for this floor",
+            "cache_hit": "cache hit, L_final unchanged since last run on this floor",
+            "incremental": "incremental -- reused cached count below the previous L_final",
+            "shrink": "full count -- requested L_final smaller than the cached one",
+        }[count_mode]
         print(f"[*] Active sieving primes used (pi(L_final)): {sieving_primes_count:,} "
-              f"(computed in {t_count:.3f}s)")
+              f"(computed in {t_count:.3f}s -- {mode_note})")
     else:
         sieving_primes_count = None
         print(f"[*] Active sieving primes count (pi(L_final)): SKIPPED "
@@ -507,6 +652,57 @@ def main_batch_scanner(base_power, target_idx_list, window_m, write_files=True,
 
     window_occupied_bits = np.frombuffer(_shm_mmap, dtype=np.uint8, count=combined_bytes).copy()
     _shm_mmap.close()
+
+    low_floor_segments = _low_floor_segments(base_power, combined_lo, combined_hi)
+    if low_floor_segments:
+        # base_power < LOW_FLOOR_CUTOFF: this combined range spans several REAL floors at
+        # once (see _low_floor_segments' docstring) -- write each complete one under its
+        # own 10p{floor}/ folder instead of the single 10p{base_power}/ the normal path
+        # below would use, and skip the write loop entirely once done. Ported verbatim
+        # from prime_sieve_v3.py.
+        full_unpacked = np.unpackbits(window_occupied_bits, count=combined_size,
+                                       bitorder='little').astype(bool)
+        total_primes_found = 0
+        floor_counts = []
+        for floor, floor_lo, floor_hi in low_floor_segments:
+            w = floor_hi - floor_lo
+            lo_rel = floor_lo - combined_lo
+            segment = full_unpacked[lo_rel:lo_rel + w]
+
+            this_floor_folder = os.path.join(BASE_STORAGE_10PN, f"10p{floor}", "source_primes")
+            window_path = os.path.join(this_floor_folder, f"PRIME_WINDOW_10p{floor}_off_0.bin")
+            generated_at = int(time.time())
+
+            if write_files:
+                os.makedirs(this_floor_folder, exist_ok=True)
+                free_locally = np.nonzero(~segment)[0]
+                candidates = [floor_lo + int(k) for k in free_locally if (floor_lo + int(k)) > 1]
+                count = len(candidates)
+                write_prime_window(window_path, candidates, generated_at=generated_at)
+            else:
+                count = int(np.count_nonzero(~segment))
+                if floor_lo == 1 and w > 0 and not segment[0]:
+                    count -= 1  # exclude "1" itself -- not prime, but ~segment[0] counts it
+            total_primes_found += count
+            floor_counts.append((floor, count))
+
+        skipped_floor = low_floor_segments[-1][0] + 1
+        print(f"\n[*] Low-floor batch: floor(s) {low_floor_segments[0][0]}-"
+              f"{low_floor_segments[-1][0]} written complete, each as its own 10p{{N}} "
+              f"window -- floor {skipped_floor} would be cut off by this batch's range, so "
+              f"it was skipped (not written partially).")
+        for floor, count in floor_counts:
+            print(f"    10p{floor}: {count:,} primes")
+        print(f"\n[*] TOTAL PRIMES FOUND this run: {total_primes_found:,} across "
+              f"{len(low_floor_segments)} floor(s)"
+              + ("" if write_files else "  (NO FILES WRITTEN -- count-only mode)"))
+
+        write_scan_metrics_handoff(BASE_STORAGE_10PN, L_final, sieving_primes_count,
+                                    total_primes_found=total_primes_found,
+                                    windows_processed=len(low_floor_segments),
+                                    write_files=write_files)
+        print("=" * 70)
+        return
 
     floor_folder = os.path.join(BASE_STORAGE_10PN, f"10p{base_power}", "source_primes")
     if write_files:

@@ -27,6 +27,13 @@
  * routed through the fast path. u128 addition and comparison do not involve division and were
  * not observed to generate library calls.
  *
+ * ALSO ADDED (later, purely additive, does not touch the above): count_sieving_primes_range()
+ * alongside the original count_sieving_primes() -- lets the Python side count only the primes
+ * in [start, stop] instead of always recounting from 0, so repeat pi(L_final) requests on the
+ * same floor can reuse a previously counted prefix instead of paying the full count again.
+ * See count_sieving_primes_range()'s own comment below and prime_sieve_v4.py's
+ * count_sieving_primes_cached().
+ *
  * BUILD (WSL, after building+installing libprimesieve):
  *   gcc -O3 -shared -fPIC prime_sieve_engine_v4.c -o prime_sieve_engine_v4.so \
  *       -lprimesieve -lstdc++ -lm
@@ -157,7 +164,19 @@ int generate_and_sieve_segment_bits_atomic(uint64_t start, uint64_t stop,
 
 /* ==========================================================================================
  * count_sieving_primes -- unchanged from v1/v3.
+ *
+ * count_sieving_primes_range -- ADDITIVE, does not touch anything above. Counts primes in
+ * [start, stop] instead of always starting at 0. Lets the Python side turn "count primes up
+ * to L_final" into "count primes up to the PREVIOUSLY cached L, plus only the new primes
+ * between that L and the new, slightly larger L_final" for repeat runs on the same floor --
+ * see prime_sieve_v4.py's count_sieving_primes_cached() for the caching layer built on top of
+ * this. primesieve_count_primes(start, stop) already supports an arbitrary start for free;
+ * this just exposes that through ctypes instead of hardcoding start=0.
  * ========================================================================================== */
 uint64_t count_sieving_primes(uint64_t limit) {
     return primesieve_count_primes(0, limit);
+}
+
+uint64_t count_sieving_primes_range(uint64_t start, uint64_t stop) {
+    return primesieve_count_primes(start, stop);
 }

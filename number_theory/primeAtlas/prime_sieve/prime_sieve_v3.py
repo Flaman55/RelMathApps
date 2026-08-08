@@ -84,6 +84,19 @@ COMPUTE_SIEVING_PRIMES_COUNT = False
 # within the bit-packed buffer (window_m is a multiple of 8), so this needs no cross-window
 # data. Peak memory for this step drops from O(combined_size) to O(window_m) -- one window
 # at a time instead of the whole batch at once.
+#
+# ALSO ADDED (later, purely additive, doesn't touch anything above): low-floor completion.
+# window_m's smallest value is 10,000,000, but floors below 7 are each narrower than that
+# (floor 6 = [10**6, 10**7) is only 9,000,000 numbers) -- requesting floor 0 used to either be
+# rejected outright (a validation bug in the GUI, since fixed) or silently write ONE window
+# under 10p0/ that numerically bled all the way into floor 7, mixing several floors' primes
+# into the wrong folder. _low_floor_segments() + the branch at the top of main_batch_scanner's
+# write step now split a low-floor batch by REAL floor boundary instead, writing each floor
+# that's fully contained in the generated range as its own complete file under its own
+# 10p{floor}/ -- and, since floors 0-6 together are exactly 9,999,999 numbers, one minimum-
+# width request against any floor in that range completes ALL of them in a single pass. A
+# floor only partially covered (cut off by wherever the batch happens to end) is left out
+# entirely rather than written half-finished.
 # ==========================================================================================
 
 _LIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prime_sieve_engine_v3.so")
@@ -432,6 +445,47 @@ def process_batch(start_stop_list, distance, window_m):
     return had_error
 
 
+LOW_FLOOR_CUTOFF = 7  # floors 0..6 are each narrower than the smallest supported window_m
+                      # (10,000,000): floor 6 = [10**6, 10**7) is only 9,000,000 numbers.
+                      # 10**7 is the first floor boundary that's an exact multiple of that
+                      # width, so from floor 7 on a window can never straddle a floor
+                      # boundary -- see _low_floor_segments()'s docstring for what floors
+                      # below this cutoff need instead.
+
+
+def _low_floor_segments(base_power, combined_lo, combined_hi):
+    """For base_power < LOW_FLOOR_CUTOFF, a single combined window can span MULTIPLE
+    actual digit-based floors at once (e.g. requesting floor 0 with the default
+    window_m=10,000,000 produces a combined range covering all of floors 0 through 6,
+    plus one leftover number that's just the start of floor 7). Returns a list of
+    (floor, floor_lo, floor_hi) triples -- one per floor FULLY contained in
+    [combined_lo, combined_hi) -- for the caller to write each as its own complete,
+    self-contained window under its own 10p{floor}/ folder (a low floor never needs
+    more than one file, since its whole width is always < window_m). Any floor only
+    PARTIALLY covered -- the trailing one, cut off by wherever this batch's generated
+    range happens to end -- is simply left out, so it's never written complete OR
+    truncated; a later request that generates far enough picks it up cleanly in one
+    pass instead of this one leaving a half-finished file behind.
+
+    Returns [] (meaning: caller should fall back to the ordinary per-target_idx write
+    path, unchanged) if base_power is already >= LOW_FLOOR_CUTOFF, or if combined_lo
+    doesn't actually align with base_power's own floor start (10**base_power) -- the
+    split only applies to the ordinary "first request for this low floor" shape;
+    anything else is left to the existing logic rather than guessed at."""
+    if base_power >= LOW_FLOOR_CUTOFF or combined_lo != 10 ** base_power:
+        return []
+    segments = []
+    floor = base_power
+    while True:
+        floor_lo = 10 ** floor
+        floor_hi = 10 ** (floor + 1)
+        if floor_hi > combined_hi:
+            break
+        segments.append((floor, floor_lo, floor_hi))
+        floor += 1
+    return segments
+
+
 def main_batch_scanner(base_power, target_idx_list, window_m, write_files=True,
                         compute_sieving_primes_count=True):
     target_idx_list = sorted(target_idx_list)
@@ -546,6 +600,56 @@ def main_batch_scanner(base_power, target_idx_list, window_m, write_files=True,
 
     window_occupied_bits = np.frombuffer(_shm_mmap, dtype=np.uint8, count=combined_bytes).copy()
     _shm_mmap.close()
+
+    low_floor_segments = _low_floor_segments(base_power, combined_lo, combined_hi)
+    if low_floor_segments:
+        # base_power < LOW_FLOOR_CUTOFF: this combined range spans several REAL floors at
+        # once (see _low_floor_segments' docstring) -- write each complete one under its
+        # own 10p{floor}/ folder instead of the single 10p{base_power}/ the normal path
+        # below would use, and skip the write loop entirely once done.
+        full_unpacked = np.unpackbits(window_occupied_bits, count=combined_size,
+                                       bitorder='little').astype(bool)
+        total_primes_found = 0
+        floor_counts = []
+        for floor, floor_lo, floor_hi in low_floor_segments:
+            w = floor_hi - floor_lo
+            lo_rel = floor_lo - combined_lo
+            segment = full_unpacked[lo_rel:lo_rel + w]
+
+            this_floor_folder = os.path.join(BASE_STORAGE_10PN, f"10p{floor}", "source_primes")
+            window_path = os.path.join(this_floor_folder, f"PRIME_WINDOW_10p{floor}_off_0.bin")
+            generated_at = int(time.time())
+
+            if write_files:
+                os.makedirs(this_floor_folder, exist_ok=True)
+                free_locally = np.nonzero(~segment)[0]
+                candidates = [floor_lo + int(k) for k in free_locally if (floor_lo + int(k)) > 1]
+                count = len(candidates)
+                write_prime_window(window_path, candidates, generated_at=generated_at)
+            else:
+                count = int(np.count_nonzero(~segment))
+                if floor_lo == 1 and w > 0 and not segment[0]:
+                    count -= 1  # exclude "1" itself -- not prime, but ~segment[0] counts it
+            total_primes_found += count
+            floor_counts.append((floor, count))
+
+        skipped_floor = low_floor_segments[-1][0] + 1
+        print(f"\n[*] Low-floor batch: floor(s) {low_floor_segments[0][0]}-"
+              f"{low_floor_segments[-1][0]} written complete, each as its own 10p{{N}} "
+              f"window -- floor {skipped_floor} would be cut off by this batch's range, so "
+              f"it was skipped (not written partially).")
+        for floor, count in floor_counts:
+            print(f"    10p{floor}: {count:,} primes")
+        print(f"\n[*] TOTAL PRIMES FOUND this run: {total_primes_found:,} across "
+              f"{len(low_floor_segments)} floor(s)"
+              + ("" if write_files else "  (NO FILES WRITTEN -- count-only mode)"))
+
+        write_scan_metrics_handoff(BASE_STORAGE_10PN, L_final, sieving_primes_count,
+                                    total_primes_found=total_primes_found,
+                                    windows_processed=len(low_floor_segments),
+                                    write_files=write_files)
+        print("=" * 70)
+        return
 
     floor_folder = os.path.join(BASE_STORAGE_10PN, f"10p{base_power}", "source_primes")
     if write_files:
