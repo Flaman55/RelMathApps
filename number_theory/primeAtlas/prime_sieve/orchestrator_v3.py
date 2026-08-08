@@ -13,9 +13,34 @@ except ImportError:
     resource = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import prime_sieve_v3  # noqa: E402  -- same-folder module: format_offset() and
-                        # read_prime_window_header() (PGS2 fast header peek) are reused
-                        # here for the benchmark summary, instead of duplicating them.
+
+# ------------------------------------------------------------------------------------------
+# ENGINE SWITCH -- change ONLY this one flag to flip which scanner generation (v3 or v4)
+# this orchestrator drives. Previously this meant editing SCRIPT_NAME (below) AND the
+# `import prime_sieve_v3` line above it separately -- easy to change one and forget the
+# other, which is exactly what happened testing v4 (SCRIPT_NAME pointed at
+# prime_sieve_v4.py, but the module import -- used for format_offset()/
+# read_prime_window_header()/SCAN_METRICS_FILENAME in the benchmark-summary code further
+# down -- was still silently reading v3's copies of those, harmless in practice since v4
+# duplicates them byte-for-byte identically, but not an honest "actually switched" state).
+# Both v3.py and v4.py write files in the SAME PGS2 format/filename convention and share
+# the same benchmark_log.csv, so flipping this is safe at any time, including mid-floor.
+# v4 = v3 plus an inlined fast-path modulo in the C core for the per-sieving-prime phase
+# computation (see prime_sieve_v4.py's own header) -- should be faster or equal, never
+# slower, so there's rarely a reason to run v3 except for an A/B comparison like this one.
+SCANNER_VERSION = "v4"   # "v3" or "v4"
+
+if SCANNER_VERSION == "v3":
+    import prime_sieve_v3 as prime_sieve_module  # noqa: E402
+    SCRIPT_NAME = "prime_sieve_v3.py"
+elif SCANNER_VERSION == "v4":
+    import prime_sieve_v4 as prime_sieve_module  # noqa: E402
+    SCRIPT_NAME = "prime_sieve_v4.py"
+else:
+    raise ValueError(f"SCANNER_VERSION must be 'v3' or 'v4', got {SCANNER_VERSION!r}")
+# format_offset() and read_prime_window_header() (PGS2 fast header peek) are reused here
+# for the benchmark summary, instead of duplicating them -- see prime_sieve_module's own
+# usages below.
 
 
 # ==========================================================================================
@@ -90,7 +115,12 @@ START_WINDOW = 0
 WINDOW_COUNT = 200
 BATCH_SIZE = WINDOW_COUNT
 WORKERS = 24
-SCRIPT_NAME = "prime_sieve_v3.py"   # <-- the one line that differs from orchestrator_v2.py
+# SCRIPT_NAME is set by the ENGINE SWITCH block near the top of this file (SCANNER_VERSION),
+# NOT here -- this used to be the one line that differed from orchestrator_v2.py, but having
+# it set a second time in this JOB CONFIGURATION block too (while the scanner MODULE import
+# was a separate, easy-to-forget line elsewhere) is exactly what caused a v3/v4 switch to be
+# only half-applied. Left unset here on purpose so accidentally reintroducing a second
+# assignment is more likely to be noticed.
 WINDOW_M = 10 ** 7
 BATCHES_PER_WORKER = 2
 WRITE_FILES = True
@@ -168,9 +198,10 @@ def _ensure_benchmark_log_schema(log_path):
 
 
 def read_scan_metrics_handoff(portal_folder):
-    """Reads whatever metrics prime_sieve_v3.py's write_scan_metrics_handoff() left behind --
-    same handoff file/format as v1/v2, just written by the v3 scanner now."""
-    path = os.path.join(portal_folder, prime_sieve_v3.SCAN_METRICS_FILENAME)
+    """Reads whatever metrics the active scanner's (see SCANNER_VERSION near the top of this
+    file) write_scan_metrics_handoff() left behind -- same handoff file/format as v1/v2,
+    just written by whichever of v3/v4 actually ran."""
+    path = os.path.join(portal_folder, prime_sieve_module.SCAN_METRICS_FILENAME)
     if not os.path.exists(path):
         return {}
     try:
@@ -208,11 +239,11 @@ def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, po
         source_dir = os.path.join(portal_folder, f"10p{base_exponent}", "source_primes")
         for target_idx in range(start_idx, end_idx):
             offset = target_idx * window_m
-            tag = f"10p{base_exponent}_off_{prime_sieve_v3.format_offset(offset)}"
+            tag = f"10p{base_exponent}_off_{prime_sieve_module.format_offset(offset)}"
             path = os.path.join(source_dir, f"PRIME_WINDOW_{tag}.bin")
             if not os.path.exists(path):
                 continue
-            header = prime_sieve_v3.read_prime_window_header(path)
+            header = prime_sieve_module.read_prime_window_header(path)
             total_primes += header["count"]
             windows_found += 1
     else:
@@ -283,8 +314,9 @@ def run_orchestrator(base_exponent=None, window_count=None, start_auto=None, sta
     <window_count>` calls keep working exactly as before.
 
     window_m is how many numbers each target_idx step covers -- threaded from the GUI's
-    "Generation pipeline" field all the way down through here to prime_sieve_v3.py's own
-    CLI. CAUTION: changing this for a floor that already has PRIME_WINDOW_*.bin files written
+    "Generation pipeline" field all the way down through here to the active scanner's (see
+    SCANNER_VERSION near the top of this file) own CLI. CAUTION: changing this for a floor
+    that already has PRIME_WINDOW_*.bin files written
     with a DIFFERENT window_m will make find_auto_start() below compute a wrong/misaligned
     resume point (it reverse-engineers target_idx from each file's stored absolute offset
     using THIS window_m) -- only safe to change for a floor with no existing data yet."""
@@ -303,12 +335,13 @@ def run_orchestrator(base_exponent=None, window_count=None, start_auto=None, sta
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     scanner_path = os.path.join(script_dir, SCRIPT_NAME)
-    # CONSTELLATION_PORTAL_DIR: same override as prime_sieve_v3.py's own BASE_STORAGE_10PN --
-    # see that file's __main__ block for the full rationale. Since this script's own
-    # subprocess (prime_sieve_v3.py, via run_batch() below) inherits this process's
-    # environment by default, setting this once in the launching GUI process propagates all
-    # the way down through this script to prime_sieve_v3.py without needing to also thread
-    # it through as a CLI arg. Falls back to a CONSTELLATION_PORTAL folder next to the
+    # CONSTELLATION_PORTAL_DIR: same override as the active scanner's (SCRIPT_NAME / see
+    # SCANNER_VERSION near the top of this file) own BASE_STORAGE_10PN -- see that file's
+    # __main__ block for the full rationale. Since this script's own subprocess (SCRIPT_NAME,
+    # via run_batch() below) inherits this process's environment by default, setting this once
+    # in the launching GUI process propagates all the way down through this script to the
+    # scanner subprocess without needing to also thread it through as a CLI arg. Falls back
+    # to a CONSTELLATION_PORTAL folder next to the
     # application root (one level up from this script) when the env var isn't set, matching
     # AppSettings.default_storage_path.
     env_override = os.environ.get("CONSTELLATION_PORTAL_DIR")
@@ -317,7 +350,7 @@ def run_orchestrator(base_exponent=None, window_count=None, start_auto=None, sta
                           script_dir, "..", "CONSTELLATION_PORTAL")))
 
     print(f"{'='*60}")
-    print(f"[*] ORCHESTRATOR {VERSION} (shared mmap buffer, atomic OR, via prime_sieve_v3.py) | "
+    print(f"[*] ORCHESTRATOR {VERSION} (shared mmap buffer, atomic OR, via {SCRIPT_NAME}) | "
           f"START: 10^{base_exponent}")
     print(f"[*] {window_count} windows total, in batches of {batch_size}, "
           f"{workers} workers per batch"
