@@ -4341,19 +4341,31 @@ def _build_gui():
                     # QUICK_GEN_MAX_WINDOW_WIDTH-sized chunks past a floor's real, much
                     # smaller domain" bug otherwise.
                     if existing_count >= 1:
-                        rounded_start = 10 ** floor_value
-                        rounded_end = rounded_start + QUICK_GEN_MAX_WINDOW_WIDTH
+                        # Floors 0-6 are ALREADY fully done -- the one-shot low-floor batch
+                        # already ran, whether just now (this click) or in the past --
+                        # there is nothing left to explore down here, EVER (LOW_FLOOR_CUTOFF
+                        # is a fixed, permanently-capped range, not a moving target). Roll
+                        # forward to floor 7 -- the first floor Exploration's real
+                        # target_idx-based, uncapped continuation actually applies to -- and
+                        # fall through to the SAME launch logic below using the request's
+                        # own iterations/width there, instead of just reporting "already in
+                        # storage" and stopping dead. Reported via screenshot: Floor=6
+                        # (already complete, picked by the Auto button) kept reporting
+                        # nothing to do instead of continuing into floor 7+. The Floor field
+                        # itself is updated to show "7" too, so what's displayed matches
+                        # what actually ran, and a follow-up click (blank or typed) starts
+                        # from the right place.
+                        floor_value = LOW_FLOOR_CUTOFF
+                        self.quick_explore_floor_var.set(str(floor_value))
+                        existing_count = find_continuation_target_idx(
+                            PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                    else:
                         self.quick_status_var.set(T(
-                            "quick.status_already_in_storage",
-                            rounded_start=f"{rounded_start:,}", rounded_end=f"{rounded_end:,}",
-                            existing_count=existing_count))
+                            "quick.summary_explore", floor=floor_value, iterations=1,
+                            width_mult=1, iterations_total=f"{QUICK_GEN_MAX_WINDOW_WIDTH:,}",
+                            existing_count=0, added_count=1))
+                        self._apply_loop_params_and_run(floor_value, 1, 1)
                         return
-                    self.quick_status_var.set(T(
-                        "quick.summary_explore", floor=floor_value, iterations=1,
-                        width_mult=1, iterations_total=f"{QUICK_GEN_MAX_WINDOW_WIDTH:,}",
-                        existing_count=0, added_count=1))
-                    self._apply_loop_params_and_run(floor_value, 1, 1)
-                    return
                 self.quick_status_var.set(T(
                     "quick.summary_explore", floor=floor_value, iterations=iterations,
                     width_mult=width_mult, iterations_total=f"{iterations_total:,}",
