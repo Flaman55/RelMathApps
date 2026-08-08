@@ -254,3 +254,37 @@ def delete_extra_files(storage_path, base_exponent, extra_windows, extra_hits):
     if _prune_if_empty(pietro_dir):
         pruned += 1
     return deleted, pruned, errors
+
+
+def prune_empty_pietro_dirs(storage_path):
+    """Full bottom-up sweep over every 10p{N} folder directly under storage_path, removing
+    any directory that has become empty -- source_primes/, constellations/k{K}/variant{V}/,
+    the k{K} dir, constellations/ itself, and finally the 10p{N} floor dir.
+
+    delete_extra_files() above already prunes the specific directories IT touches while
+    deleting files for one step, but only those: a floor can end up with OTHER already-
+    empty leftover directories it never touched (e.g. a constellations/k{K}/variant{V}/
+    leaf that was created at some point but never received a hit file, or was emptied by
+    an earlier, unrelated operation) -- those sit there with nothing in them, but because
+    delete_extra_files() never lists their parent, a non-empty os.listdir() at a level
+    above (constellations/ itself, or the floor dir) blocks its own prune-if-empty check
+    even though the ONLY thing left in it is that other empty directory. Meant to run once,
+    as the very last step of a restore job (after every step's delete_extra_files() has
+    already run), so any such leftover is cleaned up regardless of which specific delete
+    last touched (or never touched) it. Best-effort and idempotent, like the rest of this
+    module -- never raises, safe to call even if storage_path doesn't exist or nothing
+    needs pruning. Only ever touches 10p{N} folders, never storage_path itself or unrelated
+    folders like _backups/. Returns the count of directories actually removed."""
+    if not os.path.isdir(storage_path):
+        return 0
+    removed = 0
+    for name in os.listdir(storage_path):
+        if not (name.startswith("10p") and name[3:].isdigit()):
+            continue
+        pietro_dir = os.path.join(storage_path, name)
+        if not os.path.isdir(pietro_dir):
+            continue
+        for dirpath, _dirnames, _filenames in os.walk(pietro_dir, topdown=False):
+            if _prune_if_empty(dirpath):
+                removed += 1
+    return removed
