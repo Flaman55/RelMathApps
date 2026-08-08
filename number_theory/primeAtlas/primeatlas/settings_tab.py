@@ -447,6 +447,19 @@ class SettingsTab(ttk.Frame):
             self._restore_log(self.T("settings.restore_step_done", base_exponent=step.base_exponent))
         job.mark_step_done(step.base_exponent)
         self._update_restore_progress()
+        if job.status != STATUS_RUNNING:
+            # mark_step_done() flips the job itself to STATUS_COMPLETED the moment the
+            # LAST pending step is marked done (see RestoreJob.mark_step_done()) -- before
+            # _drive_restore() ever gets a chance to notice. _drive_restore()'s own very
+            # first guard bails out on anything other than STATUS_RUNNING, so calling it
+            # here would just no-op silently, leaving _active_job set and the Pause/Resume/
+            # Cancel buttons frozen in whatever state they were in while the job was still
+            # running (this was a real bug: the progress label already says "[completed]",
+            # sourced straight from job.status, while the buttons stayed stuck). Route
+            # through the same finish path _drive_restore() itself uses for the
+            # next_step()-is-None case instead.
+            self._on_restore_job_finished()
+            return
         self._drive_restore()
 
     def _drive_windows_phase(self, step):
