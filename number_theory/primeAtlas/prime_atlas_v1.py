@@ -97,7 +97,9 @@ sys.path.insert(0, os.path.join(_SCRIPT_DIR, "prime_sieve"))
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "constellation"))
 import prime_sieve_v1  # noqa: E402
 import pattern_catalog_v1  # noqa: E402
-from primeatlas import AppSettings, Translator, DEFAULT_LANGUAGE  # noqa: E402
+from primeatlas import (  # noqa: E402
+    AppSettings, Translator, DEFAULT_LANGUAGE, prune_empty_pietro_dirs,
+)
 
 # AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
 # app_settings.py's docstring for the chicken-and-egg reason). Loaded once here, at module
@@ -2496,7 +2498,27 @@ def _build_gui():
             startup and never touched again, so Refresh after a storage-path change in
             Settings could show totals left over from the PREVIOUS location for any
             floor whose number happened to exist in both (see _reload_totals_caches()'s
-            docstring for the full root-cause writeup)."""
+            docstring for the full root-cause writeup).
+
+            Runs prune_empty_pietro_dirs() first, every time -- this used to be a one-off
+            call restore made at the end of its own job, but an empty leftover 10p{N}
+            folder (or a now-empty source_primes/ or constellations/ subdir inside an
+            otherwise-still-populated one) can just as easily result from a manual delete
+            or even a generation run that only ever removed files (never actually true in
+            practice, but the guarantee is cheaper to make unconditional than to reason
+            about per-caller). Reload is the one place EVERY mutating action (restore,
+            generation-finished, constellation-finished, delete) already funnels through
+            before the user sees the tree again, so pruning here covers all of them from
+            a single spot instead of each caller remembering to do it itself.
+
+            Floors that exist on disk but have NO actual PRIME_WINDOW_*.bin files are
+            filtered OUT of the list entirely -- most commonly a 10p{N} folder that
+            prune_empty_pietro_dirs() just above chose to KEEP rather than remove because
+            it still holds a sieving_primes_count_cache.json (see
+            prime_sieve_v4.py's count_sieving_primes_cached()): that cache is worth
+            keeping on disk for whenever the user next generates on that floor, but with
+            no prime data behind it, it has nothing to show under Liczby pierwsze."""
+            prune_empty_pietro_dirs(PORTAL_FOLDER)
             self._reload_totals_caches()
             self.tree.delete(*self.tree.get_children())
             self._pietro_state = {}
@@ -2509,7 +2531,8 @@ def _build_gui():
             # immediately, same responsiveness as the totals worker below.
             self._pietro_gen_seconds = aggregate_write_seconds_by_pietro(
                 read_benchmark_log(PORTAL_FOLDER)[1])
-            pietra = list_pietra(PORTAL_FOLDER)
+            pietra = [be for be in list_pietra(PORTAL_FOLDER)
+                      if list_source_filenames(PORTAL_FOLDER, be)]
             for base_exponent in pietra:
                 # If a previous scan (this session or a past one, via the on-disk cache)
                 # already knows this floor's total, show it immediately -- otherwise leave
@@ -3054,6 +3077,14 @@ def _build_gui():
                                        # reused across searches within this session
 
         def reload_constellations_tree(self):
+            # Same reasoning as reload_primes_tree()'s own call to this -- this tab's own
+            # Refresh button can be clicked without reload_primes_tree() ever running in
+            # the same gesture (e.g. right after constellation-finding finishes -- see
+            # _on_constellation_finished()), so the sweep is repeated here too rather than
+            # relying on the OTHER tree's refresh to have already covered it. Cheap and
+            # idempotent (see prune_empty_pietro_dirs()'s own docstring) -- calling it
+            # twice when both trees do refresh together costs one extra os.listdir() pass.
+            prune_empty_pietro_dirs(PORTAL_FOLDER)
             self.hits_tree.delete(*self.hits_tree.get_children())
             # Only floors that actually HAVE at least one detected constellation hit --
             # list_pietra() alone would include every floor with prime data, regardless of

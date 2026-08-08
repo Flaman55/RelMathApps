@@ -9,7 +9,9 @@ wiring these into actual widgets.
 from .app_settings import AppSettings
 from .manifest import PietroSnapshot, ConstellationSnapshot, BackupManifest
 from .backup_store import BackupStore
-from .restore_job import RestoreJob, RestoreStep, restore_checkpoint_path
+from .restore_job import (
+    RestoreJob, RestoreStep, restore_checkpoint_path, prune_empty_pietro_dirs,
+)
 from .delete_manager import PortalWiper
 from .i18n import Translator, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, LANGUAGE_NAMES
 
@@ -17,7 +19,7 @@ __all__ = [
     "AppSettings",
     "PietroSnapshot", "ConstellationSnapshot", "BackupManifest",
     "BackupStore",
-    "RestoreJob", "RestoreStep", "restore_checkpoint_path",
+    "RestoreJob", "RestoreStep", "restore_checkpoint_path", "prune_empty_pietro_dirs",
     "PortalWiper",
     "Translator", "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "LANGUAGE_NAMES",
 ]

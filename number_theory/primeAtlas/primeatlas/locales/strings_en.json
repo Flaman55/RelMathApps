@@ -213,7 +213,6 @@
   "settings.restore_confirm_delete_extra": "WARNING: storage has more than backup '{name}' -- the files below are NOT in the backup and will be PERMANENTLY DELETED on restore:\n{lines}\nContinue?",
   "settings.restore_extra_deleted": "  10p{base_exponent}: deleted {deleted} extra files.\n",
   "settings.restore_extra_pruned": "  10p{base_exponent}: removed {pruned} empty folders.\n",
-  "settings.restore_final_prune": "Final cleanup: removed {pruned} leftover empty folder(s).\n",
   "settings.restore_extra_delete_errors": "  Errors while deleting extra files:\n",
   "settings.restore_csv_restored": "Restored benchmark_log.csv to the state from backup '{name}' (extra entries are gone, missing ones will reappear as generation runs).\n",
   "settings.restore_confirm": "Start generating missing files for backup '{name}'? This will run the generation pipeline (orchestrator_loop_v2.py) and constellation search in the background, floor by floor.",

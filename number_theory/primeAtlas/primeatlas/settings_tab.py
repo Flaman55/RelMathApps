@@ -55,7 +55,7 @@ from tkinter.scrolledtext import ScrolledText
 from .manifest import PietroSnapshot, ConstellationSnapshot
 from .backup_store import BackupStore
 from .restore_job import (
-    RestoreJob, restore_checkpoint_path, delete_extra_files, prune_empty_pietro_dirs,
+    RestoreJob, restore_checkpoint_path, delete_extra_files,
     STATUS_RUNNING, STATUS_PAUSED,
 )
 from .delete_manager import PortalWiper
@@ -664,19 +664,18 @@ class SettingsTab(ttk.Frame):
 
     def _on_restore_job_finished(self):
         self._restore_log(self.T("settings.restore_job_finished", name=self._active_job.backup_name))
-        # Final full sweep, AFTER every step's own delete_extra_files() has already run --
-        # catches leftover empty directories (e.g. a constellations/k{K}/variant{V}/ leaf
-        # that was never itself "touched" by any single step's delete) that per-step pruning
-        # can miss, leaving a floor's folder behind in the tree with 0 primes/0 files. See
-        # prune_empty_pietro_dirs()'s own docstring for the full reasoning.
-        portal_folder = self.wsl["get_portal_folder"]()
-        pruned = prune_empty_pietro_dirs(portal_folder)
-        if pruned:
-            self._restore_log(self.T("settings.restore_final_prune", pruned=pruned))
         self._active_job = None
         self._update_restore_progress()
         self._update_restore_buttons()
         self._scan_incomplete_restores()
+        # reload_primes_tree()/reload_constellations_tree() below now run the leftover-
+        # empty-directory sweep themselves (prune_empty_pietro_dirs(), see that function's
+        # docstring) on EVERY refresh, not just after a restore -- delete_extra_files() can
+        # leave behind directories it never itself touched (e.g. a constellations/k{K}/
+        # variant{V}/ leaf that had nothing to delete), and restore isn't the only caller
+        # that can leave a floor's folder empty. Was a one-off call made right here; moved
+        # so a manual Refresh, a finished generation run, or a delete-all all get the same
+        # guarantee instead of only restore.
         # Same reasoning as _report_delete_result's own call to these two -- a restore run
         # regenerates/removes real files on disk (source_primes windows, constellation hit
         # files) that the Prime numbers / Constellations tabs had no way to notice on their
