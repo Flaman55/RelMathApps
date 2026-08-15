@@ -2168,6 +2168,21 @@ def _build_gui():
             threading.Thread(target=self._search_worker_loop, daemon=True).start()
             self.after(150, self._poll_search_results)
 
+            # "Generate missing fragment, then re-search" state -- set by
+            # _offer_generate_missing_prime_window()/_offer_generate_missing_constellation()
+            # right before launching a generation run in response to a search miss, and
+            # consumed (cleared + the original search re-run) by _on_loop_finished() /
+            # _on_constellation_finished() respectively once that SPECIFIC run's exit
+            # sentinel arrives. Two separate slots because a missing prime window and
+            # missing constellation hits are fixed by two DIFFERENT runners/queues (see
+            # those methods' own docstrings) -- a "const" search miss can end up setting
+            # the prime-window slot first (if the window itself was missing) and the
+            # constellation slot on a LATER re-search (if the window existed but hits for
+            # the floor never did) -- never both at once, since each offer only fires
+            # after the previous generation's re-search has already come back.
+            self._pending_search_after_prime_gen = None
+            self._pending_search_after_const_gen = None
+
             self.reload_primes_tree()  # this ALSO kicks off the floor-totals scan for every
                                         # floor -- see reload_primes_tree()'s docstring
             self.reload_constellations_tree()
@@ -2769,13 +2784,28 @@ def _build_gui():
                 return
             number = int(raw)
             base_exponent = digit_count_floor(number)
-            if base_exponent not in list_pietra(PORTAL_FOLDER):
-                messagebox.showinfo(
-                    T("common.dialog_search_title"),
-                    T("common.no_floor", base_exponent=base_exponent, digits=len(raw)))
-                return
             if self._search_busy:
                 messagebox.showinfo(T("common.dialog_search_title"), T("common.search_already_running"))
+                return
+            if base_exponent not in list_pietra(PORTAL_FOLDER):
+                # No floor 10p{base_exponent} at all yet -- the SAME "this number's storage
+                # fragment doesn't exist" situation _on_prime_search_result() handles for an
+                # existing-but-incomplete floor, just at the whole-floor scale (existing_count
+                # is naturally 0 for a floor with zero windows -- see
+                # find_continuation_target_idx()'s own docstring). Route it through the exact
+                # same offer instead of a dead-end "no floor" message: there's nothing this
+                # dialog told the user that generating the fragment doesn't already cover.
+                outcome = self._offer_generate_missing_prime_window("prime", base_exponent, number)
+                if outcome == "launched":
+                    return
+                if outcome == "composite":
+                    messagebox.showinfo(
+                        T("common.dialog_search_title"),
+                        T("primes.confirmed_composite", number=number, base_exponent=base_exponent))
+                    return
+                messagebox.showinfo(
+                    T("common.dialog_search_title"),
+                    T("primes.not_found", number=number, base_exponent=base_exponent))
                 return
             self._start_search_job("prime", base_exponent, number)
 
@@ -2785,6 +2815,14 @@ def _build_gui():
             find_prime_in_floor(), now driven by _poll_search_results() once the worker
             thread hands the (plain-data, no tkinter involved) result back."""
             if result is None:
+                outcome = self._offer_generate_missing_prime_window("prime", base_exponent, number)
+                if outcome == "launched":
+                    return
+                if outcome == "composite":
+                    messagebox.showinfo(
+                        T("common.dialog_search_title"),
+                        T("primes.confirmed_composite", number=number, base_exponent=base_exponent))
+                    return
                 messagebox.showinfo(
                     T("common.dialog_search_title"),
                     T("primes.not_found", number=number, base_exponent=base_exponent))
@@ -2896,6 +2934,111 @@ def _build_gui():
             # _on_pietro_total_ready's grand-total completion branch -- a bar left sitting
             # full/mid-way reads as "still busy" even though nothing is running.
             self.totals_progress.configure(mode="determinate", maximum=1, value=0)
+
+        def _offer_generate_missing_prime_window(self, kind, base_exponent, number):
+            """Called from _on_prime_search_result()/_on_const_search_result() the moment
+            find_prime_in_floor() comes back empty -- which, on its own, is ambiguous:
+            either `number` really is composite, OR the window that would COVER it was
+            simply never generated (the floor folder exists -- that's checked earlier, in
+            _search_prime()/_search_constellation() -- but this specific fragment inside
+            it doesn't). _quick_gen_plan_literal_range(number, number + 1) is the exact
+            same "is this literal point already on disk" check Range/Floor mode already
+            use (see that method's own docstring) -- reused here unchanged rather than
+            re-deriving the on-disk-coverage logic a second time.
+
+            Returns one of three strings, so the caller can pick the right final message
+            instead of a single generic "not found" for every case:
+              "launched"  -- a generation run was actually started; the caller should show
+                              NOTHING yet -- _on_loop_finished() re-runs the search once the
+                              run completes and THAT result decides the final message.
+              "composite" -- plan says "already": the window covering `number` DOES exist
+                              on disk, find_prime_in_floor() already searched it and came up
+                              empty, so this isn't a data gap at all -- `number` is
+                              CONFIRMED composite. The caller should say so plainly instead
+                              of the generic "not found in storage" wording, which exists
+                              specifically for the ambiguous case this ISN'T.
+              "skipped"   -- still ambiguous: either a generation run is already in flight
+                              (an error dialog was already shown here, via the same
+                              T("quick.error_already_running") message the Quick-gen panel
+                              itself uses for the identical situation) or the user declined
+                              the confirmation prompt. The caller should fall back to the
+                              generic "not found in storage" wording -- true either way,
+                              since the fragment genuinely isn't on disk.
+
+            LAUNCH ENGINE: deliberately _apply_primesieve_params_and_run(), NOT
+            _apply_loop_params_and_run() (v4's own batch engine) -- window_count_per_run
+            from _quick_gen_plan_literal_range() is measured relative to
+            find_continuation_target_idx()'s CONTINUATION point (existing_count), which is
+            exactly right for Range/Floor mode (a person deliberately filling a range they
+            want whole), but wrong here: a number searched deep into an otherwise-empty
+            floor would silently turn into a request to backfill EVERY window from index 0
+            up to it first, because orchestrator_loop_v2.py/v4's engine has no notion of
+            "start at an arbitrary target_idx" -- it only ever continues from wherever a
+            floor's storage currently ends (see build_loop_argv()'s own CLI, which has no
+            target_idx_start position at all). One real run hit exactly this: floor 11,
+            nothing on disk yet, searched a number landing at target_idx ~30000 -> a
+            30,001-window batch instead of the single window actually needed.
+            build_primesieve_argv()'s script (prime_sieve_primesieve.py) takes
+            target_idx_start explicitly and has no continuation requirement -- it writes
+            just the ONE window asked for, gaps before it and all, which is exactly what a
+            single-number check needs (see that function's own docstring)."""
+            plan = self._quick_gen_plan_literal_range(number, number + 1)
+            if plan.get("error"):
+                return "skipped"
+            if plan.get("already"):
+                return "composite"
+            if self._loop_runner is not None and self._loop_runner.is_running():
+                messagebox.showinfo(T("quick.dialog_title"), T("quick.error_already_running"))
+                return "skipped"
+            if not messagebox.askyesno(
+                    T("common.dialog_search_title"),
+                    T("search.offer_generate_prime_window", number=f"{number:,}",
+                      base_exponent=base_exponent,
+                      rounded_start=f"{plan['rounded_start']:,}",
+                      rounded_end=f"{plan['rounded_end']:,}")):
+                return "skipped"
+            self._pending_search_after_prime_gen = {
+                "kind": kind, "base_exponent": base_exponent, "number": number}
+            self.status.set(T("search.status_generating_prime_window", number=f"{number:,}"))
+            target_idx = (plan["rounded_start"] - 10 ** plan["floor"]) // QUICK_GEN_MAX_WINDOW_WIDTH
+            self._apply_primesieve_params_and_run(plan["floor"], target_idx, 1)
+            return "launched"
+
+        def _offer_generate_missing_constellation(self, base_exponent, number):
+            """Called from _on_const_search_result() when `number` IS a confirmed prime
+            (its window exists and find_prime_in_floor() found it) but
+            find_constellation_participation() came back with zero matches -- also
+            ambiguous on its own: either this number genuinely isn't the base/offset-
+            member of any tracked pattern at this floor, OR constellation_finder_v1.py
+            has simply never been run for floor 10p{base_exponent} at all, so there's
+            nothing recorded to match against either way. list_constellation_hits()
+            returning an empty list (no hit FILES at all for this floor, for any pattern
+            in the catalog -- not "hit files exist but are all empty") is what
+            distinguishes the second case from genuine non-participation; the caller
+            checks that before calling this.
+
+            Same True/False launched-or-not contract this file uses elsewhere for a single
+            generation offer (simpler than _offer_generate_missing_prime_window()'s 3-way
+            "launched"/"composite"/"skipped" string, since there's no equivalent of
+            "composite" here -- an empty hit-file list is ALWAYS ambiguous, never a
+            confirmed answer, so there's nothing finer to distinguish), but
+            drives constellation_finder_v1.py's own runner/queue (self._const_runner) via
+            _on_run_constellation()'s exact launch path instead of the prime-window one --
+            see _on_constellation_finished() for the completion/re-search side."""
+            if self._const_runner is not None and self._const_runner.is_running():
+                messagebox.showinfo(T("quick.dialog_title"), T("quick.error_already_running"))
+                return False
+            if not messagebox.askyesno(
+                    T("common.dialog_search_title"),
+                    T("search.offer_generate_constellation", number=f"{number:,}",
+                      base_exponent=base_exponent)):
+                return False
+            self._pending_search_after_const_gen = {
+                "kind": "const", "base_exponent": base_exponent, "number": number}
+            self.status.set(T("search.status_generating_constellation", base_exponent=base_exponent))
+            self._const_base_exponent_var.set(str(base_exponent))
+            self._on_run_constellation()
+            return True
 
         def _select_primes_file_in_tree(self, base_exponent, filename):
             pietro_item = None
@@ -3333,18 +3476,38 @@ def _build_gui():
                 return
             number = int(raw)
             base_exponent = digit_count_floor(number)
-            if base_exponent not in list_pietra(PORTAL_FOLDER):
-                messagebox.showinfo(
-                    T("common.dialog_search_title"),
-                    T("common.no_floor", base_exponent=base_exponent, digits=len(raw)))
-                return
             if self._search_busy:
                 messagebox.showinfo(T("common.dialog_search_title"), T("common.search_already_running"))
+                return
+            if base_exponent not in list_pietra(PORTAL_FOLDER):
+                # No floor 10p{base_exponent} at all yet -- see _search_prime()'s identical
+                # branch for the full reasoning; offering "const" here (not "prime") means
+                # the prime window gets generated first, and the re-search that follows
+                # (_on_loop_finished()) runs the FULL const search, which can itself go on
+                # to offer generating constellation hits too if THAT'S also still missing.
+                outcome = self._offer_generate_missing_prime_window("const", base_exponent, number)
+                if outcome != "launched":
+                    self._show_const_prime_missing_result(base_exponent, number, outcome)
                 return
 
             self.search_results_list.delete(0, "end")
             self._search_results_data = []
             self._start_search_job("const", base_exponent, number)
+
+        def _show_const_prime_missing_result(self, base_exponent, number, outcome):
+            """Shared by _search_constellation()'s no-floor branch and
+            _on_const_search_result()'s prime_result-is-None branch -- both reach here only
+            when _offer_generate_missing_prime_window() did NOT launch a generation run
+            ("composite" or "skipped", see that method's own docstring), so there's a
+            Constellations-tab result to show right now rather than waiting on a re-search."""
+            if outcome == "composite":
+                self.hits_detail_text.set(
+                    T("const.confirmed_composite_detail", number=number, base_exponent=base_exponent))
+            else:
+                self.hits_detail_text.set(
+                    T("const.not_found_detail", number=number, base_exponent=base_exponent))
+            self._reset_hits_preview_state()
+            self.hits_load_preview_btn.configure(state="disabled")
 
         def _on_const_search_result(self, base_exponent, number, prime_result, participation):
             """Main-thread completion handler for a "const" search job -- same UI update
@@ -3353,16 +3516,21 @@ def _build_gui():
             _poll_search_results() once the worker thread hands the (plain-data) results
             back."""
             if prime_result is None:
-                self.hits_detail_text.set(
-                    T("const.not_found_detail", number=number, base_exponent=base_exponent)
-                )
-                self._reset_hits_preview_state()
-                self.hits_load_preview_btn.configure(state="disabled")
+                outcome = self._offer_generate_missing_prime_window("const", base_exponent, number)
+                if outcome != "launched":
+                    self._show_const_prime_missing_result(base_exponent, number, outcome)
                 return
 
             lines = [T("const.number_line", number=number),
                      T("const.found_in", name=prime_result['name'], base_exponent=base_exponent), ""]
             if not participation:
+                # Empty result is genuinely ambiguous -- see
+                # _offer_generate_missing_constellation()'s own docstring: no hit FILES at
+                # all for this floor means constellation_finder_v1.py simply never ran
+                # here, not that this specific number was checked and excluded.
+                if (not list_constellation_hits(PORTAL_FOLDER, base_exponent)
+                        and self._offer_generate_missing_constellation(base_exponent, number)):
+                    return
                 lines.append(T("const.no_participation"))
             else:
                 lines.append(T("const.participation_intro", count=len(participation)))
@@ -4599,6 +4767,17 @@ def _build_gui():
                 panel["generate_btn"].configure(text=T("quick.generate_button"))
             self.reload_primes_tree()
 
+            # A search-triggered "generate the missing window" run (see
+            # _offer_generate_missing_prime_window()) just finished -- re-run the SAME
+            # search now that the fragment should be on disk. Runs regardless of the
+            # exit code: a failed/stopped run just means the re-search comes back empty
+            # again, same as any other genuinely-not-found case, rather than needing a
+            # separate error path here.
+            if self._pending_search_after_prime_gen is not None:
+                pending = self._pending_search_after_prime_gen
+                self._pending_search_after_prime_gen = None
+                self._start_search_job(pending["kind"], pending["base_exponent"], pending["number"])
+
         def _poll_loop_output(self):
             self._drain_output_queue(self._loop_output_queue, self.loop_console,
                                       self.loop_run_btn, self.loop_stop_btn, self.loop_status_label,
@@ -4646,6 +4825,15 @@ def _build_gui():
             the Quick-gen 'Generate'/'Stop' one _on_loop_finished handles), so this is
             otherwise a much shorter version of that method."""
             self.reload_constellations_tree()
+
+            # Mirrors _on_loop_finished()'s pending-search re-run, for a search-triggered
+            # "run constellation_finder for this floor" instead (see
+            # _offer_generate_missing_constellation()) -- see that method's own docstring
+            # for why this is a SEPARATE slot from the prime-window one.
+            if self._pending_search_after_const_gen is not None:
+                pending = self._pending_search_after_const_gen
+                self._pending_search_after_const_gen = None
+                self._start_search_job(pending["kind"], pending["base_exponent"], pending["number"])
 
         def _poll_constellation_output(self):
             self._drain_output_queue(self._const_output_queue, self.const_console,
