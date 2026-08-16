@@ -139,7 +139,7 @@
   "search.offer_generate_prime_window": "{number} falls in a single window of floor 10p{base_exponent} that hasn't been generated yet: {rounded_start} -- {rounded_end}. Generate just that one window now and check again?",
   "primes.confirmed_composite": "{number} is composite -- the window of floor 10p{base_exponent} covering it is already in storage, and it still isn't among the recorded primes.",
   "search.status_generating_prime_window": "[*] Generating the missing storage fragment for {number}, will re-check afterward...",
-  "search.offer_generate_constellation": "{number} is a confirmed prime in floor 10p{base_exponent}, but constellation search was never run for that floor. Run constellation_finder for 10p{base_exponent} now and check again?",
+  "search.offer_generate_constellation": "{number} is a confirmed prime in floor 10p{base_exponent}, but no constellation hits are recorded there (the floor may be unscanned, or hold newer windows added since the last scan). Run constellation search for 10p{base_exponent} now and check again?",
   "search.status_generating_constellation": "[*] Running constellation search for 10p{base_exponent}, will re-check afterward...",
   "primes.header_detail": "Base prime : {base_prime}\nPrime count: {count}\nGenerated  : {generated}",
   "primes.header_error": "{path}\n\n[!] Could not read header (corrupt/truncated file?)",

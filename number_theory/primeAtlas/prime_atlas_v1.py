@@ -1408,18 +1408,33 @@ def digit_count_floor(number):
 
 def _eval_quick_number(raw):
     """Best-effort parse of a Python-expression-style number (e.g. "10**5") -- shared by
-    every numeric field in the Quick generation panel. Returns an int, or None if
+    every numeric field in this app (Quick generation panel, primesieve calculator,
+    Testy pierwszosci, Kalkulator konstelacji, ...). Returns an int, or None if
     `raw` is blank/unparseable; callers
     treat None as "no value given" rather than raising, e.g. to decide whether the
     Floor field should be auto-computed or left for manual entry (see
     _on_quick_floor_start_changed). Restricted eval (no builtins) -- this is a personal
     desktop tool, not a network-facing service, but there's no reason to allow arbitrary
-    code execution just to parse a number typed into a text field."""
+    code execution just to parse a number typed into a text field.
+
+    Strips every whitespace character (regular, non-breaking \\xa0, narrow no-break
+    \\u202f -- all match Python's Unicode-aware \\s -- covers a number pasted straight out
+    of a web page or spreadsheet) and every comma before evaluating, so a
+    thousands-grouped number copied from elsewhere parses as a single int regardless of
+    which grouping convention the source used: "23 081 664 151" (space every 3 digits)
+    and "23,081,664,151" (comma) both become 23081664151. Safe for this field's actual
+    purpose (one integer, or a simple arithmetic expression like "10**5+3") -- Python's
+    own expression syntax never needs either character, and a comma left in place would
+    otherwise build a tuple (rejected by the int() call below) instead of the single
+    number this field is for."""
     raw = (raw or "").strip()
     if not raw:
         return None
+    cleaned = re.sub(r"[\s,]", "", raw)
+    if not cleaned:
+        return None
     try:
-        return int(eval(raw, {"__builtins__": {}}, {}))
+        return int(eval(cleaned, {"__builtins__": {}}, {}))
     except Exception:
         return None
 
@@ -3913,17 +3928,31 @@ def _build_gui():
             return "launched"
 
         def _offer_generate_missing_constellation(self, base_exponent, number):
-            """Called from _on_const_search_result() when `number` IS a confirmed prime
+            """Two callers: _on_const_search_result(), when `number` IS a confirmed prime
             (its window exists and find_prime_in_floor() found it) but
-            find_constellation_participation() came back with zero matches -- also
-            ambiguous on its own: either this number genuinely isn't the base/offset-
-            member of any tracked pattern at this floor, OR constellation_finder_v1.py
-            has simply never been run for floor 10p{base_exponent} at all, so there's
-            nothing recorded to match against either way. list_constellation_hits()
+            find_constellation_participation() came back with zero matches -- ambiguous
+            on its own: either this number genuinely isn't the base/offset-member of any
+            tracked pattern at this floor, OR constellation_finder_v1.py has simply never
+            been run for floor 10p{base_exponent} at all, so there's nothing recorded to
+            match against either way. That caller checks list_constellation_hits()
             returning an empty list (no hit FILES at all for this floor, for any pattern
-            in the catalog -- not "hit files exist but are all empty") is what
-            distinguishes the second case from genuine non-participation; the caller
-            checks that before calling this.
+            in the catalog) first, to distinguish the second case from genuine
+            non-participation, before calling this.
+
+            The second caller, _on_const_calc_search_selected() (Kalkulator konstelacji),
+            checks something more specific instead: whether the ONE pattern it's asking
+            about has a hit file yet, regardless of whether other patterns already do --
+            list_constellation_hits()'s "nothing at all" check would stay silent in
+            that case even though this exact pattern was never confirmed either way
+            (see that method's own docstring for why the coarser check isn't enough
+            there). Either way, once this actually launches, process_floor() itself is
+            what decides whether there's genuinely new work to do (it only re-scans
+            windows past its own per-floor checkpoint -- a floor already fully
+            checkpointed under the current catalog just reports "nothing new" and
+            reconfirms the same non-participation result, harmless either way).
+            search.offer_generate_constellation's own wording is deliberately scenario-
+            agnostic ("no hits recorded", not "never ran") so it reads correctly from
+            both callers.
 
             Same True/False launched-or-not contract this file uses elsewhere for a single
             generation offer (simpler than _offer_generate_missing_prime_window()'s 3-way
@@ -4035,6 +4064,10 @@ def _build_gui():
             built from the user's OWN storage, exportable to PDF+CSV)."""
             sub = ttk.Notebook(self.constellations_tab)
             sub.pack(fill="both", expand=True)
+            # Saved for the same reason as self.primes_sub_notebook -- the constellation
+            # calculator's Search button needs to switch to THIS sub-notebook's own
+            # Magazyn tab (not just the top-level Constellations tab).
+            self.constellations_sub_notebook = sub
             self.constellations_storage_tab = ttk.Frame(sub)
             self.constellations_calculator_tab = ttk.Frame(sub)
             self.constellations_records_tab = ttk.Frame(sub)
@@ -4053,20 +4086,42 @@ def _build_gui():
             results table (not yet checked for primality; this is pure arithmetic, no
             file I/O, so it's instant even for a large exp).
 
-            The Search button does NOT re-implement search or the missing-fragment offer
-            itself -- it reuses the EXISTING "Prime numbers" search box (self.search_entry
-            / self._search_prime(), see _on_const_calc_search_selected()) against
-            whichever row is currently selected. Searching all k numbers automatically in
-            one click was considered (matching the literal "one button searches every
-            number" framing this feature was requested with) but rejected: that search
-            path already has its own async worker-thread + generate-offer-dialog state
-            machine (self._search_busy, self._pending_search_after_prime_gen -- see
-            _offer_generate_missing_prime_window()'s own docstring), and chaining K of
-            those end-to-end would mean either blocking synchronously (defeating the
-            point of the worker thread) or bolting a second layer of completion-callback
-            state onto an already-intricate flow. One-row-at-a-time keeps every existing
-            code path untouched and lets the user see each result (or generate-offer
-            dialog) before deciding whether to search the next number."""
+            The Search button does NOT re-implement search itself -- it reuses the
+            EXISTING "Constellations -> Magazyn" search box (self.hits_search_entry /
+            self._search_constellation(), see _on_const_calc_search_selected()) against
+            whichever row is currently selected, since that search already covers BOTH
+            things the calculator needs to verify: is this number prime at all (offering
+            to generate the missing prime window if not -- see
+            _offer_generate_missing_prime_window()) AND does it actually participate in
+            a tracked constellation pattern (offering to run constellation_finder_v1.py
+            if the floor has genuinely never been scanned -- see
+            _offer_generate_missing_constellation()). Searching all k numbers
+            automatically in one click was considered (matching the literal "one button
+            searches every number" framing this feature was requested with) but
+            rejected: that search path already has its own async worker-thread +
+            generate-offer-dialog state machine, and chaining K of those end-to-end
+            would mean either blocking synchronously (defeating the point of the worker
+            thread) or bolting a second layer of completion-callback state onto an
+            already-intricate flow. One-row-at-a-time keeps every existing code path
+            untouched and lets the user see each result (or generate-offer dialog)
+            before deciding whether to search the next number.
+
+            _on_const_calc_search_selected() ALSO does one thing beyond a plain
+            self._search_constellation() call: since the calculator already knows
+            EXACTLY which catalog pattern (k, variant id) this number was computed for
+            (unlike the generic search box, which has no target pattern in mind), it (1)
+            proactively checks whether THAT SPECIFIC pattern already has a hit file for
+            this floor -- list_constellation_hits() empty-floor check the generic search
+            box relies on (see _on_const_search_result()) stays silent whenever the
+            floor already has hits for some OTHER pattern, which is exactly the gap a
+            calculator search into an already-partially-scanned floor would otherwise
+            fall into -- and offers to generate if not; and (2), once the search
+            actually completes, auto-navigates the Magazyn tree straight to that
+            specific (k, variant) node and jumps the preview to this exact number (see
+            _select_hits_pattern_in_tree()/_jump_hits_preview_to_row(), the same helpers
+            double-clicking a search result row already uses) instead of leaving the
+            user to find it themselves among however many patterns the participation
+            list turned up."""
             container = ttk.Frame(self.constellations_calculator_tab)
             container.pack(fill="both", expand=True, padx=12, pady=12)
 
@@ -4126,6 +4181,16 @@ def _build_gui():
             self.const_calc_search_button.pack(anchor="w")
 
             self._const_calc_numbers = []  # [(offset, number), ...], same order as the tree
+            self._const_calc_active_pattern = None  # the exact pattern dict last used by
+                                                      # _on_const_calc_compute() -- read by
+                                                      # _on_const_calc_search_selected() so a
+                                                      # variant-combo change AFTER computing
+                                                      # doesn't retroactively change what a
+                                                      # search believes it's looking for
+            self._const_calc_pending = None  # {"base_exponent", "number", "pattern"} while
+                                              # a calculator-initiated search is in flight --
+                                              # consumed by _on_const_search_result() to
+                                              # auto-navigate to the right variant once done
             if self._const_calc_k_values:
                 self.const_calc_k_combo.current(0)
                 self._on_const_calc_k_changed()
@@ -4166,7 +4231,8 @@ def _build_gui():
                 messagebox.showerror(
                     T("const_calc.error_dialog_title"), T("const_calc.error_no_pattern"))
                 return
-            offsets = self._const_calc_variants[idx]["offsets"]
+            pattern = self._const_calc_variants[idx]
+            offsets = pattern["offsets"]
             exp = _eval_quick_number(self.const_calc_exp_entry.get())
             if exp is None or exp < 0:
                 messagebox.showerror(
@@ -4179,6 +4245,7 @@ def _build_gui():
                     T("const_calc.error_dialog_title"), T("const_calc.error_offset_invalid"))
                 return
             n0 = 10 ** exp + base_offset
+            self._const_calc_active_pattern = pattern
             self._const_calc_numbers = [(d, n0 + d) for d in offsets]
             self.const_calc_results_tree.delete(*self.const_calc_results_tree.get_children())
             for d, n in self._const_calc_numbers:
@@ -4193,14 +4260,48 @@ def _build_gui():
                     T("const_calc.error_dialog_title"), T("const_calc.error_select_row_first"))
                 return
             idx = self.const_calc_results_tree.index(sel[0])
-            if idx < 0 or idx >= len(self._const_calc_numbers):
+            if (idx < 0 or idx >= len(self._const_calc_numbers)
+                    or self._const_calc_active_pattern is None):
                 return
             _offset, number = self._const_calc_numbers[idx]
-            self.main_notebook.select(self.primes_tab)
-            self.primes_sub_notebook.select(self.primes_storage_tab)
-            self.search_entry.delete(0, "end")
-            self.search_entry.insert(0, str(number))
-            self._search_prime()
+            pattern = self._const_calc_active_pattern
+            base_exponent = digit_count_floor(number)
+
+            # Switch to Constellations -> Magazyn up front, before any dialog fires, so
+            # generate-offer confirmations and the eventual result both land where the
+            # user is already looking rather than behind the still-visible calculator tab.
+            self.main_notebook.select(self.constellations_tab)
+            self.constellations_sub_notebook.select(self.constellations_storage_tab)
+            self.hits_search_entry.delete(0, "end")
+            self.hits_search_entry.insert(0, str(number))
+
+            self._const_calc_pending = {
+                "base_exponent": base_exponent, "number": number, "pattern": pattern}
+
+            if base_exponent in list_pietra(PORTAL_FOLDER):
+                # Floor exists -- but has constellation_finder_v1.py ever recorded hits
+                # for THIS SPECIFIC pattern here? _on_const_search_result()'s own
+                # "offer to generate" check only fires when list_constellation_hits()
+                # is empty -- i.e. NOTHING has ever been scanned for this floor -- which
+                # silently stays quiet whenever the floor already has hits for some
+                # OTHER pattern (e.g. the user already ran the finder here for twin
+                # primes). That's the right level of caution for the generic search box
+                # (it has no specific pattern in mind, so "maybe check everything" isn't
+                # a well-defined offer), but the calculator DOES know exactly which
+                # pattern it's asking about, so it can check precisely instead of
+                # guessing -- closing the gap reported after searching a calculator
+                # number into a floor that had unrelated constellation hits already.
+                has_this_pattern = any(
+                    p["id"] == pattern["id"]
+                    for p, _path, _hdr in list_constellation_hits(PORTAL_FOLDER, base_exponent)
+                    if p["k"] == pattern["k"])
+                if not has_this_pattern and self._offer_generate_missing_constellation(
+                        base_exponent, number):
+                    return  # generation launched -- _on_constellation_finished() re-runs
+                            # the const search once it's done, landing back in
+                            # _on_const_search_result() with self._const_calc_pending
+                            # still set, same as every other path below
+            self._search_constellation()
 
         def _build_constellations_records_tab(self):
             """pzktupel.de-style exp x variant records table, but scanning THIS PROJECT'S
@@ -4833,10 +4934,30 @@ def _build_gui():
             _search_constellation() used to do synchronously right after calling
             find_prime_in_floor()/find_constellation_participation(), now driven by
             _poll_search_results() once the worker thread hands the (plain-data) results
-            back."""
+            back.
+
+            calc_pending/calc_match: when this completion is for a search the
+            constellation calculator itself kicked off (self._const_calc_pending set by
+            _on_const_calc_search_selected()), and this call is the one that actually
+            reaches a final answer (not a "launched a generation run, wait for the
+            re-search" detour), the matching pattern's node gets auto-selected in the
+            Magazyn tree and the preview jumped straight to this number -- see the tail
+            of this method. calc_pending is only ever CLEARED on a genuinely final
+            outcome (declined/composite/no-participation/found) so it survives across
+            however many generate-then-re-search hops a single calculator search needs;
+            comparing against `calc_pending` (the LOCAL copy captured at entry) rather
+            than re-reading self._const_calc_pending after clearing it keeps the
+            match/pattern lookup valid even after the instance attribute is gone."""
+            calc_pending = self._const_calc_pending
+            calc_match = (calc_pending is not None
+                          and calc_pending["base_exponent"] == base_exponent
+                          and calc_pending["number"] == number)
+
             if prime_result is None:
                 outcome = self._offer_generate_missing_prime_window("const", base_exponent, number)
                 if outcome != "launched":
+                    if calc_match:
+                        self._const_calc_pending = None
                     self._show_const_prime_missing_result(base_exponent, number, outcome)
                 return
 
@@ -4850,8 +4971,12 @@ def _build_gui():
                 if (not list_constellation_hits(PORTAL_FOLDER, base_exponent)
                         and self._offer_generate_missing_constellation(base_exponent, number)):
                     return
+                if calc_match:
+                    self._const_calc_pending = None
                 lines.append(T("const.no_participation"))
             else:
+                if calc_match:
+                    self._const_calc_pending = None
                 lines.append(T("const.participation_intro", count=len(participation)))
                 for rec in sorted(participation, key=lambda r: (r["pattern"]["k"], r["pattern"]["id"])):
                     pattern = rec["pattern"]
@@ -4882,6 +5007,22 @@ def _build_gui():
             self._selected_hit_pattern = None
             self.hits_load_preview_btn.configure(state="disabled")
             self.status.set(T("const.status_search", number=number, count=len(participation)))
+
+            if calc_match and participation:
+                # Jump straight to the SPECIFIC (k, variant) node the calculator computed
+                # this number for -- same helpers _on_search_result_activate() uses for a
+                # double-clicked result row, just triggered automatically instead of
+                # requiring that extra click. If the number happens to ALSO participate in
+                # some other pattern (shown in the results list either way), this still
+                # lands on the one the user actually asked about.
+                match = next(
+                    (rec for rec in participation
+                     if rec["pattern"]["k"] == calc_pending["pattern"]["k"]
+                     and rec["pattern"]["id"] == calc_pending["pattern"]["id"]), None)
+                if match is not None:
+                    self._select_hits_pattern_in_tree(base_exponent, calc_pending["pattern"])
+                    self._load_hits_preview()
+                    self._jump_hits_preview_to_row(match["base"], match["position"])
 
         # --- Tab 3: Generation (launch orchestrator_loop_v2 / constellation_finder) --
 

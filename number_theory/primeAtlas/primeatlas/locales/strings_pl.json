@@ -139,7 +139,7 @@
   "search.offer_generate_prime_window": "Liczba {number} znajduje się w jednym oknie piętra 10p{base_exponent}, które nie zostało jeszcze wygenerowane: {rounded_start} -- {rounded_end}. Wygenerować tylko to jedno okno teraz i sprawdzić ponownie?",
   "primes.confirmed_composite": "Liczba {number} jest liczbą złożoną -- okno piętra 10p{base_exponent} obejmujące tę liczbę jest już w magazynie, a mimo to nie ma jej wśród zapisanych liczb pierwszych.",
   "search.status_generating_prime_window": "[*] Generuję brakujący fragment magazynu dla {number}, potem sprawdzę ponownie...",
-  "search.offer_generate_constellation": "Liczba {number} jest liczbą pierwszą w piętrze 10p{base_exponent}, ale wyszukiwanie konstelacji nigdy nie zostało uruchomione dla tego piętra. Uruchomić teraz constellation_finder dla 10p{base_exponent} i sprawdzić ponownie?",
+  "search.offer_generate_constellation": "Liczba {number} jest liczbą pierwszą w piętrze 10p{base_exponent}, ale nie ma tam zarejestrowanych trafień konstelacji (piętro może być nieprzeskanowane, albo zawierać nowsze okna od ostatniego skanowania). Uruchomić teraz wyszukiwanie konstelacji dla 10p{base_exponent} i sprawdzić ponownie?",
   "search.status_generating_constellation": "[*] Uruchamiam wyszukiwanie konstelacji dla 10p{base_exponent}, potem sprawdzę ponownie...",
   "primes.header_detail": "Liczba bazowa : {base_prime}\nLiczba pierwszych: {count}\nWygenerowano  : {generated}",
   "primes.header_error": "{path}\n\n[!] Nie można odczytać nagłówka (plik uszkodzony/obcięty?)",
