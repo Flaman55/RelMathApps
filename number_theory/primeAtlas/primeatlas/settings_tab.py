@@ -98,9 +98,19 @@ class SettingsTab(ttk.Frame):
         self._given_up_hits = set()
         self._incomplete_jobs = []
 
+        # Optional-library installer (Faza 2b) -- sympy, used by the Testy pierwszosci
+        # tab's factorize() for a faster/more complete result when installed (see
+        # primeatlas/primality.py's own docstring). _libs_runner/_libs_queue mirror the
+        # restore driver's _restore_runner/_restore_queue shape one-for-one, but drive a
+        # single local (non-WSL) `pip install` subprocess instead.
+        self._libs_install_running = False
+        self._libs_runner = None
+        self._libs_queue = None
+
         self._build_widgets()
         self._refresh_backup_list()
         self._scan_incomplete_restores()
+        self._refresh_libs_status()
 
     # ---- language -----------------------------------------------------------------------
 
@@ -809,6 +819,70 @@ class SettingsTab(ttk.Frame):
         self.wsl["reload_primes_tree"]()
         self.wsl["reload_constellations_tree"]()
 
+    # ---- optional libraries (sympy installer, Faza 2b) -----------------------------------
+
+    def _refresh_libs_status(self):
+        """Re-checks whether sympy is importable RIGHT NOW in this same Python
+        environment (try_import_sympy() never caches a failed import -- see that
+        function's own docstring), not just after an install finishes -- also called at
+        tab-construction time so the label is correct even if sympy was already present
+        (installed manually, or by a previous session's install here)."""
+        installed = self.wsl["try_import_sympy"]() is not None
+        self.libs_status_var.set(self.T(
+            "settings.libs_sympy_installed" if installed else "settings.libs_sympy_missing"))
+        self.install_sympy_btn.configure(
+            state="disabled" if (installed or self._libs_install_running) else "normal")
+
+    def _on_check_libs_status(self):
+        self._refresh_libs_status()
+
+    def _on_install_sympy(self):
+        if self._libs_install_running:
+            return
+        argv = self.wsl["build_pip_install_argv"]("sympy")
+        q = queue.Queue()
+        runner = self.wsl["LocalLoggedRunner"](argv, q)
+        self._libs_runner = runner
+        self._libs_queue = q
+        self._libs_install_running = True
+        self.install_sympy_btn.configure(state="disabled")
+        self._libs_log(self.T("settings.libs_install_starting", package="sympy") + "\n")
+        runner.start()
+        self._poll_libs_queue()
+
+    def _poll_libs_queue(self):
+        try:
+            while True:
+                item = self._libs_queue.get_nowait()
+                if isinstance(item, tuple) and item and item[0] == "__exit__":
+                    code = item[1]
+                    self._libs_install_running = False
+                    if code == 0:
+                        self._libs_log(self.T("settings.libs_install_done") + "\n")
+                        # A fresh `import sympy` in THIS process usually picks up a
+                        # just-installed package without needing a restart (pip writes
+                        # straight into site-packages, and a previously FAILED import
+                        # isn't cached the way a successful one is) -- but a .pth-file
+                        # edge case can still require one, so this note is a safety net,
+                        # not a promise, same spirit as the language-switch dialog.
+                        messagebox.showinfo(
+                            self.T("settings.dialog_title"),
+                            self.T("settings.libs_install_restart_note"))
+                    else:
+                        self._libs_log(self.T("settings.libs_install_failed", code=code) + "\n")
+                    self._refresh_libs_status()
+                    return
+                self._libs_log(item)
+        except queue.Empty:
+            pass
+        self.after(150, self._poll_libs_queue)
+
+    def _libs_log(self, text):
+        self.libs_output.configure(state="normal")
+        self.libs_output.insert("end", text)
+        self.libs_output.see("end")
+        self.libs_output.configure(state="disabled")
+
     # ---- widget construction ---------------------------------------------------------------
 
     def _build_widgets(self):
@@ -917,6 +991,26 @@ class SettingsTab(ttk.Frame):
             restore_frame, height=8, font=("Consolas", 9), state="disabled",
             background="#111318", foreground="#d8d8d8")
         self.restore_output.pack(fill="both", expand=True, padx=6, pady=(4, 6))
+
+        libs_frame = ttk.Labelframe(outer, text=self.T("settings.libs_frame"))
+        libs_frame.pack(fill="x", pady=(0, 8))
+        ttk.Label(libs_frame, text=self.T("settings.libs_hint"),
+                  wraplength=760, justify="left", foreground="#555").pack(
+            anchor="w", padx=6, pady=(6, 4))
+        libs_btn_row = ttk.Frame(libs_frame)
+        libs_btn_row.pack(fill="x", padx=6, pady=(0, 4))
+        self.libs_status_var = tk.StringVar(value="")
+        ttk.Label(libs_btn_row, textvariable=self.libs_status_var).pack(side="left")
+        ttk.Button(libs_btn_row, text=self.T("settings.libs_check_button"),
+                   command=self._on_check_libs_status).pack(side="left", padx=(10, 0))
+        self.install_sympy_btn = ttk.Button(
+            libs_btn_row, text=self.T("settings.libs_install_sympy_button"),
+            command=self._on_install_sympy)
+        self.install_sympy_btn.pack(side="left", padx=(6, 0))
+        self.libs_output = ScrolledText(
+            libs_frame, height=5, font=("Consolas", 9), state="disabled",
+            background="#111318", foreground="#d8d8d8")
+        self.libs_output.pack(fill="x", padx=6, pady=(0, 6))
 
         delete_frame = ttk.Labelframe(outer, text=self.T("settings.delete_frame"))
         delete_frame.pack(fill="x")

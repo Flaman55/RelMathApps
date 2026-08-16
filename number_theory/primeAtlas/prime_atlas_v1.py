@@ -100,6 +100,7 @@ import pattern_catalog_v1  # noqa: E402
 from primeatlas import (  # noqa: E402
     AppSettings, Translator, DEFAULT_LANGUAGE, prune_empty_pietro_dirs,
     run_all_tests as primality_run_all_tests, factorize as primality_factorize,
+    try_import_sympy as primality_try_import_sympy,
 )
 
 # AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
@@ -1991,6 +1992,82 @@ class WslLoggedRunner:
             try:
                 subprocess.Popen(["wsl.exe", "-e", "pkill", "-f", self.kill_pattern],
                                   **_popen_kwargs_no_window())
+            except OSError:
+                pass
+
+
+def build_pip_install_argv(package, upgrade=False):
+    """[sys.executable, -m, pip, install, --user, package] -- installs into the SAME
+    Python environment this GUI process itself runs under (sys.executable, not a bare
+    "python"/"python3" on PATH, which could resolve to a different interpreter),
+    --user so no admin/venv-write permission is required. Used by the Settings tab's
+    optional-library installer (Faza 2b) -- currently only sympy (see
+    primeatlas/primality.py's try_import_sympy()), kept general in case a future
+    optional dependency needs the same treatment."""
+    argv = [sys.executable, "-m", "pip", "install", "--user"]
+    if upgrade:
+        argv.append("--upgrade")
+    argv.append(package)
+    return argv
+
+
+class LocalLoggedRunner:
+    """Runs an ordinary LOCAL subprocess (no WSL involved) with its stdout/stderr piped
+    directly back to this process, unlike WslLoggedRunner's file-tailing approach. That
+    file-tailing dance exists ONLY to work around wsl.exe's own console-allocation
+    quirks when launched from a windowed (console-less) parent -- see WslLoggedRunner's
+    own docstring. A plain native subprocess (e.g. `sys.executable -m pip install`) has
+    none of that: it's a normal child of this same Windows process tree, so a regular
+    subprocess.PIPE + line-by-line read on a background thread is both simpler and
+    perfectly reliable here.
+
+    Same output contract as WslLoggedRunner (plain text chunks on `output_queue`, then a
+    final ("__exit__", returncode) sentinel) so callers that already know how to drain
+    that queue (see settings_tab.py's _poll_restore_queue) don't need a second shape to
+    handle -- this class is used for exactly one thing so far (the sympy installer, see
+    settings_tab.py's _on_install_sympy), but kept generically named/shaped in case a
+    future feature needs another local (non-WSL) subprocess with live output.
+
+    No tkinter dependency -- exercised directly against a trivial local command (e.g.
+    [sys.executable, "-c", "print('hi')"]) without any WSL install required."""
+
+    def __init__(self, cmd, output_queue):
+        self.cmd = cmd
+        self.output_queue = output_queue
+        self.proc = None
+        self._thread = None
+
+    def start(self):
+        self.output_queue.put(f"$ {' '.join(self.cmd)}\n")
+        try:
+            self.proc = subprocess.Popen(
+                self.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, **_popen_kwargs_no_window())
+        except OSError as e:
+            self.output_queue.put(f"[!] Could not start process: {e}\n")
+            self.output_queue.put(("__exit__", None))
+            return
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+
+    def _read_loop(self):
+        try:
+            for line in self.proc.stdout:
+                self.output_queue.put(line)
+            self.proc.stdout.close()
+            returncode = self.proc.wait()
+            self.output_queue.put(("__exit__", returncode))
+        except Exception as e:  # noqa: BLE001 -- must never kill this thread silently
+            self.output_queue.put(f"[!] Error reading process output: {e}\n")
+            self.output_queue.put(("__exit__", None))
+
+    def is_running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def stop(self):
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
             except OSError:
                 pass
 
@@ -5699,6 +5776,13 @@ def _build_gui():
                 # emptied/regenerated floors stayed invisible until a manual Refresh click.
                 "reload_primes_tree": self.reload_primes_tree,
                 "reload_constellations_tree": self.reload_constellations_tree,
+                # Faza 2b -- optional-library installer (currently just sympy, see
+                # primeatlas/primality.py). LocalLoggedRunner/build_pip_install_argv are
+                # plain local (non-WSL) subprocess helpers -- see their own docstrings
+                # for why they don't need WslLoggedRunner's file-tailing machinery.
+                "try_import_sympy": primality_try_import_sympy,
+                "build_pip_install_argv": build_pip_install_argv,
+                "LocalLoggedRunner": LocalLoggedRunner,
             }
             self.settings_tab = settings_tab_cls(
                 self.settings_tab_container, APP_SETTINGS, wsl_helpers, TRANSLATOR)
