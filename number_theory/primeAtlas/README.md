@@ -1,22 +1,58 @@
 # PrimeAtlas
 
 A desktop application for generating, browsing, and searching large-scale prime number
-and prime-constellation (k-tuple) data. The GUI runs natively on Windows (tkinter);
-the generation pipeline it drives runs under WSL, backed by `libprimesieve` and a set
-of custom C sieve engines (two interchangeable engine generations, v3 and v4).
+and prime-constellation (k-tuple) data -- plus standalone primality/factorization tools
+and a constellation-pattern calculator that work independently of anything already
+generated. The GUI runs natively on Windows (tkinter); the generation pipeline it drives
+runs under WSL, backed by `libprimesieve` and a set of custom C sieve engines (three
+interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
 
 ## Features
 
-- **Prime numbers** -- browse generated data floor by floor (a digit-count range,
-  floor `N` = `[10^N, 10^(N+1))`) and file by file, with per-floor and per-file prime
-  counts, on-disk size, generation time, a paginated preview, and direct search for a
-  specific value. A background worker computes floor totals (count + disk size)
-  incrementally, so re-checking an already-scanned floor after a small change is cheap
-  rather than a full rescan.
-- **Constellations** -- browse detected k-tuple patterns floor by floor, with hit
-  counts, offset/record metadata, a paginated preview that reconstructs each hit's
-  full tuple, and a search that reports whether a given number participates in any
-  recorded constellation.
+- **Prime numbers** -- an inner notebook of three sub-tabs:
+  - **Storage** -- browse generated data floor by floor (a digit-count
+    range, floor `N` = `[10^N, 10^(N+1))`) and file by file, with per-floor and
+    per-file prime counts, on-disk size, generation time, a paginated preview, and
+    direct search for a specific value. A background worker computes floor totals
+    (count + disk size) incrementally, so re-checking an already-scanned floor after
+    a small change is cheap rather than a full rescan. Only lists floors that
+    actually hold prime-window data -- a floor whose only leftover is
+    `prime_sieve_v4.py`'s sieving-prime-count cache is hidden here (though the cache
+    itself is kept on disk for reuse if the floor is generated later).
+  - **primesieve** (calculator) -- four standalone libprimesieve queries (count
+    primes in a range, nth prime, next/previous prime) that don't touch anything
+    already in storage -- no floor, no generated data involved -- run over WSL via a
+    one-shot script (`prime_sieve/primesieve_query.py`).
+  - **Primality tests** -- primality testing (Miller-Rabin, Fermat, Solovay-
+    Strassen; pure Python, no WSL round trip) and factorization (trial division +
+    Pollard's rho by default, or `sympy.factorint()` instead when installed -- see
+    Settings below) for any entered number, with the factor list shown in a copyable
+    field.
+- **Constellations** -- an inner notebook of three sub-tabs:
+  - **Storage** -- browse detected k-tuple patterns floor by floor, with hit counts,
+    offset/record metadata, a paginated preview that reconstructs each hit's full
+    tuple, and a search that reports whether a given number participates in any
+    recorded constellation. Only lists floors where the constellation finder has
+    actually recorded at least one hit, not every floor that happens to have prime
+    data.
+  - **Constellation calculator** -- pick a k-tuple pattern from the catalog (k, then
+    variant), enter a floor and an offset, and instantly compute every number the
+    pattern implies -- pure arithmetic, no file I/O, so it is instant even for a huge
+    floor. Its Search button reuses the Storage sub-tab's own search machinery
+    against the selected number: it covers both "the prime window isn't generated
+    yet" and "the constellation finder never scanned this specific pattern on this
+    floor" (proactively, even when the floor already has hits for some *other*
+    pattern), offers to generate whichever is missing, and once the number is found,
+    jumps the Storage view straight to that exact hit instead of leaving it to be
+    located by hand.
+  - **Records table** -- a pzktupel.de-style table (exp x pattern-variant) of the
+    smallest offset found so far per floor, scanned from *this project's own*
+    storage, not pzktupel.de itself; an optional floor-range filter keeps the table
+    focused instead of dumping every floor in a large database. Double-clicking a
+    cell shows the full list of every individual hit behind it (not just the
+    smallest), and double-clicking one of those jumps straight to it in the Storage
+    sub-tab. PDF/CSV export covers every individual hit for the currently displayed
+    floor range, not just the compact per-cell summary.
 - **Generation** -- two ways to launch the sieve/orchestrator pipeline and the
   constellation finder over WSL, both with live streamed output (stackable across
   runs, detachable into its own window) and a stop control:
@@ -26,18 +62,56 @@ of custom C sieve engines (two interchangeable engine generations, v3 and v4).
     instead of launching a redundant run. An "Auto" button estimates a safe window count
     from the WSL environment's available RAM (see "Window count, throughput, and RAM"
     below). See "The primesieve mode" below for how the fourth mode differs from the
-    other three.
+    other three. Exploration mode's own Floor field auto-continues from whichever
+    floor currently holds the deepest generated data (leave it blank, or use its
+    dedicated Auto button) instead of requiring a manually-typed floor every time, and
+    rolls forward into floor 7+ once the fixed floors-0-6 batch is complete, rather
+    than reporting "already in storage" and getting stuck there.
   - **Low-level form** -- exposes every CLI parameter of the orchestrator and
     constellation finder directly (workers, batch size, window count, window width,
     write-files toggle, sieving-prime count diagnostic) for full manual control.
-- **Benchmark** -- a throughput chart (seconds per 10M generated vs. floor depth) plus
-  a full benchmark log table, with one-click PDF export of both.
+- **Benchmark** -- a throughput chart (numbers generated per second vs. floor depth),
+  plus a second chart (sieve speed and write speed per floor) whenever the active
+  engine reports that level of phase timing (see `prime_sieve_v4_1.py` under
+  "Architecture" below), a full benchmark log table, and one-click PDF export
+  covering both charts. The progress bar shown during a generation run models the
+  whole pipeline as a sequence of steps (prep, then each sieve batch, then done)
+  rather than only moving during the sieve phase and sitting empty through prep.
 - **Settings** -- configurable storage location, and backup/restore/delete of the
   generated database, including manifest-based drift detection against what is
   actually on disk. Both the backup list and the incomplete-restores list have their
   own delete button, for pruning old backups or abandoned/paused restore jobs without
   touching the generated data itself. See "Restore" below for how a restore run is
-  ordered and which engine it uses.
+  ordered and which engine it uses. Also includes an optional-library installer
+  (currently `sympy`, used by the Primality tests sub-tab's factorization when
+  present) that runs natively on Windows via `pip`, not through WSL -- checks
+  whether it is already importable and installs it on request, with the install's
+  own live output shown in place.
+
+## Search
+
+Searching for a specific number -- from either Storage sub-tab (Prime numbers or
+Constellations), or from the Constellation calculator -- distinguishes three outcomes
+instead of one generic "not found":
+
+- The window the number would fall in genuinely is not on disk yet -- offers to
+  generate just that one window (via primesieve mode's targeted single-window path,
+  not a from-scratch backfill from window 0), then automatically re-runs the same
+  search once generation finishes.
+- The number is a confirmed prime, but its floor has no recorded constellation hits at
+  all -- offers to run the constellation finder for that floor, then re-checks
+  participation. The Constellation calculator's own Search additionally checks the
+  *specific* pattern it just calculated (not merely "does this floor have any hits for
+  anything"), so the offer still appears correctly even on a floor that already has
+  hits for some other pattern.
+- The window is already on disk and the number still is not found in it -- a
+  definitive "this number is composite" message, distinct from the ambiguous
+  missing-data case above.
+
+Numeric fields throughout the app (offsets, floor numbers, search boxes) also accept
+thousands-grouped input -- spaces or commas, e.g. `23 081 664 151` or
+`23,081,664,151` -- as well as plain integers or simple expressions like `10**5+3`,
+making it easy to paste a number copied from another source.
 
 ## Floor semantics
 
@@ -169,16 +243,23 @@ rather than a fixed default.
 ## Architecture
 
 ```
-prime_atlas_v1.py           GUI entry point (tkinter), five tabs listed above
+prime_atlas_v1.py           GUI entry point (tkinter); five top-level tabs, two of
+                              which (Prime numbers, Constellations) are themselves
+                              inner notebooks of sub-tabs -- see "Features" above
 primeatlas/                 backend package used by the GUI, no tkinter dependency
   app_settings.py           storage path configuration
   manifest.py                backup manifest / snapshot model
   backup_store.py            backup creation
   restore_job.py             restore from backup
   delete_manager.py          database deletion
-  settings_tab.py            Settings tab controller
+  settings_tab.py            Settings tab controller, incl. the optional-library
+                              (sympy) installer
   generation_console.py      stacked/detachable live-output console used by both
                               Generation sections
+  primality.py                Miller-Rabin/Fermat/Solovay-Strassen primality tests
+                              plus factorization (trial division + Pollard's rho, or
+                              sympy.factorint() if installed) behind the Primality
+                              tests sub-tab -- pure Python, no tkinter or WSL
   i18n.py                    translation loading
   locales/                   strings_en.json, strings_pl.json, app_settings.json
 prime_sieve/                 sieve and orchestration pipeline (invoked via WSL)
@@ -188,18 +269,30 @@ prime_sieve/                 sieve and orchestration pipeline (invoked via WSL)
                               the per-floor sieving-prime-count cache
   prime_sieve_v4.py          same as v3, plus an inlined fast-path modulo in the C
                               engine for the per-sieving-prime phase computation
+  prime_sieve_v4_1.py        same as v4, plus base-gen/sieve/write phase timing and
+                              bytes-written tracking, feeding the Benchmark tab's
+                              second (sieve-speed/write-speed) chart
   prime_sieve_primesieve.py  "primesieve mode" -- calls libprimesieve's own public C API
                               (primesieve_generate_primes()) directly via ctypes, no custom
                               engine or batching pipeline; see "The primesieve mode" above
+  primesieve_query.py        one-shot standalone libprimesieve queries (count/nth/
+                              next/prev primes) behind the Prime numbers tab's
+                              primesieve calculator sub-tab -- independent of
+                              anything already in storage
   prime_sieve_engine_v1.c    C sieve core for prime_sieve_v1.py (ctypes)
   prime_sieve_engine_v3.c    C sieve core for prime_sieve_v3.py (ctypes)
-  prime_sieve_engine_v4.c    C sieve core for prime_sieve_v4.py (ctypes)
-  orchestrator_v3.py         single-run driver (SCRIPT_NAME selects v3 or v4)
+  prime_sieve_engine_v4.c    C sieve core for prime_sieve_v4.py/v4_1.py (ctypes)
+  orchestrator_v3.py         single-run driver; a single SCANNER_VERSION flag near
+                              the top selects the active engine ("v3", "v4", or
+                              "v4.1" -- currently v4.1) instead of separate settings
+                              that could drift out of sync with each other
   orchestrator_loop_v2.py    continuous-run driver
   orchestrator_loop_helpers.py
 constellation/
   constellation_finder_v1.py  k-tuple pattern search over generated prime data
-  pattern_catalog_v1.py       catalog of supported k-tuple patterns
+  pattern_catalog_v1.py       catalog of supported k-tuple patterns, shared by the
+                              constellation finder and by the Constellation
+                              calculator / Records table sub-tabs
 Run_PrimeAtlas.bat           launches the GUI, visible console (errors surfaced directly)
 Run_PrimeAtlas_Hidden.vbs    launches the GUI with no console window
 ```
@@ -219,6 +312,11 @@ tab does not have to re-read every file's header on every visit.
 GUI:
 - Windows
 - Python 3 with the standard library (`tkinter` included)
+- Optional: `sympy`, for faster factorization in the Primality tests sub-tab. Not
+  required -- without it, factorization falls back to a pure-Python trial-division +
+  Pollard's rho implementation. Installable from inside the app itself (Settings tab's
+  optional-library installer, runs `pip install --user sympy` natively on Windows, no
+  WSL involved).
 
 Generation pipeline (only needed to generate new data; browsing existing data needs
 only the GUI requirements above):
