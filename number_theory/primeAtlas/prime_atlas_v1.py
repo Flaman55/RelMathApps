@@ -4378,9 +4378,10 @@ def _build_gui():
             self.const_records_tree = None  # built fresh per scan -- see
                                              # _rebuild_const_records_tree(), column
                                              # count depends on how many variants k has
-            self.const_records_tree_vsb = None  # its scrollbar, tracked separately so
-                                                 # it can be destroyed alongside the tree
-                                                 # on rebuild (see that method's own note)
+            self.const_records_tree_vsb = None  # its scrollbars, tracked separately so
+            self.const_records_tree_hsb = None  # they can be destroyed alongside the
+                                                 # tree on rebuild (see that method's
+                                                 # own note)
             self._const_records_last = None  # (k, variant_ids, variant_meta, rows) from
                                               # the most recently finished scan -- read by
                                               # both export buttons
@@ -4396,29 +4397,47 @@ def _build_gui():
             variant counts (k=8 has 3, k=13 has 6), so the tree is destroyed and
             recreated on every scan rather than trying to reuse one fixed-shape widget.
 
-            Its scrollbar is destroyed and recreated right alongside it (tracked in
-            self.const_records_tree_vsb, not just a throwaway local) -- previously the
-            scrollbar was a local variable never torn down, so every Skanuj click left
-            the old one behind, orphaned in the frame, stacking up one more vertical
-            scrollbar per scan."""
+            Both scrollbars are destroyed and recreated right alongside it (tracked in
+            self.const_records_tree_vsb/_hsb, not just throwaway locals) -- previously
+            the vertical one was a local variable never torn down, so every Skanuj click
+            left the old one behind, orphaned in the frame, stacking up one more
+            scrollbar per scan.
+
+            Every column is stretch=False (fixed width) with an added horizontal
+            scrollbar -- same fix as the Benchmark tab's tree (see its own comment for
+            the rationale): without this, Tk auto-stretches columns to fill the frame,
+            which for a single-variant k pushes that one column's header far from its
+            data (the empty gap the user reported), and for a many-variant k instead
+            squeezes everything down with no way to see the columns pushed off the
+            right edge -- neither is fixable by resizing the window, since Tk was
+            filling/squeezing to the CURRENT width either way. Fixed width + horizontal
+            scroll makes the table's real width consistent regardless of variant count,
+            and lets the user actually scroll to whatever doesn't fit."""
             if self.const_records_tree is not None:
                 self.const_records_tree.destroy()
             if self.const_records_tree_vsb is not None:
                 self.const_records_tree_vsb.destroy()
+            if self.const_records_tree_hsb is not None:
+                self.const_records_tree_hsb.destroy()
             columns = ("exp",) + tuple(f"v{vid}" for vid in variant_ids)
             tree = ttk.Treeview(
                 self.const_records_tree_frame, columns=columns, show="headings", height=14)
             tree.heading("exp", text=T("const_records.col_exp"))
-            tree.column("exp", width=70, anchor="e")
+            tree.column("exp", width=70, anchor="e", stretch=False)
             for vid in variant_ids:
                 tree.heading(f"v{vid}", text=T("const_calc.variant_label", id=vid))
-                tree.column(f"v{vid}", width=140, anchor="w")
+                tree.column(f"v{vid}", width=190, anchor="w", stretch=False)
             vsb = ttk.Scrollbar(self.const_records_tree_frame, orient="vertical",
                                  command=tree.yview)
-            tree.configure(yscrollcommand=vsb.set)
+            hsb = ttk.Scrollbar(self.const_records_tree_frame, orient="horizontal",
+                                 command=tree.xview)
+            tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+            vsb.pack(side="right", fill="y")
+            hsb.pack(side="bottom", fill="x")
             tree.pack(side="left", fill="both", expand=True)
-            vsb.pack(side="left", fill="y")
             self.const_records_tree = tree
+            self.const_records_tree_vsb = vsb
+            self.const_records_tree_hsb = hsb
             self.const_records_tree_vsb = vsb
 
         def _on_const_records_scan_clicked(self):
