@@ -677,6 +677,54 @@ def aggregate_benchmark_fair_spw(rows):
     return sorted(latest.items())
 
 
+def aggregate_benchmark_sieve_nps(rows):
+    """Reduces benchmark_log.csv rows to one (base_exponent, sieve_numbers_per_second) point
+    per floor -- the pure sieve-phase throughput (numbers swept / sieve_seconds), isolated
+    from base-gen and disk-write time. Only populated for rows logged by prime_sieve_v4_1.py
+    (SCANNER_VERSION="v4.1" -- see orchestrator_v3.py's BENCHMARK_FIELDNAMES comment); rows
+    from v3/v4 leave sieve_seconds blank and are skipped, same as any unparseable value.
+    windows_written * QUICK_GEN_MAX_WINDOW_WIDTH approximates the numbers actually swept --
+    window_m itself isn't a logged CSV column (every run in practice uses the same fixed
+    window width), so this reuses the same fixed-window-width assumption
+    _floor_window_count() already makes elsewhere in this file rather than introducing a new
+    one. Same last-row-per-floor-wins / skip-unparseable-or-non-positive reduction as
+    aggregate_benchmark_growth(). Returns (base_exponent, sieve_numbers_per_second) pairs
+    sorted ascending by base_exponent."""
+    latest = {}
+    for row in rows:
+        try:
+            base_exponent = int(row.get("base_exponent", ""))
+            windows_written = int(row.get("windows_written", ""))
+            sieve_seconds = float(row.get("sieve_seconds", ""))
+        except (TypeError, ValueError):
+            continue
+        if sieve_seconds <= 0 or math.isnan(sieve_seconds):
+            continue
+        latest[base_exponent] = windows_written * QUICK_GEN_MAX_WINDOW_WIDTH / sieve_seconds
+    return sorted(latest.items())
+
+
+def aggregate_benchmark_write_mbps(rows):
+    """Same reduction as aggregate_benchmark_sieve_nps() (last row per floor wins, only
+    prime_sieve_v4_1.py rows have this data, missing/unparseable/non-positive values
+    skipped), but for the disk-write phase: bytes_written / write_seconds, in MB/s -- the
+    same figure orchestrator_v3.py's print_benchmark_summary() already prints inline next
+    to 'write {write_seconds}s', just aggregated per floor here for the chart/PDF. Returns
+    (base_exponent, write_mb_per_second) pairs sorted ascending by base_exponent."""
+    latest = {}
+    for row in rows:
+        try:
+            base_exponent = int(row.get("base_exponent", ""))
+            bytes_written = float(row.get("bytes_written", ""))
+            write_seconds = float(row.get("write_seconds", ""))
+        except (TypeError, ValueError):
+            continue
+        if write_seconds <= 0 or math.isnan(write_seconds) or math.isnan(bytes_written):
+            continue
+        latest[base_exponent] = bytes_written / write_seconds / 1e6
+    return sorted(latest.items())
+
+
 def format_duration(seconds):
     """H h M m S s, dropping leading zero units. Duplicated (not imported) from
     orchestrator_v3.py's own format_duration() -- this GUI module deliberately doesn't
@@ -920,27 +968,40 @@ def _write_pdf(path, pages, page_size=(841.89, 595.28)):
         f.write(buf)
 
 
-def _pdf_chart_ops(points, x0, y0, w, h, points2=None, translator=None):
-    """Returns PDF content-stream ops drawing the (pietro, numbers/second) growth chart as
+def _pdf_chart_ops(points, x0, y0, w, h, points2=None, translator=None,
+                    label_key1="bench.axis_nps", label_key2="bench.axis_spw",
+                    fmt1="{:,.0f}", fmt2="{:,.3f}"):
+    """Returns PDF content-stream ops drawing a (pietro, primary-series) growth chart as
     _draw_growth_chart() (same axis/tick/point layout logic), inside the box
     [x0, x0+w] x [y0, y0+h] in PDF's bottom-left-origin point space -- kept as a SEPARATE
     function rather than sharing code with the canvas version, since tkinter's Canvas anchors
     ("e", "sw", ...) and y-down coordinate system have no PDF equivalent.
 
-    points2 (optional): a SECOND (base_exponent, loop_seconds_per_window) series -- the
-    'fair' seconds/window figure, shown alongside n/s. Drawn as a red line with
-    its OWN right-hand y-axis and its own independent scale (values are tiny decimals,
-    nothing like the primary series' huge integers, so sharing one axis would flatten one of
-    the two lines into a straight line at the bottom). x-axis (pietro) is shared -- its tick
-    set is the UNION of both series' base_exponent values, so a pietro present in only one
-    series still gets an x-tick.
+    points2 (optional): a SECOND series sharing the x-axis (pietro) -- by default the 'fair'
+    loop_seconds_per_window figure shown alongside n/s, but label_key2/fmt2 (see below) let
+    a caller reuse this for a different pair, e.g. sieve-numbers/s + write-MB/s. Drawn as a
+    red line with its OWN right-hand y-axis and its own independent scale (values are a
+    different order of magnitude from the primary series, so sharing one axis would flatten
+    one of the two lines into a straight line at the bottom). The x-tick set is the UNION of
+    both series' base_exponent values, so a pietro present in only one series still gets an
+    x-tick.
+
+    label_key1/label_key2: i18n keys for the primary/secondary axis titles (see
+    _draw_growth_chart()'s matching parameters for the full rationale) -- default to the
+    original n/s + s/window pair so existing callers are unaffected.
+
+    fmt1/fmt2: str.format() templates used for every value label drawn next to a point and
+    every y-axis tick on that series' axis -- default to the original ",.0f"/",.3f"
+    precision (huge integer n/s counts vs. tiny decimal s/window figures); a caller with a
+    different value shape (e.g. MB/s) passes its own template instead of getting a
+    precision that doesn't fit its numbers.
 
     translator (optional): a primeatlas.i18n.Translator instance -- axis labels reuse the
-    SAME on-screen chart's i18n keys (bench.axis_pietro/axis_nps/axis_spw/no_data_chart,
-    see _draw_growth_chart()) instead of separate hardcoded PDF text, then ASCII-fold the
-    result (see _pdf_ascii_fold()), so every axis label tracks the app's actual language
-    selection instead of a fixed one. Defaults to DEFAULT_LANGUAGE if not given (e.g.
-    direct/test calls)."""
+    SAME on-screen chart's i18n keys (bench.axis_pietro/no_data_chart plus whichever
+    label_key1/label_key2 resolve to, see _draw_growth_chart()) instead of separate
+    hardcoded PDF text, then ASCII-fold the result (see _pdf_ascii_fold()), so every axis
+    label tracks the app's actual language selection instead of a fixed one. Defaults to
+    DEFAULT_LANGUAGE if not given (e.g. direct/test calls)."""
     t = (translator or Translator(DEFAULT_LANGUAGE)).t
     points = points or []
     points2 = points2 or []
@@ -1008,7 +1069,7 @@ def _pdf_chart_ops(points, x0, y0, w, h, points2=None, translator=None):
             y_val = y_min + (y_max - y_min) * i / 5
             y_px = sy(y_val)
             ops.append(_pdf_line_op(plot_x0 - 3, y_px, plot_x0, y_px, rgb=axis_gray))
-            ops.append(_pdf_text_op(plot_x0 - 50, y_px - 3, 7, "Courier", f"{y_val:,.0f}"))
+            ops.append(_pdf_text_op(plot_x0 - 50, y_px - 3, 7, "Courier", fmt1.format(y_val)))
 
     if has_secondary:
         for i in range(6):
@@ -1016,7 +1077,7 @@ def _pdf_chart_ops(points, x0, y0, w, h, points2=None, translator=None):
             y_px = sy2(y_val)
             ops.append(_pdf_line_op(plot_x0 + plot_w, y_px, plot_x0 + plot_w + 3, y_px, rgb=red))
             ops.append(_pdf_text_op(plot_x0 + plot_w + 5, y_px - 3, 7, "Courier",
-                                     f"{y_val:,.3f}"))
+                                     fmt2.format(y_val)))
 
     for x_val in all_xs:
         x_px = sx(x_val)
@@ -1027,10 +1088,10 @@ def _pdf_chart_ops(points, x0, y0, w, h, points2=None, translator=None):
                              _pdf_ascii_fold(t("bench.axis_pietro"))))
     if points:
         ops.append(_pdf_text_op(x0 + 2, y0 + h - 10, 8, "Helvetica-Bold",
-                                 _pdf_ascii_fold(t("bench.axis_nps"))))
+                                 _pdf_ascii_fold(t(label_key1))))
     if has_secondary:
         ops.append(_pdf_text_op(x0 + w - 62, y0 + h - 10, 8, "Helvetica-Bold",
-                                 _pdf_ascii_fold(t("bench.axis_spw")), rgb=red))
+                                 _pdf_ascii_fold(t(label_key2)), rgb=red))
 
     if points:
         if len(points) > 1:
@@ -1040,7 +1101,7 @@ def _pdf_chart_ops(points, x0, y0, w, h, points2=None, translator=None):
         for x_val, y_val in points:
             cx, cy = sx(x_val), sy(y_val)
             ops.append(_pdf_dot_op(cx, cy, 2.5, rgb=(0.11, 0.37, 0.66)))
-            ops.append(_pdf_text_op(cx - 10, cy + 8, 7, "Courier", f"{y_val:,.0f}"))
+            ops.append(_pdf_text_op(cx - 10, cy + 8, 7, "Courier", fmt1.format(y_val)))
 
     if has_secondary:
         if len(points2) > 1:
@@ -1050,13 +1111,14 @@ def _pdf_chart_ops(points, x0, y0, w, h, points2=None, translator=None):
         for x_val, y_val in points2:
             cx, cy = sx(x_val), sy2(y_val)
             ops.append(_pdf_dot_op(cx, cy, 2.5, rgb=red))
-            ops.append(_pdf_text_op(cx - 12, cy - 14, 7, "Courier", f"{y_val:,.3f}", rgb=red))
+            ops.append(_pdf_text_op(cx - 12, cy - 14, 7, "Courier", fmt2.format(y_val), rgb=red))
 
     return ops
 
 
-def render_benchmark_pdf(path, points, fieldnames, rows, points2=None, translator=None):
-    """Writes a standalone PDF report -- the same growth chart shown in the Benchmark tab
+def render_benchmark_pdf(path, points, fieldnames, rows, points2=None, translator=None,
+                          sieve_points=None, write_points=None):
+    """Writes a standalone PDF report -- the same growth chart(s) shown in the Benchmark tab
     plus the FULL benchmark_log.csv table (every row, every column) -- to `path`. The table
     continues onto as many additional (landscape A4) pages as needed, repeating the column
     header row on each one, since a project running for months can accumulate far more rows
@@ -1067,6 +1129,14 @@ def render_benchmark_pdf(path, points, fieldnames, rows, points2=None, translato
 
     points2 (optional): second (base_exponent, loop_seconds_per_window) series, drawn as a
     second red line on its own right-hand y-axis -- see _pdf_chart_ops().
+
+    sieve_points/write_points (optional): the sieve-numbers/s and write-MB/s series from
+    aggregate_benchmark_sieve_nps()/aggregate_benchmark_write_mbps() -- only populated for
+    floors re-benchmarked with prime_sieve_v4_1.py, so most projects will have this empty
+    for a while yet. A SECOND chart, same layout as the primary one, is only drawn (taking
+    space away from the table below it) when at least one of the two is non-empty --
+    otherwise page 1 looks exactly as it did before this pair of series existed, rather
+    than reserving blank chart space no data will ever fill.
 
     translator (optional): a primeatlas.i18n.Translator instance, threaded into
     _pdf_chart_ops() and used for the title/subtitle/continuation-page header below --
@@ -1127,13 +1197,25 @@ def render_benchmark_pdf(path, points, fieldnames, rows, points2=None, translato
     ops.append(_pdf_text_op(content_left, content_top - 30, 9, "Helvetica",
                              _pdf_ascii_fold(t("bench.pdf_subtitle", now=now_str,
                                                runs=len(rows), depths=len(points)))))
-    chart_h = 180
+    has_speed_chart = bool(sieve_points) or bool(write_points)
+    chart_h = 140 if has_speed_chart else 180
     chart_top = content_top - 40
     chart_y0 = chart_top - chart_h
     ops.extend(_pdf_chart_ops(points, content_left, chart_y0, content_width, chart_h,
                                points2=points2, translator=translator))
 
-    table_top = chart_y0 - 12
+    if has_speed_chart:
+        chart2_h = 140
+        chart2_top = chart_y0 - 16
+        chart2_y0 = chart2_top - chart2_h
+        ops.extend(_pdf_chart_ops(
+            sieve_points, content_left, chart2_y0, content_width, chart2_h,
+            points2=write_points, translator=translator,
+            label_key1="bench.axis_sieve_nps", label_key2="bench.axis_write_mbps",
+            fmt1="{:,.0f}", fmt2="{:,.1f}"))
+        table_top = chart2_y0 - 12
+    else:
+        table_top = chart_y0 - 12
     y_after_header = draw_table_header(ops, table_top)
     available = y_after_header - content_bottom
     rows_fit = max(0, int(available // row_h))
@@ -1675,6 +1757,38 @@ def recommended_max_windows(available_ram_bytes, window_m=QUICK_GEN_MAX_WINDOW_W
     return max(1, min(1000, windows))
 
 
+# Parsed out of a generation run's live console output by _drain_output_queue() to drive the
+# SHARED bottom status/progress bar (self.status/self.totals_progress -- the same one the
+# floor-totals scan and the Primes/Constellations search box already use) while a run is in
+# flight, in addition to the raw text already visible in the console/terminal panel itself.
+# Every one of these lines is already printed by the engines on their own -- nothing new was
+# added to either script, this only reads what was already there. Together they cover the
+# WHOLE pipeline, not just the batch-sieve phase -- see
+# _update_shared_progress_from_generation_chunk()'s own docstring for how the individual
+# lines below map onto one combined step count, so the bar isn't left sitting empty for
+# however long the pi(L_final) prep phase happens to take (which can itself run into
+# minutes at extreme depth) before the first batch-progress line ever arrives.
+#   prime_sieve_v4.py/prime_sieve_v4_1.py (main_batch_scanner, pi(L_final) prep step --
+#   EITHER the "used" (computed) or "count ... SKIPPED" wording, depending on the
+#   compute_sieving_primes_count flag, both start the same way):
+#     "[*] Active sieving primes used (pi(L_final)): 346,065,536,839 (computed in 0.009s -- ...)"
+#     "[*] Active sieving primes count (pi(L_final)): SKIPPED (...)"
+#   prime_sieve_v4.py/prime_sieve_v4_1.py (main_batch_scanner's own progress print):
+#     "[+] Progress: 42.31% (156/369 batches) | time: 12.34s (...) | ETA ~16s"
+#   prime_sieve_v4.py/prime_sieve_v4_1.py (main_batch_scanner, run-finished line -- printed
+#   for BOTH the low-floor and normal-window code paths, only the tail differs):
+#     "[*] TOTAL PRIMES FOUND this run: 167,026,529 across 1000 windows"
+#   constellation_finder_v1.py (process_floor's own per-file print):
+#     "[CONSTELLATIONS v1] 12/48: PRIME_WINDOW_10p11_off_50M.bin -- ..."
+#   constellation_finder_v1.py (process_floor, run-finished line):
+#     "[CONSTELLATIONS v1] Done. New hits this run, by pattern:"
+_GEN_PREP_DONE_RE = re.compile(r"\[\*\] Active sieving primes (?:used|count) \(pi\(L_final\)\)")
+_GEN_SIEVE_PROGRESS_RE = re.compile(r"\[\+\] Progress: ([\d.]+)% \((\d+)/(\d+) batches\)")
+_GEN_SIEVE_DONE_RE = re.compile(r"\[\*\] TOTAL PRIMES FOUND this run:")
+_GEN_CONST_PROGRESS_RE = re.compile(r"\[CONSTELLATIONS v1\] (\d+)/(\d+): ")
+_GEN_CONST_DONE_RE = re.compile(r"\[CONSTELLATIONS v1\] Done\. New hits this run")
+
+
 class WslLoggedRunner:
     """Runs a WSL command with output redirected to files on disk (build_wsl_logged_
     command()) instead of relying on subprocess.PIPE against wsl.exe's own stdout.
@@ -1906,18 +2020,27 @@ class _FlowRow:
         self.frame.configure(height=y + row_height)
 
 
-def _draw_growth_chart(canvas, points, width, height, points2=None):
-    """Draws (base_exponent, loop_numbers_per_second) points onto `canvas` as a simple axes +
-    connected-scatter chart -- x = floor depth, y = numbers swept per second (real
-    session-level wall-clock throughput, higher is better). Plain
+def _draw_growth_chart(canvas, points, width, height, points2=None,
+                        label_key1="bench.axis_nps", label_key2="bench.axis_spw",
+                        fmt1="{:,.0f}", fmt2="{:,.3f}"):
+    """Draws (base_exponent, primary-series) points onto `canvas` as a simple axes +
+    connected-scatter chart -- x = floor depth, y = the primary series (by default numbers
+    swept per second, real session-level wall-clock throughput, higher is better). Plain
     tk.Canvas drawing, no charting library: this app is deliberately zero-extra-installs
     (see module header), and a handful of axis lines + dots doesn't need one. Clears the
     canvas first, so this is safe to call again on refresh/resize (bound to <Configure>).
 
-    points2 (optional): a SECOND (base_exponent, loop_seconds_per_window) series -- the
-    'fair' seconds/window figure, shown alongside n/s. Drawn as a red line on
-    its own right-hand y-axis with an independent scale (see _pdf_chart_ops()'s docstring for
-    why it needs its own axis rather than sharing the primary one)."""
+    points2 (optional): a SECOND series sharing the x-axis -- by default the 'fair'
+    loop_seconds_per_window figure shown alongside n/s, but label_key2/fmt2 (see below) let
+    a caller reuse this for a different pair, e.g. sieve-numbers/s + write-MB/s. Drawn as a
+    red line on its own right-hand y-axis with an independent scale (see
+    _pdf_chart_ops()'s docstring for why it needs its own axis rather than sharing the
+    primary one).
+
+    label_key1/label_key2/fmt1/fmt2: same meaning and defaults as _pdf_chart_ops()'s matching
+    parameters -- i18n keys for the two axis titles, and str.format() templates for tick/
+    point value labels -- so the PDF export and this on-screen chart stay visually
+    consistent for any series pair, not just the original n/s + s/window one."""
     canvas.delete("all")
     if width <= 1 or height <= 1:
         return  # not yet realized/sized
@@ -1983,7 +2106,7 @@ def _draw_growth_chart(canvas, points, width, height, points2=None):
             y_val = y_min + (y_max - y_min) * i / 5
             y_px = sy(y_val)
             canvas.create_line(pad_left - 4, y_px, pad_left, y_px, fill="#666666")
-            canvas.create_text(pad_left - 8, y_px, text=f"{y_val:,.0f}", anchor="e",
+            canvas.create_text(pad_left - 8, y_px, text=fmt1.format(y_val), anchor="e",
                                 font=("Consolas", 8))
 
     if has_secondary:
@@ -1992,7 +2115,7 @@ def _draw_growth_chart(canvas, points, width, height, points2=None):
             y_px = sy2(y_val)
             canvas.create_line(pad_left + plot_w, y_px, pad_left + plot_w + 4, y_px,
                                 fill="#c0504d")
-            canvas.create_text(pad_left + plot_w + 8, y_px, text=f"{y_val:,.3f}", anchor="w",
+            canvas.create_text(pad_left + plot_w + 8, y_px, text=fmt2.format(y_val), anchor="w",
                                 font=("Consolas", 8), fill="#c0504d")
 
     for x_val in all_xs:
@@ -2008,10 +2131,10 @@ def _draw_growth_chart(canvas, points, width, height, points2=None):
     # positioned, keeping a consistent small gap above the topmost tick regardless of font
     # metrics.
     if points:
-        canvas.create_text(4, pad_top - 10, text=T("bench.axis_nps"), anchor="sw",
+        canvas.create_text(4, pad_top - 10, text=T(label_key1), anchor="sw",
                             font=("Consolas", 8, "bold"))
     if has_secondary:
-        canvas.create_text(width - 4, pad_top - 10, text=T("bench.axis_spw"), anchor="se",
+        canvas.create_text(width - 4, pad_top - 10, text=T(label_key2), anchor="se",
                             font=("Consolas", 8, "bold"), fill="#c0504d")
 
     if points:
@@ -2025,7 +2148,7 @@ def _draw_growth_chart(canvas, points, width, height, points2=None):
         for x_val, y_val in points:
             cx, cy = sx(x_val), sy(y_val)
             canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#1c5fa8", outline="")
-            canvas.create_text(cx, cy - r - 8, text=f"{y_val:,.0f}", font=("Consolas", 8))
+            canvas.create_text(cx, cy - r - 8, text=fmt1.format(y_val), font=("Consolas", 8))
 
     if has_secondary:
         if len(points2) > 1:
@@ -2038,7 +2161,7 @@ def _draw_growth_chart(canvas, points, width, height, points2=None):
         for x_val, y_val in points2:
             cx, cy = sx(x_val), sy2(y_val)
             canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#c0504d", outline="")
-            canvas.create_text(cx, cy + r + 8, text=f"{y_val:,.3f}", font=("Consolas", 8),
+            canvas.create_text(cx, cy + r + 8, text=fmt2.format(y_val), font=("Consolas", 8),
                                 fill="#c0504d")
 
 
@@ -2182,6 +2305,13 @@ def _build_gui():
             # after the previous generation's re-search has already come back.
             self._pending_search_after_prime_gen = None
             self._pending_search_after_const_gen = None
+
+            # Whole-pipeline step count for the shared bottom progress bar -- see
+            # _update_shared_progress_from_generation_chunk()'s own docstring. None between
+            # runs / before the first batch-progress line of a run has arrived (so the real
+            # step count isn't known yet); set to n_batches+1 once it is, and cleared again
+            # once a run's own "done" line snaps the bar to full.
+            self._gen_step_total = None
 
             self.reload_primes_tree()  # this ALSO kicks off the floor-totals scan for every
                                         # floor -- see reload_primes_tree()'s docstring
@@ -4857,7 +4987,12 @@ def _build_gui():
             handling above -- currently only _poll_loop_output uses it (to reset the
             Quick-gen 'Generate' button's temporary 'Stop' label, see
             _on_loop_finished); _poll_constellation_output has no equivalent dual-purpose
-            button so it leaves this at its default of None."""
+            button so it leaves this at its default of None.
+
+            Every plain-text chunk is ALSO fed to _update_shared_progress_from_generation_
+            chunk() -- see that method's own docstring -- so the shared bottom bar reflects
+            live generation/constellation-search progress, on top of the raw text staying
+            visible in `console` exactly as before."""
             try:
                 while True:
                     item = q.get_nowait()
@@ -4875,8 +5010,81 @@ def _build_gui():
                             on_exit()
                         continue
                     console.append(item)
+                    self._update_shared_progress_from_generation_chunk(item)
             except queue.Empty:
                 pass
+
+        def _update_shared_progress_from_generation_chunk(self, chunk):
+            """Reflects a generation run's live console output onto the shared bottom status
+            bar -- the SAME self.status/self.totals_progress the floor-totals scan and the
+            Primes/Constellations search box already use -- covering the WHOLE pipeline as
+            one sequence of steps, not just the batch-sieve phase. Scans `chunk` (a raw text
+            blob straight from WslLoggedRunner's log-tailing -- may hold zero, one, or
+            several lines, and may occasionally split one line across two chunks; a missed
+            match here just means the bar catches up on the next chunk a moment later,
+            harmless for a live display) for whichever of the five line shapes documented on
+            _GEN_PREP_DONE_RE/_GEN_SIEVE_PROGRESS_RE/_GEN_SIEVE_DONE_RE/_GEN_CONST_PROGRESS_RE/
+            _GEN_CONST_DONE_RE's own module-level comment is present, checked in the order a
+            real run actually prints them (prep -> batches -> done; the constellation path has
+            no separate prep step of its own, just per-file progress -> done).
+
+            Sieve-pipeline step model (self._gen_step_total, reset to None between runs):
+            step 0 is the pi(L_final) prep phase (which can itself run into minutes at
+            extreme depth -- see prime_sieve_v4_1.py's own SKIPPED-mode comment -- and used
+            to leave the bar sitting completely empty for all of it), steps 1..n_batches are
+            each individual sieve batch. The real n_batches isn't known until the FIRST
+            batch-progress line arrives, so between the prep line and that first batch line
+            the bar shows a provisional 1-of-2 (half full) rather than 0-of-unknown -- it
+            gets corrected to the real proportion the moment the first batch line defines the
+            actual total, which in practice is only a few seconds later. The run-finished
+            line ("[*] TOTAL PRIMES FOUND...") snaps the bar to fully complete regardless of
+            exactly how many steps were tracked, then clears _gen_step_total so the NEXT
+            run starts from the same 'unknown total yet' state rather than inheriting this
+            run's batch count.
+
+            No explicit arbitration against search/totals for ownership of the shared bar:
+            each of the three writes self.status on its own independent schedule, so
+            whichever last had something to say is simply what's showing. In practice
+            generation dominates while it's actually running, since these lines repeat every
+            couple of seconds -- far more often than search's one-shot "searching..."
+            message or the totals scan's own periodic updates -- without needing a priority
+            flag to enforce that."""
+            if _GEN_SIEVE_DONE_RE.search(chunk) or _GEN_CONST_DONE_RE.search(chunk):
+                total = self._gen_step_total or 1
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="determinate", maximum=total, value=total)
+                self.status.set(T("gen.status_progress_done"))
+                self._gen_step_total = None
+                return
+
+            sieve_matches = _GEN_SIEVE_PROGRESS_RE.findall(chunk)
+            if sieve_matches:
+                percent_str, done_str, total_str = sieve_matches[-1]
+                done, n_batches = int(done_str), int(total_str)
+                self._gen_step_total = n_batches + 1  # +1 for the prep step already done
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="determinate", maximum=self._gen_step_total,
+                                                value=done + 1)
+                self.status.set(T("gen.status_progress_sieve", percent=percent_str,
+                                   done=done, total=n_batches))
+                return
+
+            const_matches = _GEN_CONST_PROGRESS_RE.findall(chunk)
+            if const_matches:
+                done_str, total_str = const_matches[-1]
+                done, total = int(done_str), int(total_str)
+                self._gen_step_total = total
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="determinate", maximum=max(1, total), value=done)
+                self.status.set(T("gen.status_progress_const", done=done, total=total))
+                return
+
+            if _GEN_PREP_DONE_RE.search(chunk):
+                self._gen_step_total = None  # real total not known until the first
+                                              # batch-progress line -- see docstring above
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="determinate", maximum=2, value=1)
+                self.status.set(T("gen.status_progress_prep"))
 
         # --- Tab 5: Settings -----------------------------------------------------
 
@@ -4971,6 +5179,21 @@ def _build_gui():
             self.benchmark_chart.pack(fill="x")
             self.benchmark_chart.bind("<Configure>", lambda _e: self._redraw_benchmark_chart())
 
+            # Second chart: sieve-numbers/s + write-MB/s -- the phase-breakdown counterpart
+            # to the growth chart above, populated only from prime_sieve_v4_1.py rows (see
+            # aggregate_benchmark_sieve_nps()/aggregate_benchmark_write_mbps()). Always
+            # visible, same as the first chart -- _draw_growth_chart() already shows its own
+            # "no data yet" placeholder when both series are empty, so a project that hasn't
+            # re-benchmarked with v4.1 yet just sees that placeholder rather than the tab
+            # silently hiding/showing a whole section.
+            chart_frame2 = ttk.Frame(self.benchmark_tab)
+            chart_frame2.pack(fill="x", padx=6, pady=(0, 4))
+            ttk.Label(chart_frame2, text=T("bench.chart2_hint")).pack(anchor="w")
+            self.benchmark_chart2 = tk.Canvas(chart_frame2, height=180, background="white",
+                                               highlightthickness=1, highlightbackground="#cccccc")
+            self.benchmark_chart2.pack(fill="x")
+            self.benchmark_chart2.bind("<Configure>", lambda _e: self._redraw_benchmark_chart2())
+
             tree_frame = ttk.Frame(self.benchmark_tab)
             tree_frame.pack(fill="both", expand=True, padx=6, pady=4)
 
@@ -5027,6 +5250,11 @@ def _build_gui():
 
             self._benchmark_growth_points = []
             self._benchmark_fair_spw_points = []  # loop_seconds_per_window, second chart line
+            self._benchmark_sieve_nps_points = []   # sieve-phase numbers/s, second CHART's
+                                                     # primary line (prime_sieve_v4_1.py rows
+                                                     # only -- see aggregate_benchmark_sieve_nps)
+            self._benchmark_write_mbps_points = []  # write-phase MB/s, second chart's
+                                                     # secondary line (same v4.1-only caveat)
             self._benchmark_fieldnames = []  # kept in sync by reload_benchmark_log() --
             self._benchmark_tree_fieldnames = []  # same, minus BENCHMARK_TREE_HIDDEN_COLUMNS
                                               # -- what the tree itself actually displays
@@ -5061,6 +5289,22 @@ def _build_gui():
             _draw_growth_chart(self.benchmark_chart, self._benchmark_growth_points, width, height,
                                 points2=self._benchmark_fair_spw_points)
 
+        def _redraw_benchmark_chart2(self):
+            """Same fallback-size handling as _redraw_benchmark_chart() (see that method's own
+            comment) -- draws the sieve-numbers/s + write-MB/s phase-breakdown chart onto its
+            own canvas, right below the growth chart."""
+            width = self.benchmark_chart2.winfo_width()
+            height = self.benchmark_chart2.winfo_height()
+            if width <= 1:
+                width = 900
+            if height <= 1:
+                height = 180
+            _draw_growth_chart(self.benchmark_chart2, self._benchmark_sieve_nps_points, width,
+                                height, points2=self._benchmark_write_mbps_points,
+                                label_key1="bench.axis_sieve_nps",
+                                label_key2="bench.axis_write_mbps",
+                                fmt1="{:,.0f}", fmt2="{:,.1f}")
+
         def reload_benchmark_log(self):
             fieldnames, rows = read_benchmark_log(PORTAL_FOLDER)
             self._benchmark_fieldnames = fieldnames  # FULL list -- PDF export/growth chart
@@ -5074,6 +5318,10 @@ def _build_gui():
             self._benchmark_growth_points = aggregate_benchmark_growth(rows)
             self._benchmark_fair_spw_points = aggregate_benchmark_fair_spw(rows)
             self._redraw_benchmark_chart()
+
+            self._benchmark_sieve_nps_points = aggregate_benchmark_sieve_nps(rows)
+            self._benchmark_write_mbps_points = aggregate_benchmark_write_mbps(rows)
+            self._redraw_benchmark_chart2()
 
             self.benchmark_tree.delete(*self.benchmark_tree.get_children())
             self._benchmark_pietro_state = {}
@@ -5245,7 +5493,9 @@ def _build_gui():
                 render_benchmark_pdf(path, self._benchmark_growth_points,
                                       self._benchmark_fieldnames, self._benchmark_rows,
                                       points2=self._benchmark_fair_spw_points,
-                                      translator=TRANSLATOR)
+                                      translator=TRANSLATOR,
+                                      sieve_points=self._benchmark_sieve_nps_points,
+                                      write_points=self._benchmark_write_mbps_points)
             except Exception as exc:
                 messagebox.showerror(T("bench.save_pdf"), T("bench.save_error", error=exc))
                 return

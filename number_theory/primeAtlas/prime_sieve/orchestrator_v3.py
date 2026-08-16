@@ -15,20 +15,27 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ------------------------------------------------------------------------------------------
-# ENGINE SWITCH -- change ONLY this one flag to flip which scanner generation (v3 or v4)
-# this orchestrator drives. Previously this meant editing SCRIPT_NAME (below) AND the
+# ENGINE SWITCH -- change ONLY this one flag to flip which scanner generation (v3, v4, or
+# v4.1) this orchestrator drives. Previously this meant editing SCRIPT_NAME (below) AND the
 # `import prime_sieve_v3` line above it separately -- easy to change one and forget the
 # other, which is exactly what happened testing v4 (SCRIPT_NAME pointed at
 # prime_sieve_v4.py, but the module import -- used for format_offset()/
 # read_prime_window_header()/SCAN_METRICS_FILENAME in the benchmark-summary code further
 # down -- was still silently reading v3's copies of those, harmless in practice since v4
 # duplicates them byte-for-byte identically, but not an honest "actually switched" state).
-# Both v3.py and v4.py write files in the SAME PGS2 format/filename convention and share
-# the same benchmark_log.csv, so flipping this is safe at any time, including mid-floor.
+# v3/v4/v4.1 all write files in the SAME PGS2 format/filename convention and share the same
+# benchmark_log.csv, so flipping this is safe at any time, including mid-floor.
 # v4 = v3 plus an inlined fast-path modulo in the C core for the per-sieving-prime phase
 # computation (see prime_sieve_v4.py's own header) -- should be faster or equal, never
 # slower, so there's rarely a reason to run v3 except for an A/B comparison like this one.
-SCANNER_VERSION = "v4"   # "v3" or "v4"
+# v4.1 = v4 plus direct base-gen/sieve/write timing and a bytes-written counter, threaded
+# through into four NEW benchmark_log.csv columns (base_gen_seconds/sieve_seconds/
+# write_seconds/bytes_written, see BENCHMARK_FIELDNAMES below) -- no change to the sieve
+# itself, purely additive instrumentation (see prime_sieve_v4_1.py's own header). Not yet
+# run against real libprimesieve as of this flag's addition -- the timing/handoff logic
+# has no libprimesieve dependency and was exercised with synthetic data instead, but a
+# real WSL run is still needed before trusting the actual timing numbers it reports.
+SCANNER_VERSION = "v4.1"   # "v3", "v4", or "v4.1"
 
 if SCANNER_VERSION == "v3":
     import prime_sieve_v3 as prime_sieve_module  # noqa: E402
@@ -36,8 +43,11 @@ if SCANNER_VERSION == "v3":
 elif SCANNER_VERSION == "v4":
     import prime_sieve_v4 as prime_sieve_module  # noqa: E402
     SCRIPT_NAME = "prime_sieve_v4.py"
+elif SCANNER_VERSION == "v4.1":
+    import prime_sieve_v4_1 as prime_sieve_module  # noqa: E402
+    SCRIPT_NAME = "prime_sieve_v4_1.py"
 else:
-    raise ValueError(f"SCANNER_VERSION must be 'v3' or 'v4', got {SCANNER_VERSION!r}")
+    raise ValueError(f"SCANNER_VERSION must be 'v3', 'v4', or 'v4.1', got {SCANNER_VERSION!r}")
 # format_offset() and read_prime_window_header() (PGS2 fast header peek) are reused here
 # for the benchmark summary, instead of duplicating them -- see prime_sieve_module's own
 # usages below.
@@ -166,6 +176,7 @@ BENCHMARK_FIELDNAMES = [
     "l_final", "sieving_primes_count", "max_child_rss_mb",
     "instance_of_n", "loop_session_seconds", "loop_numbers_per_second",
     "loop_seconds_per_window", "write_files",
+    "base_gen_seconds", "sieve_seconds", "write_seconds", "bytes_written",
 ]
 # write_files: lets the GUI's floor list show total REAL generation time per floor, which
 # requires distinguishing actual disk-writing runs from write_files=False count-only
@@ -173,6 +184,14 @@ BENCHMARK_FIELDNAMES = [
 # convention as this file's own CLI encoding of the flag (see run_batch()). Rows written
 # before this column existed have it blank -- _ensure_benchmark_log_schema() leaves old rows
 # blank rather than guessing.
+#
+# base_gen_seconds/sieve_seconds/write_seconds/bytes_written: ONLY populated by
+# prime_sieve_v4_1.py (SCANNER_VERSION="v4.1") -- see that file's own header for what each
+# phase covers. Blank for every row logged by v3/v4 (they never measured a write-phase timer
+# at all, and only ever PRINTED base_gen/sieve time rather than handing it back here) -- same
+# "leave old/unmeasured rows blank rather than guessing" rule _ensure_benchmark_log_schema()
+# already applies to write_files. Together these four are what let the Benchmark tab draw a
+# sieve-speed/write-speed breakdown instead of just one combined total_seconds figure.
 
 
 def _ensure_benchmark_log_schema(log_path):
@@ -222,7 +241,8 @@ def peak_child_rss_mb():
 def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, portal_folder,
                              l_final=None, sieving_primes_count=None, max_child_rss_mb=None,
                              write_files=True, total_primes_found=None, windows_processed=None,
-                             window_m=None):
+                             window_m=None, base_gen_seconds=None, sieve_seconds=None,
+                             write_seconds=None, bytes_written=None):
     """Logs to the SAME benchmark_log.csv used by every orchestrator variant (see this file's
     header for why that's deliberately shared, not forked).
 
@@ -270,6 +290,19 @@ def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, po
     if max_child_rss_mb is not None:
         print(f"[BENCHMARK] peak child-process RAM: {max_child_rss_mb:,.0f} MB "
               f"(single largest worker, not the simultaneous total across all workers)")
+    if sieve_seconds is not None or write_seconds is not None:
+        # Only ever both-or-neither in practice (both come from the same v4.1 handoff), but
+        # printed independently in case a future engine only measures one of the two.
+        parts = []
+        if base_gen_seconds is not None:
+            parts.append(f"base-gen {base_gen_seconds:.2f}s")
+        if sieve_seconds is not None:
+            parts.append(f"sieve {sieve_seconds:.2f}s")
+        if write_seconds is not None:
+            parts.append(f"write {write_seconds:.2f}s")
+            if bytes_written and write_seconds > 0:
+                parts.append(f"({bytes_written / write_seconds / 1e6:.1f} MB/s)")
+        print(f"[BENCHMARK] phase breakdown: {' | '.join(parts)}")
     print(f"{'='*60}")
 
     log_path = os.path.join(portal_folder, "benchmark_log.csv")
@@ -296,6 +329,10 @@ def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, po
                 "sieving_primes_count": sieving_primes_count if sieving_primes_count is not None else "",
                 "max_child_rss_mb": f"{max_child_rss_mb:.1f}" if max_child_rss_mb is not None else "",
                 "write_files": "1" if write_files else "0",
+                "base_gen_seconds": f"{base_gen_seconds:.3f}" if base_gen_seconds is not None else "",
+                "sieve_seconds": f"{sieve_seconds:.3f}" if sieve_seconds is not None else "",
+                "write_seconds": f"{write_seconds:.3f}" if write_seconds is not None else "",
+                "bytes_written": bytes_written if bytes_written is not None else "",
             })
         print(f"[BENCHMARK] logged to {log_path} (for cross-floor growth analysis)")
     except OSError as e:
@@ -427,13 +464,24 @@ def run_orchestrator(base_exponent=None, window_count=None, start_auto=None, sta
         sieving_primes_count = metrics.get("sieving_primes_count")
         total_primes_found = metrics.get("total_primes_found")
         windows_processed = metrics.get("windows_processed")
+        # base_gen_seconds/sieve_seconds/write_seconds/bytes_written: only present in the
+        # handoff when SCANNER_VERSION="v4.1" actually wrote them (see that file's own
+        # write_scan_metrics_handoff() docstring) -- .get() with no default already yields
+        # None for v3/v4 runs, which print_benchmark_summary()/the CSV row both already
+        # treat as "not measured, leave blank" throughout.
+        base_gen_seconds = metrics.get("base_gen_seconds")
+        sieve_seconds = metrics.get("sieve_seconds")
+        write_seconds = metrics.get("write_seconds")
+        bytes_written = metrics.get("bytes_written")
         max_rss_mb = peak_child_rss_mb()
         print_benchmark_summary(base_exponent, actual_start_window, current,
                                  total_seconds, portal_folder,
                                  l_final=l_final, sieving_primes_count=sieving_primes_count,
                                  max_child_rss_mb=max_rss_mb, write_files=write_files,
                                  total_primes_found=total_primes_found,
-                                 windows_processed=windows_processed, window_m=window_m)
+                                 windows_processed=windows_processed, window_m=window_m,
+                                 base_gen_seconds=base_gen_seconds, sieve_seconds=sieve_seconds,
+                                 write_seconds=write_seconds, bytes_written=bytes_written)
 
     return not interrupted
 
