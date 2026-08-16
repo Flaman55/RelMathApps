@@ -99,6 +99,7 @@ import prime_sieve_v1  # noqa: E402
 import pattern_catalog_v1  # noqa: E402
 from primeatlas import (  # noqa: E402
     AppSettings, Translator, DEFAULT_LANGUAGE, prune_empty_pietro_dirs,
+    run_all_tests as primality_run_all_tests, factorize as primality_factorize,
 )
 
 # AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
@@ -2368,6 +2369,17 @@ def _build_gui():
             threading.Thread(target=self._primesieve_calc_worker_loop, daemon=True).start()
             self.after(150, self._poll_primesieve_calc_results)
 
+            # Primality-testing worker (Liczby pierwsze -> Testy pierwszosci sub-tab):
+            # own queue pair for the same reason as the primesieve-calculator block just
+            # above (unrelated result shapes: a list of per-method test rows vs. a
+            # factorization dict) -- but note this worker never touches WSL at all, see
+            # _primality_worker_loop's own docstring.
+            self._primality_busy = False
+            self._primality_work_queue = queue.Queue()
+            self._primality_result_queue = queue.Queue()
+            threading.Thread(target=self._primality_worker_loop, daemon=True).start()
+            self.after(150, self._poll_primality_results)
+
             # "Generate missing fragment, then re-search" state -- set by
             # _offer_generate_missing_prime_window()/_offer_generate_missing_constellation()
             # right before launching a generation run in response to a search miss, and
@@ -2790,13 +2802,174 @@ def _build_gui():
             self.clipboard_append(str(self._primesieve_calc_last_result))
 
         def _build_primality_tab(self):
-            """Placeholder -- filled in by a later phase (Miller-Rabin/Fermat/
-            Solovay-Strassen primality testing + trial-division/Pollard's-rho
-            factorization for a single entered number). See _build_primesieve_tab()'s
-            own comment for why this is an explicit placeholder, not just an empty
-            frame."""
-            ttk.Label(self.primes_primality_tab, text=T("primality.placeholder"),
-                      padding=20, wraplength=500, justify="left").pack(anchor="nw")
+            """Testy pierwszosci sub-tab -- enter a number, run Miller-Rabin/Fermat/
+            Solovay-Strassen against it (primeatlas/primality.py, pure Python, no WSL
+            round trip needed -- see that module's own header comment on why), or
+            factorize it (trial division + Pollard's rho by default, sympy.factorint()
+            instead when installed). Both operations run on their own worker thread
+            (own queue.Queue pair + 150ms poller, same pattern as
+            _primesieve_calc_worker_loop/_poll_primesieve_calc_results) purely to keep a
+            slow big-number computation off the GUI thread -- unlike the primesieve
+            calculator this never leaves the process, there's no WSL subprocess
+            involved."""
+            top = ttk.Frame(self.primes_primality_tab)
+            top.pack(fill="x", padx=6, pady=(10, 4))
+            ttk.Label(top, text=T("primality.field_number")).pack(side="left")
+            self.primality_number_entry = ttk.Entry(top, width=32)
+            self.primality_number_entry.pack(side="left", padx=(6, 16))
+
+            self.primality_use_sympy_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(
+                top, text=T("primality.use_sympy_checkbox"),
+                variable=self.primality_use_sympy_var).pack(side="left")
+
+            button_row = ttk.Frame(self.primes_primality_tab)
+            button_row.pack(fill="x", padx=6, pady=(0, 8))
+            self.primality_check_button = ttk.Button(
+                button_row, text=T("primality.check_button"),
+                command=self._on_primality_check_compute)
+            self.primality_check_button.pack(side="left")
+            self.primality_factorize_button = ttk.Button(
+                button_row, text=T("primality.factorize_button"),
+                command=self._on_primality_factorize_compute)
+            self.primality_factorize_button.pack(side="left", padx=(8, 0))
+
+            ttk.Label(self.primes_primality_tab, text=T("primality.hint"),
+                      wraplength=640, justify="left", foreground="#555").pack(
+                anchor="w", padx=6, pady=(0, 8))
+
+            tree_frame = ttk.Frame(self.primes_primality_tab)
+            tree_frame.pack(fill="both", expand=False, padx=6, pady=(0, 8))
+            columns = ("method", "verdict", "certainty", "seconds")
+            self.primality_results_tree = ttk.Treeview(
+                tree_frame, columns=columns, show="headings", height=3)
+            self.primality_results_tree.heading("method", text=T("primality.col_method"))
+            self.primality_results_tree.heading("verdict", text=T("primality.col_verdict"))
+            self.primality_results_tree.heading("certainty", text=T("primality.col_certainty"))
+            self.primality_results_tree.heading("seconds", text=T("primality.col_seconds"))
+            self.primality_results_tree.column("method", width=140, anchor="w")
+            self.primality_results_tree.column("verdict", width=110, anchor="center")
+            self.primality_results_tree.column("certainty", width=220, anchor="w")
+            self.primality_results_tree.column("seconds", width=100, anchor="e")
+            self.primality_results_tree.pack(fill="x")
+
+            factor_frame = ttk.Frame(self.primes_primality_tab)
+            factor_frame.pack(fill="x", padx=6, pady=(0, 8))
+            self.primality_factor_result_var = tk.StringVar(value="")
+            ttk.Label(factor_frame, textvariable=self.primality_factor_result_var,
+                      wraplength=640, justify="left").pack(anchor="w")
+
+        def _primality_parse_number(self):
+            """Shared client-side validation for both buttons -- parses the number field
+            (via _eval_quick_number, so expressions like 10**5+3 work here too, same as
+            the primesieve calculator's fields), requiring an integer >= 2 (both
+            primality.run_all_tests and primality.factorize document this same floor --
+            see that module's own docstrings). Raises ValueError with a translated
+            message on failure; returns the parsed int on success."""
+            n = _eval_quick_number(self.primality_number_entry.get())
+            if n is None or n < 2:
+                raise ValueError(T("primality.error_number_invalid"))
+            return n
+
+        def _on_primality_check_compute(self):
+            if self._primality_busy:
+                return
+            try:
+                n = self._primality_parse_number()
+            except ValueError as e:
+                messagebox.showerror(T("primality.error_dialog_title"), str(e))
+                return
+            self._primality_set_busy(True)
+            self._primality_work_queue.put({"op": "check", "n": n})
+
+        def _on_primality_factorize_compute(self):
+            if self._primality_busy:
+                return
+            try:
+                n = self._primality_parse_number()
+            except ValueError as e:
+                messagebox.showerror(T("primality.error_dialog_title"), str(e))
+                return
+            self._primality_set_busy(True)
+            self._primality_work_queue.put(
+                {"op": "factorize", "n": n, "use_sympy": self.primality_use_sympy_var.get()})
+
+        def _primality_set_busy(self, busy):
+            self._primality_busy = busy
+            state = "disabled" if busy else "normal"
+            self.primality_check_button.configure(state=state)
+            self.primality_factorize_button.configure(state=state)
+            if busy:
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="indeterminate")
+                self.totals_progress.start(80)
+                self.status.set(T("primality.status_computing"))
+            else:
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="determinate", maximum=1, value=0)
+
+        def _primality_worker_loop(self):
+            """Own daemon thread -- single-owner reasoning identical to
+            _primesieve_calc_worker_loop's own docstring (self._primality_busy blocks
+            new requests from the GUI side, so only one job is ever in flight). No WSL
+            subprocess here at all -- primeatlas.primality is ordinary in-process pure
+            Python, run directly on this thread."""
+            while True:
+                job = self._primality_work_queue.get()
+                op = job["op"]
+                try:
+                    if op == "check":
+                        rows = primality_run_all_tests(job["n"])
+                        self._primality_result_queue.put((op, job["n"], True, rows))
+                    else:
+                        result = primality_factorize(job["n"], use_sympy=job["use_sympy"])
+                        self._primality_result_queue.put((op, job["n"], True, result))
+                except Exception as e:  # noqa: BLE001 -- surface any unexpected failure
+                                         # to the GUI as an error dialog instead of
+                                         # silently killing this worker thread
+                    self._primality_result_queue.put((op, job["n"], False, str(e)))
+
+        def _poll_primality_results(self):
+            """Main-thread side -- same 150ms polling cadence as
+            _poll_primesieve_calc_results/_poll_search_results, runs for the whole
+            lifetime of the window."""
+            try:
+                while True:
+                    op, n, ok, payload = self._primality_result_queue.get_nowait()
+                    self._primality_set_busy(False)
+                    if not ok:
+                        self.status.set(T("primality.status_error"))
+                        messagebox.showerror(T("primality.error_dialog_title"), payload)
+                        continue
+                    self.status.set(T("primality.status_done"))
+                    if op == "check":
+                        self._primality_show_check_results(payload)
+                    else:
+                        self._primality_show_factorize_result(n, payload)
+            except queue.Empty:
+                pass
+            self.after(150, self._poll_primality_results)
+
+        def _primality_show_check_results(self, rows):
+            self.primality_results_tree.delete(*self.primality_results_tree.get_children())
+            for row in rows:
+                verdict = (T("primality.verdict_prime") if row["is_prime"]
+                            else T("primality.verdict_composite"))
+                self.primality_results_tree.insert(
+                    "", "end",
+                    values=(row["method"], verdict, row["certainty"], f"{row['seconds']:.4f}"))
+
+        def _primality_show_factorize_result(self, n, result):
+            pairs = result["pairs"]
+            factor_str = " x ".join(
+                f"{p}^{e}" if e > 1 else str(p) for p, e in pairs) or str(n)
+            method = (T("primality.method_sympy") if result["method"] == "sympy"
+                      else T("primality.method_pure_python"))
+            text = T("primality.factor_result", n=f"{n:,}", factors=factor_str,
+                      method=method, seconds=f"{result['seconds']:.4f}")
+            if not result["complete"]:
+                text += " " + T("primality.factor_result_incomplete_note")
+            self.primality_factor_result_var.set(text)
 
         def _build_primes_tab(self):
             top = ttk.Frame(self.primes_storage_tab)
