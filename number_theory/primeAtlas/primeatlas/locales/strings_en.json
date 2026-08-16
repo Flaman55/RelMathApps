@@ -66,6 +66,8 @@
   "primality.method_sympy": "sympy",
   "primality.factor_result": "{n} = {factors}  (method: {method}, time: {seconds}s)",
   "primality.factor_result_incomplete_note": "[Note: time limit reached -- the factorization may be incomplete; the last item in the list may not be prime.]",
+  "primality.factors_field_label": "Factors:",
+  "primality.copy_factors_button": "Copy factors",
   "const_calc.field_k": "k:",
   "const_calc.field_variant": "Variant:",
   "const_calc.variant_label": "id {id}",

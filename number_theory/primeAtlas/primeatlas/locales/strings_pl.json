@@ -66,6 +66,8 @@
   "primality.method_sympy": "sympy",
   "primality.factor_result": "{n} = {factors}  (metoda: {method}, czas: {seconds}s)",
   "primality.factor_result_incomplete_note": "[Uwaga: limit czasu upłynął -- rozkład może być niepełny; ostatni element listy nie musi być liczbą pierwszą.]",
+  "primality.factors_field_label": "Czynniki:",
+  "primality.copy_factors_button": "Kopiuj czynniki",
   "const_calc.field_k": "k:",
   "const_calc.field_variant": "Wariant:",
   "const_calc.variant_label": "id {id}",

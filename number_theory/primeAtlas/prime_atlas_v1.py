@@ -3101,10 +3101,29 @@ def _build_gui():
             self.primality_results_tree.pack(fill="x")
 
             factor_frame = ttk.Frame(self.primes_primality_tab)
-            factor_frame.pack(fill="x", padx=6, pady=(0, 8))
+            factor_frame.pack(fill="x", padx=6, pady=(0, 4))
             self.primality_factor_result_var = tk.StringVar(value="")
             ttk.Label(factor_frame, textvariable=self.primality_factor_result_var,
-                      wraplength=640, justify="left").pack(anchor="w")
+                      wraplength=760, justify="left").pack(anchor="w")
+
+            # Separate readonly Entry holding JUST the factor list (no "n = " prefix, no
+            # "(metoda: ..., czas: ...)" suffix) -- a plain Label's text can't be selected
+            # or copied at all in tkinter, so the summary line above was previously
+            # impossible to copy from. An Entry supports normal mouse selection (drag for
+            # a range, double-click for one factor) and Ctrl+C even in readonly state --
+            # readonly only blocks typing/editing, not selection -- plus a one-click Copy
+            # button for grabbing the whole list at once.
+            factors_row = ttk.Frame(self.primes_primality_tab)
+            factors_row.pack(fill="x", padx=6, pady=(0, 8))
+            ttk.Label(factors_row, text=T("primality.factors_field_label")).pack(side="left")
+            self.primality_factors_only_var = tk.StringVar(value="")
+            self.primality_factors_entry = ttk.Entry(
+                factors_row, textvariable=self.primality_factors_only_var, state="readonly")
+            self.primality_factors_entry.pack(side="left", fill="x", expand=True, padx=(6, 6))
+            self.primality_factors_copy_button = ttk.Button(
+                factors_row, text=T("primality.copy_factors_button"),
+                command=self._on_primality_copy_factors, state="disabled")
+            self.primality_factors_copy_button.pack(side="left")
 
         def _primality_parse_number(self):
             """Shared client-side validation for both buttons -- parses the number field
@@ -3217,6 +3236,15 @@ def _build_gui():
             if not result["complete"]:
                 text += " " + T("primality.factor_result_incomplete_note")
             self.primality_factor_result_var.set(text)
+            self.primality_factors_only_var.set(factor_str)
+            self.primality_factors_copy_button.configure(state="normal")
+
+        def _on_primality_copy_factors(self):
+            text = self.primality_factors_only_var.get()
+            if not text:
+                return
+            self.clipboard_clear()
+            self.clipboard_append(text)
 
         def _build_primes_tab(self):
             top = ttk.Frame(self.primes_storage_tab)
