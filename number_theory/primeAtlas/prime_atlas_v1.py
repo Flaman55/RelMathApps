@@ -655,6 +655,65 @@ def build_constellation_records_table(portal_folder, k, floor_min=None, floor_ma
     return variant_ids, variant_meta, rows
 
 
+def build_constellation_records_detail_rows(portal_folder, k, floor_min=None, floor_max=None):
+    """Full-detail companion to build_constellation_records_table(): instead of just the
+    smallest offset per (floor, variant) cell, returns ONE row per individual hit --
+    every tuple-start value found in every hit file for `k` within the given floor
+    range, not only the record-setting smallest one. Same floor_min/floor_max
+    semantics (inclusive, None = unbounded) as build_constellation_records_table().
+
+    Added for the PDF/CSV export buttons specifically (user request: the exported
+    file should contain every hit this project has found for the currently displayed
+    floor range, not just the compact one-cell-per-floor summary) -- the on-screen
+    tree keeps showing the compact view (see build_constellation_records_table()'s own
+    docstring for why that's the right shape for browsing), and
+    _on_const_records_cell_activate() gives the same full list on-demand for a single
+    cell inside the GUI itself without needing an export.
+
+    Returns (variant_ids, variant_meta, rows):
+      rows: [{"base_exponent": int, "variant_id": int, "offset": int, "number": int,
+              "position_in_file": int, "count_in_file": int, "is_record_floor": bool},
+             ...] sorted by (base_exponent, variant_id, offset) ascending -- offset
+      ascending is automatic since hit files store values sorted ascending (see
+      constellation_finder_v1.py's own module header) and offset = number - floor's
+      10**base_exponent preserves that ordering.
+
+    Can read a LOT of data for a long-running project (every hit, not just one per
+    cell) -- callers should keep this off the GUI thread, same as
+    build_constellation_records_table()."""
+    variants = pattern_catalog_v1.patterns_for_k(k)
+    variant_ids = [w["id"] for w in variants]
+    variant_meta = {w["id"]: w for w in variants}
+    rows = []
+    for base_exponent in list_pietra(portal_folder):
+        if floor_min is not None and base_exponent < floor_min:
+            continue
+        if floor_max is not None and base_exponent > floor_max:
+            continue
+        if not floor_has_constellation_hits(portal_folder, base_exponent):
+            continue
+        base = 10 ** base_exponent
+        for vid in variant_ids:
+            path = hit_file_path(portal_folder, base_exponent, k, vid)
+            if not os.path.exists(path):
+                continue
+            try:
+                values = prime_sieve_v1.read_prime_window(path)
+            except Exception:
+                values = []
+            record_digits = variant_meta[vid]["record_digits"]
+            is_record_floor = (record_digits is not None
+                                and base_exponent == record_digits - 1)
+            for position, value in enumerate(values):
+                rows.append({
+                    "base_exponent": base_exponent, "variant_id": vid,
+                    "offset": value - base, "number": value,
+                    "position_in_file": position, "count_in_file": len(values),
+                    "is_record_floor": is_record_floor,
+                })
+    return variant_ids, variant_meta, rows
+
+
 def render_constellation_records_pdf(path, k, fieldnames, rows, translator=None):
     """Writes a standalone PDF report of one k's records table (see
     build_constellation_records_table()) to `path` -- same low-level PDF-writing
@@ -4323,24 +4382,39 @@ def _build_gui():
             each floor x variant combination (build_constellation_records_table() does
             the actual scan -- see that function's own docstring for the exact
             semantics, including what the record-floor asterisk does and doesn't claim).
+
+            Double-clicking a cell drills down into the FULL list of hits behind it (all
+            2019 numbers for a "+23,080,007,797 (2019x)" cell, not just the smallest) in
+            the paginated detail panel below the tree -- see
+            _on_const_records_cell_activate(). Same idea as the Constellations tab's own
+            expand-to-preview flow, just inline in this tab instead of a separate
+            navigation step, per user request.
+
             Export to PDF (render_constellation_records_pdf(), same low-level PDF writer
-            as the Benchmark tab's export) or CSV (plain csv.DictWriter, more detail per
-            cell than the PDF/tree can show -- count and the record note spelled out
-            instead of truncated).
+            as the Benchmark tab's export) or CSV (plain csv.DictWriter) now pulls the
+            SAME full-detail data as the cell drill-down (one row per individual hit,
+            via build_constellation_records_detail_rows()) rather than the compact
+            on-screen summary -- also per user request ("pełna tabela z wszystkimi
+            elementami"): the summary's smallest-offset-per-cell shape is right for
+            browsing, but not for an exported reference file meant to hold everything
+            found so far. Export always covers the SAME floor range as the currently
+            displayed table (self._const_records_last_floor_bounds, captured at scan
+            time) -- not the live contents of the od/do fields, in case they've been
+            edited since the last Skanuj click.
 
-            Optional "Piętro od/do" fields scope the scan to a floor range (see
-            build_constellation_records_table()'s own docstring) -- added because an
-            unbounded scan over a storage with many populated floors produces a table
-            that's mostly noise (a wall of "-" cells for floors the user isn't looking
-            at right now), not because the scan itself is too slow to run unbounded.
+            Optional "Piętro od/do" fields scope the on-screen scan to a floor range
+            (see build_constellation_records_table()'s own docstring) -- added because
+            an unbounded scan over a storage with many populated floors produces a
+            table that's mostly noise (a wall of "-" cells for floors the user isn't
+            looking at right now), not because the scan itself is too slow to run
+            unbounded.
 
-            The scan runs on ITS OWN worker thread (queue pair here matches every other
-            worker in this file -- see e.g. _primesieve_calc_worker_loop's own docstring
-            for the shared rationale) since reading one stored value out of every hit
-            file across every floor for a given k, while individually cheap, can add up
-            for a long-running project with many populated floors -- keeping it off the
-            GUI thread matches this file's established pattern rather than being a
-            special case."""
+            Scans AND exports run on the SAME worker thread (queue pair here matches
+            every other worker in this file -- see e.g. _primesieve_calc_worker_loop's
+            own docstring for the shared rationale), distinguished by a job["mode"]
+            field ("scan" / "export_pdf" / "export_csv") -- reading every hit file in
+            full for an export is more expensive than the summary scan's "just the
+            first value" read, so keeping it off the GUI thread matters even more here."""
             container = ttk.Frame(self.constellations_records_tab)
             container.pack(fill="both", expand=True, padx=12, pady=12)
 
@@ -4373,8 +4447,16 @@ def _build_gui():
             ttk.Label(container, text=T("const_records.hint"), wraplength=760,
                       justify="left", foreground="#555").pack(anchor="w", pady=(0, 8))
 
-            self.const_records_tree_frame = ttk.Frame(container)
-            self.const_records_tree_frame.pack(fill="both", expand=True)
+            # Vertical split: table on top, full-hit-list drill-down for whatever cell
+            # was last double-clicked on the bottom -- same "tree above, detail panel
+            # below" shape as the Constellations tab's own paned view, just stacked
+            # instead of side-by-side since this table's rows are wide but few, while
+            # its drill-down list is narrow but potentially long.
+            paned = ttk.Panedwindow(container, orient="vertical")
+            paned.pack(fill="both", expand=True)
+
+            self.const_records_tree_frame = ttk.Frame(paned)
+            paned.add(self.const_records_tree_frame, weight=2)
             self.const_records_tree = None  # built fresh per scan -- see
                                              # _rebuild_const_records_tree(), column
                                              # count depends on how many variants k has
@@ -4384,8 +4466,72 @@ def _build_gui():
                                                  # own note)
             self._const_records_last = None  # (k, variant_ids, variant_meta, rows) from
                                               # the most recently finished scan -- read by
-                                              # both export buttons
+                                              # the cell drill-down and both export
+                                              # buttons (for k; rows/variant_ids are the
+                                              # compact summary, NOT what gets exported)
+            self._const_records_last_floor_bounds = (None, None)  # (floor_min, floor_max)
+                                              # used by that same scan -- exports reuse
+                                              # this exact scope rather than re-reading
+                                              # the od/do fields, which may have changed
+                                              # since Skanuj was last clicked
             self._rebuild_const_records_tree([])
+
+            detail_frame = ttk.Frame(paned)
+            paned.add(detail_frame, weight=1)
+            self.const_records_detail_label_var = tk.StringVar(
+                value=T("const_records.detail_hint"))
+            ttk.Label(detail_frame, textvariable=self.const_records_detail_label_var,
+                      anchor="w").pack(fill="x", padx=4, pady=(2, 4))
+
+            # _FlowRow, same reasoning as every other preview-nav row in this file --
+            # see that class's own docstring.
+            detail_nav = _FlowRow(detail_frame)
+            detail_nav.frame.pack(anchor="w", padx=4, fill="x")
+            self.const_records_detail_prev_btn = ttk.Button(
+                detail_nav.frame, text=T("common.prev_page"),
+                command=self._prev_const_records_detail_page, state="disabled")
+            detail_nav.add(self.const_records_detail_prev_btn)
+            self.const_records_detail_page_label = tk.StringVar(value="")
+            detail_nav.add(ttk.Label(detail_nav.frame,
+                                      textvariable=self.const_records_detail_page_label,
+                                      width=16, anchor="center"))
+            self.const_records_detail_next_btn = ttk.Button(
+                detail_nav.frame, text=T("common.next_page"),
+                command=self._next_const_records_detail_page, state="disabled")
+            detail_nav.add(self.const_records_detail_next_btn)
+            detail_nav.add(ttk.Label(detail_nav.frame, text=T("common.page_prefix")),
+                            padx_left=10)
+            self.const_records_detail_goto_entry = ttk.Entry(detail_nav.frame, width=6)
+            detail_nav.add(self.const_records_detail_goto_entry, padx_left=4)
+            self.const_records_detail_goto_entry.bind(
+                "<Return>", lambda _e: self._goto_const_records_detail_page())
+            detail_nav.add(ttk.Button(detail_nav.frame, text=T("common.goto"),
+                                       command=self._goto_const_records_detail_page),
+                            padx_left=4)
+
+            detail_list_frame = ttk.Frame(detail_frame)
+            detail_list_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+            self.const_records_detail_list = tk.Listbox(detail_list_frame, font=("Consolas", 9))
+            detail_vsb = ttk.Scrollbar(detail_list_frame, orient="vertical",
+                                        command=self.const_records_detail_list.yview)
+            self.const_records_detail_list.configure(yscrollcommand=detail_vsb.set)
+            self.const_records_detail_list.pack(side="left", fill="both", expand=True)
+            detail_vsb.pack(side="right", fill="y")
+
+            # Same Ctrl+C / right-click "Copy" convenience as the Constellations tab's
+            # own hits preview list.
+            self.const_records_detail_list.bind(
+                "<Control-c>", lambda _e: self._copy_selected_const_records_detail_value())
+            self.const_records_detail_list.bind(
+                "<Button-3>", self._show_const_records_detail_context_menu)
+            self._const_records_detail_context_menu = tk.Menu(self, tearoff=0)
+            self._const_records_detail_context_menu.add_command(
+                label=T("common.copy"), command=self._copy_selected_const_records_detail_value)
+
+            self._const_records_detail_rows = []  # [(number, offset), ...] for whichever
+                                                    # cell was last double-clicked
+            self._const_records_detail_page = 0
+            self._const_records_detail_total_pages = 1
 
             if pattern_catalog_v1.all_k():
                 self.const_records_k_combo.current(0)
@@ -4412,7 +4558,13 @@ def _build_gui():
             right edge -- neither is fixable by resizing the window, since Tk was
             filling/squeezing to the CURRENT width either way. Fixed width + horizontal
             scroll makes the table's real width consistent regardless of variant count,
-            and lets the user actually scroll to whatever doesn't fit."""
+            and lets the user actually scroll to whatever doesn't fit.
+
+            The <Double-Button-1> binding for cell drill-down is (re)attached here too,
+            not just once at tab-build time -- since this whole widget gets destroyed
+            and recreated on every scan, a binding made only in
+            _build_constellations_records_tab() would silently stop firing after the
+            very first Skanuj click, once the original bound widget is gone."""
             if self.const_records_tree is not None:
                 self.const_records_tree.destroy()
             if self.const_records_tree_vsb is not None:
@@ -4435,10 +4587,10 @@ def _build_gui():
             vsb.pack(side="right", fill="y")
             hsb.pack(side="bottom", fill="x")
             tree.pack(side="left", fill="both", expand=True)
+            tree.bind("<Double-Button-1>", self._on_const_records_cell_activate)
             self.const_records_tree = tree
             self.const_records_tree_vsb = vsb
             self.const_records_tree_hsb = hsb
-            self.const_records_tree_vsb = vsb
 
         def _on_const_records_scan_clicked(self):
             if self._const_records_busy:
@@ -4455,47 +4607,138 @@ def _build_gui():
                 messagebox.showerror(
                     T("const_records.error_dialog_title"), T("const_records.error_invalid_range"))
                 return
+            self._const_records_start_job(
+                {"mode": "scan", "k": k, "floor_min": floor_min, "floor_max": floor_max},
+                T("const_records.status_scanning", k=k))
+
+        def _const_records_start_job(self, job, status_text):
+            """Shared dispatch for every job this tab's worker can run (scan/export_pdf/
+            export_csv) -- all three are mutually exclusive (one at a time, same busy
+            flag/progress bar/button-disabling), so this is the one place that logic
+            lives instead of being copy-pasted into each of the three click handlers."""
             self._const_records_busy = True
             self.const_records_scan_button.configure(state="disabled")
+            self.const_records_export_pdf_button.configure(state="disabled")
+            self.const_records_export_csv_button.configure(state="disabled")
             self.totals_progress.stop()
             self.totals_progress.configure(mode="indeterminate")
             self.totals_progress.start(80)
-            self.status.set(T("const_records.status_scanning", k=k))
-            self._const_records_work_queue.put(
-                {"k": k, "floor_min": floor_min, "floor_max": floor_max})
+            self.status.set(status_text)
+            self._const_records_work_queue.put(job)
 
         def _const_records_worker_loop(self):
             while True:
                 job = self._const_records_work_queue.get()
+                mode = job.get("mode", "scan")
                 k = job["k"]
+                floor_min = job.get("floor_min")
+                floor_max = job.get("floor_max")
                 try:
-                    variant_ids, variant_meta, rows = build_constellation_records_table(
-                        PORTAL_FOLDER, k,
-                        floor_min=job.get("floor_min"), floor_max=job.get("floor_max"))
-                    self._const_records_result_queue.put((k, True, (variant_ids, variant_meta, rows)))
+                    if mode == "scan":
+                        variant_ids, variant_meta, rows = build_constellation_records_table(
+                            PORTAL_FOLDER, k, floor_min=floor_min, floor_max=floor_max)
+                        self._const_records_result_queue.put(
+                            (mode, k, True, (variant_ids, variant_meta, rows, floor_min, floor_max)))
+                    else:  # export_pdf / export_csv
+                        _variant_ids, _variant_meta, detail_rows = (
+                            build_constellation_records_detail_rows(
+                                PORTAL_FOLDER, k, floor_min=floor_min, floor_max=floor_max))
+                        path = job["path"]
+                        if mode == "export_pdf":
+                            self._render_const_records_detail_pdf(path, k, detail_rows)
+                        else:
+                            self._write_const_records_detail_csv(path, detail_rows)
+                        self._const_records_result_queue.put((mode, k, True, path))
                 except Exception as e:  # noqa: BLE001 -- must never kill this thread
-                    self._const_records_result_queue.put((k, False, str(e)))
+                    self._const_records_result_queue.put((mode, k, False, str(e)))
+
+        def _render_const_records_detail_pdf(self, path, k, detail_rows):
+            """Runs on the worker thread (called from _const_records_worker_loop) --
+            builds the PDF fieldnames/rows from build_constellation_records_detail_rows()'
+            flat per-hit dicts and hands them to render_constellation_records_pdf(),
+            same low-level writer the old summary export used. One row per individual
+            hit (see that function's own docstring for why), so a floor with 2019 hits
+            produces 2019 PDF rows/however many continuation pages that takes -- exactly
+            what was asked for ("pełna tabela z wszystkimi elementami"), not a
+            regression from the old compact one-row-per-floor shape."""
+            fieldnames = ["exp", "id", "offset", "number"]
+            pdf_rows = [{
+                "exp": f"10p{r['base_exponent']}",
+                "id": r["variant_id"],
+                "offset": f"+{r['offset']:,}" + (" *" if r["is_record_floor"] else ""),
+                "number": r["number"],
+            } for r in detail_rows]
+            render_constellation_records_pdf(path, k, fieldnames, pdf_rows, translator=TRANSLATOR)
+
+        def _write_const_records_detail_csv(self, path, detail_rows):
+            """Runs on the worker thread (called from _const_records_worker_loop) --
+            plain csv.DictWriter, one row per individual hit (see
+            build_constellation_records_detail_rows()'s own docstring)."""
+            fieldnames = ["exp", "variant_id", "offset", "number",
+                          "position_in_file", "count_in_file", "is_record_floor"]
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for r in detail_rows:
+                    writer.writerow({
+                        "exp": f"10p{r['base_exponent']}",
+                        "variant_id": r["variant_id"],
+                        "offset": r["offset"],
+                        "number": r["number"],
+                        "position_in_file": r["position_in_file"],
+                        "count_in_file": r["count_in_file"],
+                        "is_record_floor": r["is_record_floor"],
+                    })
 
         def _poll_const_records_results(self):
             try:
                 while True:
-                    k, ok, payload = self._const_records_result_queue.get_nowait()
+                    mode, k, ok, payload = self._const_records_result_queue.get_nowait()
                     self._const_records_busy = False
                     self.const_records_scan_button.configure(state="normal")
                     self.totals_progress.stop()
                     self.totals_progress.configure(mode="determinate", maximum=1, value=0)
-                    if not ok:
-                        self.status.set(T("const_records.status_error"))
-                        messagebox.showerror(T("const_records.error_dialog_title"), payload)
-                        continue
-                    variant_ids, variant_meta, rows = payload
-                    self._show_const_records_results(k, variant_ids, variant_meta, rows)
+                    if mode == "scan":
+                        if not ok:
+                            # Scan failed -- self._const_records_last (if any) still
+                            # holds the last SUCCESSFUL scan's data untouched, so restore
+                            # the export buttons to match it instead of leaving them
+                            # disabled from _const_records_start_job() (which disables
+                            # all three buttons up front, since a scan and an export
+                            # can't usefully run at the same time).
+                            has_rows = bool(self._const_records_last and self._const_records_last[3])
+                            self.const_records_export_pdf_button.configure(
+                                state="normal" if has_rows else "disabled")
+                            self.const_records_export_csv_button.configure(
+                                state="normal" if has_rows else "disabled")
+                            self.status.set(T("const_records.status_error"))
+                            messagebox.showerror(T("const_records.error_dialog_title"), payload)
+                            continue
+                        variant_ids, variant_meta, rows, floor_min, floor_max = payload
+                        self._show_const_records_results(
+                            k, variant_ids, variant_meta, rows, floor_min, floor_max)
+                    else:  # export_pdf / export_csv
+                        has_rows = bool(self._const_records_last and self._const_records_last[3])
+                        self.const_records_export_pdf_button.configure(
+                            state="normal" if has_rows else "disabled")
+                        self.const_records_export_csv_button.configure(
+                            state="normal" if has_rows else "disabled")
+                        button_label = T("const_records.export_pdf_button" if mode == "export_pdf"
+                                          else "const_records.export_csv_button")
+                        if not ok:
+                            self.status.set(T("const_records.status_error"))
+                            messagebox.showerror(T("const_records.error_dialog_title"), payload)
+                            continue
+                        path = payload
+                        self.status.set(T("bench.status_saved", path=path))
+                        messagebox.showinfo(button_label, T("bench.saved_dialog", path=path))
             except queue.Empty:
                 pass
             self.after(150, self._poll_const_records_results)
 
-        def _show_const_records_results(self, k, variant_ids, variant_meta, rows):
+        def _show_const_records_results(self, k, variant_ids, variant_meta, rows, floor_min, floor_max):
             self._const_records_last = (k, variant_ids, variant_meta, rows)
+            self._const_records_last_floor_bounds = (floor_min, floor_max)
             self._rebuild_const_records_tree(variant_ids)
             for row in rows:
                 values = [f"10p{row['base_exponent']}"]
@@ -4508,30 +4751,118 @@ def _build_gui():
                         if cell["is_record_floor"]:
                             text += " *"
                         values.append(text)
-                self.const_records_tree.insert("", "end", values=tuple(values))
+                # iid = the floor number itself (unique -- one row per floor), so a cell
+                # double-click can recover which floor was clicked directly from
+                # identify_row() without a separate item->floor lookup table.
+                self.const_records_tree.insert(
+                    "", "end", iid=str(row["base_exponent"]), values=tuple(values))
             has_rows = bool(rows)
             self.const_records_export_pdf_button.configure(state="normal" if has_rows else "disabled")
             self.const_records_export_csv_button.configure(state="normal" if has_rows else "disabled")
             self.status.set(T(
                 "const_records.status_done" if has_rows else "const_records.status_no_hits",
                 k=k, count=len(rows)))
+            # The tree was just torn down and rebuilt -- any iid the detail panel was
+            # showing no longer exists, so reset it rather than leaving a stale list on
+            # screen that no longer corresponds to anything selectable.
+            self._const_records_detail_rows = []
+            self.const_records_detail_label_var.set(T("const_records.detail_hint"))
+            self._show_const_records_detail_page(0)
+
+        def _on_const_records_cell_activate(self, event):
+            """Double-click drill-down: identifies which (floor, variant) cell was
+            clicked and loads the FULL list of hits behind it (not just the smallest
+            offset the tree cell shows) into the paginated detail panel below --
+            addresses the user's "nie mogę rozwinąć by je zobaczyć tak jak w zakładce
+            konstelacje" report (this table's cells only ever showed a one-line
+            summary, with no way to see the rest without leaving the tab)."""
+            tree = self.const_records_tree
+            if tree.identify_region(event.x, event.y) != "cell":
+                return
+            row_id = tree.identify_row(event.y)
+            col_id = tree.identify_column(event.x)  # "#1" = exp, "#2".. = variants
+            if not row_id or not col_id or self._const_records_last is None:
+                return
+            try:
+                base_exponent = int(row_id)
+                col_index = int(col_id[1:]) - 1  # 0-based into the columns tuple
+            except (ValueError, IndexError):
+                return
+            k, variant_ids, _variant_meta, _rows = self._const_records_last
+            vi = col_index - 1  # columns[0] is "exp" -- skip it, no cell data there
+            if vi < 0 or vi >= len(variant_ids):
+                return
+            vid = variant_ids[vi]
+            path = hit_file_path(PORTAL_FOLDER, base_exponent, k, vid)
+            if not os.path.exists(path):
+                self._const_records_detail_rows = []
+                self.const_records_detail_label_var.set(
+                    T("const_records.detail_empty", exp=base_exponent, id=vid))
+                self._show_const_records_detail_page(0)
+                return
+            try:
+                values = prime_sieve_v1.read_prime_window(path)
+            except Exception as exc:
+                messagebox.showerror(T("const_records.error_dialog_title"), str(exc))
+                return
+            base = 10 ** base_exponent
+            self._const_records_detail_rows = [(v, v - base) for v in values]
+            self.const_records_detail_label_var.set(
+                T("const_records.detail_title", exp=base_exponent, id=vid, count=len(values)))
+            self._show_const_records_detail_page(0)
+
+        def _const_records_detail_row_formatter(self, row):
+            number, offset = row
+            return T("const_records.detail_row", number=f"{number:,}", offset=f"{offset:,}")
+
+        def _show_const_records_detail_page(self, page):
+            if not self._const_records_detail_rows:
+                self.const_records_detail_list.delete(0, "end")
+                self.const_records_detail_page_label.set("")
+                self.const_records_detail_prev_btn.configure(state="disabled")
+                self.const_records_detail_next_btn.configure(state="disabled")
+                return
+            self._const_records_detail_page, self._const_records_detail_total_pages = _render_page(
+                self.const_records_detail_list, self._const_records_detail_rows, page, PAGE_SIZE,
+                self._const_records_detail_row_formatter)
+            _update_nav_controls(
+                self.const_records_detail_page_label, self._const_records_detail_page,
+                self._const_records_detail_total_pages,
+                self.const_records_detail_prev_btn, self.const_records_detail_next_btn)
+
+        def _prev_const_records_detail_page(self):
+            self._show_const_records_detail_page(self._const_records_detail_page - 1)
+
+        def _next_const_records_detail_page(self):
+            self._show_const_records_detail_page(self._const_records_detail_page + 1)
+
+        def _goto_const_records_detail_page(self):
+            raw = self.const_records_detail_goto_entry.get().strip()
+            if not raw.isdigit():
+                return
+            self._show_const_records_detail_page(int(raw) - 1)
+
+        def _show_const_records_detail_context_menu(self, event):
+            index = self.const_records_detail_list.nearest(event.y)
+            if index >= 0:
+                self.const_records_detail_list.selection_clear(0, "end")
+                self.const_records_detail_list.selection_set(index)
+            self._const_records_detail_context_menu.tk_popup(event.x_root, event.y_root)
+
+        def _copy_selected_const_records_detail_value(self):
+            sel = self.const_records_detail_list.curselection()
+            if not sel or not self._const_records_detail_rows:
+                return
+            global_index = self._const_records_detail_page * PAGE_SIZE + sel[0]
+            if global_index >= len(self._const_records_detail_rows):
+                return
+            self.clipboard_clear()
+            self.clipboard_append(str(self._const_records_detail_rows[global_index][0]))
 
         def _export_const_records_pdf(self):
-            if not self._const_records_last:
+            if not self._const_records_last or self._const_records_busy:
                 return
-            k, variant_ids, _variant_meta, rows = self._const_records_last
-            fieldnames = ["exp"] + [f"P{vid}" for vid in variant_ids]
-            pdf_rows = []
-            for row in rows:
-                d = {"exp": f"10p{row['base_exponent']}"}
-                for vid in variant_ids:
-                    cell = row["cells"].get(vid)
-                    if cell is None:
-                        d[f"P{vid}"] = "-"
-                    else:
-                        d[f"P{vid}"] = (f"+{cell['offset']:,}"
-                                         + (" *" if cell["is_record_floor"] else ""))
-                pdf_rows.append(d)
+            k = self._const_records_last[0]
             default_name = (f"constellation_records_k{k}_"
                              f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
             path = filedialog.asksaveasfilename(
@@ -4542,22 +4873,16 @@ def _build_gui():
                 filetypes=[("PDF", "*.pdf"), (T("common.all_files"), "*.*")])
             if not path:
                 return
-            try:
-                render_constellation_records_pdf(path, k, fieldnames, pdf_rows, translator=TRANSLATOR)
-            except Exception as exc:
-                messagebox.showerror(T("const_records.error_dialog_title"),
-                                      T("bench.save_error", error=exc))
-                return
-            self.status.set(T("bench.status_saved", path=path))
-            messagebox.showinfo(T("const_records.export_pdf_button"), T("bench.saved_dialog", path=path))
+            floor_min, floor_max = self._const_records_last_floor_bounds
+            self._const_records_start_job(
+                {"mode": "export_pdf", "k": k, "floor_min": floor_min, "floor_max": floor_max,
+                 "path": path},
+                T("const_records.status_exporting", k=k))
 
         def _export_const_records_csv(self):
-            if not self._const_records_last:
+            if not self._const_records_last or self._const_records_busy:
                 return
-            k, variant_ids, variant_meta, rows = self._const_records_last
-            fieldnames = ["exp"]
-            for vid in variant_ids:
-                fieldnames += [f"P{vid}_offset", f"P{vid}_count", f"P{vid}_record_note"]
+            k = self._const_records_last[0]
             default_name = (f"constellation_records_k{k}_"
                              f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
             path = filedialog.asksaveasfilename(
@@ -4568,35 +4893,11 @@ def _build_gui():
                 filetypes=[("CSV", "*.csv"), (T("common.all_files"), "*.*")])
             if not path:
                 return
-            try:
-                with open(path, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
-                    for row in rows:
-                        d = {"exp": row["base_exponent"]}
-                        for vid in variant_ids:
-                            cell = row["cells"].get(vid)
-                            if cell is None:
-                                d[f"P{vid}_offset"] = ""
-                                d[f"P{vid}_count"] = ""
-                                d[f"P{vid}_record_note"] = ""
-                            else:
-                                d[f"P{vid}_offset"] = cell["offset"]
-                                d[f"P{vid}_count"] = cell["count"]
-                                if cell["is_record_floor"]:
-                                    w = variant_meta[vid]
-                                    d[f"P{vid}_record_note"] = (
-                                        f"record_digits={w['record_digits']}, "
-                                        f"discoverer={w['discoverer']}, date={w['date']}")
-                                else:
-                                    d[f"P{vid}_record_note"] = ""
-                        writer.writerow(d)
-            except OSError as exc:
-                messagebox.showerror(T("const_records.error_dialog_title"),
-                                      T("bench.save_error", error=exc))
-                return
-            self.status.set(T("bench.status_saved", path=path))
-            messagebox.showinfo(T("const_records.export_csv_button"), T("bench.saved_dialog", path=path))
+            floor_min, floor_max = self._const_records_last_floor_bounds
+            self._const_records_start_job(
+                {"mode": "export_csv", "k": k, "floor_min": floor_min, "floor_max": floor_max,
+                 "path": path},
+                T("const_records.status_exporting", k=k))
 
         def _build_constellations_tab(self):
             top = ttk.Frame(self.constellations_storage_tab)
