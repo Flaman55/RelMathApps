@@ -4378,6 +4378,9 @@ def _build_gui():
             self.const_records_tree = None  # built fresh per scan -- see
                                              # _rebuild_const_records_tree(), column
                                              # count depends on how many variants k has
+            self.const_records_tree_vsb = None  # its scrollbar, tracked separately so
+                                                 # it can be destroyed alongside the tree
+                                                 # on rebuild (see that method's own note)
             self._const_records_last = None  # (k, variant_ids, variant_meta, rows) from
                                               # the most recently finished scan -- read by
                                               # both export buttons
@@ -4391,9 +4394,17 @@ def _build_gui():
             the fixed leading 'exp' column -- a plain ttk.Treeview can't have its column
             SET changed after construction, and different k values have different
             variant counts (k=8 has 3, k=13 has 6), so the tree is destroyed and
-            recreated on every scan rather than trying to reuse one fixed-shape widget."""
+            recreated on every scan rather than trying to reuse one fixed-shape widget.
+
+            Its scrollbar is destroyed and recreated right alongside it (tracked in
+            self.const_records_tree_vsb, not just a throwaway local) -- previously the
+            scrollbar was a local variable never torn down, so every Skanuj click left
+            the old one behind, orphaned in the frame, stacking up one more vertical
+            scrollbar per scan."""
             if self.const_records_tree is not None:
                 self.const_records_tree.destroy()
+            if self.const_records_tree_vsb is not None:
+                self.const_records_tree_vsb.destroy()
             columns = ("exp",) + tuple(f"v{vid}" for vid in variant_ids)
             tree = ttk.Treeview(
                 self.const_records_tree_frame, columns=columns, show="headings", height=14)
@@ -4408,6 +4419,7 @@ def _build_gui():
             tree.pack(side="left", fill="both", expand=True)
             vsb.pack(side="left", fill="y")
             self.const_records_tree = tree
+            self.const_records_tree_vsb = vsb
 
         def _on_const_records_scan_clicked(self):
             if self._const_records_busy:
