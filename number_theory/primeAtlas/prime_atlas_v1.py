@@ -2227,8 +2227,8 @@ def _build_gui():
             notebook.add(self.benchmark_tab, text=T("tabs.benchmark"))
             notebook.add(self.settings_tab_container, text=T("tabs.settings"))
 
-            self._build_primes_tab()
-            self._build_constellations_tab()
+            self._build_primes_section()
+            self._build_constellations_section()
             self._build_generation_tab()
             self._build_benchmark_tab()
             self._build_settings_tab(SettingsTab)
@@ -2468,8 +2468,52 @@ def _build_gui():
 
         # --- Tab 1: Prime numbers (source primes) ---------------------------------
 
+        def _build_primes_section(self):
+            """The top-level 'Prime numbers' notebook tab is itself a small ttk.Notebook
+            now, not a single flat frame -- 'Magazyn' (Storage) holds exactly what this
+            whole tab used to be (the floor/file browser + search, built by
+            _build_primes_tab() below, completely unchanged apart from its parent frame
+            now being self.primes_storage_tab instead of self.primes_tab directly),
+            alongside two new sibling tabs that later phases fill in:
+            self.primes_primesieve_tab (a standalone libprimesieve calculator -- count/
+            nth/next/prev prime, no on-disk storage involved) and
+            self.primes_primality_tab (probabilistic primality testing + factorization
+            for a single entered number). See _build_constellations_section() for the
+            SAME nested-notebook pattern applied to the Constellations tab -- deliberately
+            identical structure between the two so the app has one consistent way of
+            giving a top-level section its own sub-tabs, not two diverging ones."""
+            sub = ttk.Notebook(self.primes_tab)
+            sub.pack(fill="both", expand=True)
+            self.primes_storage_tab = ttk.Frame(sub)
+            self.primes_primesieve_tab = ttk.Frame(sub)
+            self.primes_primality_tab = ttk.Frame(sub)
+            sub.add(self.primes_storage_tab, text=T("tabs.primes_storage"))
+            sub.add(self.primes_primesieve_tab, text=T("tabs.primes_primesieve"))
+            sub.add(self.primes_primality_tab, text=T("tabs.primes_primality"))
+            self._build_primes_tab()
+            self._build_primesieve_tab()
+            self._build_primality_tab()
+
+        def _build_primesieve_tab(self):
+            """Placeholder -- filled in by a later phase (standalone libprimesieve
+            calculator: count primes in a range, nth prime, next/prev prime, independent
+            of anything already in storage). Left as an explicit, visible placeholder
+            rather than an empty frame so the tab doesn't look broken/unfinished by
+            accident in the meantime."""
+            ttk.Label(self.primes_primesieve_tab, text=T("primesieve_calc.placeholder"),
+                      padding=20, wraplength=500, justify="left").pack(anchor="nw")
+
+        def _build_primality_tab(self):
+            """Placeholder -- filled in by a later phase (Miller-Rabin/Fermat/
+            Solovay-Strassen primality testing + trial-division/Pollard's-rho
+            factorization for a single entered number). See _build_primesieve_tab()'s
+            own comment for why this is an explicit placeholder, not just an empty
+            frame."""
+            ttk.Label(self.primes_primality_tab, text=T("primality.placeholder"),
+                      padding=20, wraplength=500, justify="left").pack(anchor="nw")
+
         def _build_primes_tab(self):
-            top = ttk.Frame(self.primes_tab)
+            top = ttk.Frame(self.primes_storage_tab)
             top.pack(fill="x", padx=6, pady=4)
             ttk.Button(top, text=T("common.refresh"), command=self.reload_primes_tree).pack(side="left")
 
@@ -2489,7 +2533,7 @@ def _build_gui():
             # in-memory set diff per floor either way -- see that function's docstring), so
             # hitting Refresh after generating new windows only pays for the new files, not
             # a full floor-by-floor rescan.
-            paned = ttk.Panedwindow(self.primes_tab, orient="horizontal")
+            paned = ttk.Panedwindow(self.primes_storage_tab, orient="horizontal")
             paned.pack(fill="both", expand=True, padx=6, pady=4)
 
             tree_frame = ttk.Frame(paned)
@@ -3244,8 +3288,47 @@ def _build_gui():
 
         # --- Tab 2: Constellations (constellation hits) ---------------------------------
 
+        def _build_constellations_section(self):
+            """Same nested-notebook pattern as _build_primes_section() (see that method's
+            own docstring for the full rationale) -- 'Magazyn' (Storage) holds exactly
+            what this whole tab used to be (the hit-file browser + search, built by
+            _build_constellations_tab() below, unchanged apart from its parent frame now
+            being self.constellations_storage_tab), alongside two new sibling tabs later
+            phases fill in: self.constellations_calculator_tab ('Kalkulator konstelacji'
+            -- pick a k-tuple pattern from pattern_catalog_v1.py + an exp/Offset pair,
+            Atlas computes the full k numbers and offers to search for them) and
+            self.constellations_records_tab (a pzktupel.de-style exp x variant table
+            built from the user's OWN storage, exportable to PDF+CSV)."""
+            sub = ttk.Notebook(self.constellations_tab)
+            sub.pack(fill="both", expand=True)
+            self.constellations_storage_tab = ttk.Frame(sub)
+            self.constellations_calculator_tab = ttk.Frame(sub)
+            self.constellations_records_tab = ttk.Frame(sub)
+            sub.add(self.constellations_storage_tab, text=T("tabs.constellations_storage"))
+            sub.add(self.constellations_calculator_tab, text=T("tabs.constellations_calculator"))
+            sub.add(self.constellations_records_tab, text=T("tabs.constellations_records"))
+            self._build_constellations_tab()
+            self._build_constellations_calculator_tab()
+            self._build_constellations_records_tab()
+
+        def _build_constellations_calculator_tab(self):
+            """Placeholder -- filled in by a later phase (pattern/exp/Offset input ->
+            full numbers -> Search button, reusing today's search-and-offer-to-generate
+            flow). See _build_primesieve_tab()'s own comment for why this is an explicit
+            placeholder, not just an empty frame."""
+            ttk.Label(self.constellations_calculator_tab, text=T("const_calc.placeholder"),
+                      padding=20, wraplength=500, justify="left").pack(anchor="nw")
+
+        def _build_constellations_records_tab(self):
+            """Placeholder -- filled in by a later phase (exp x variant table of the
+            smallest offset found IN THIS PROJECT'S OWN storage, PDF+CSV export). See
+            _build_primesieve_tab()'s own comment for why this is an explicit
+            placeholder, not just an empty frame."""
+            ttk.Label(self.constellations_records_tab, text=T("const_records.placeholder"),
+                      padding=20, wraplength=500, justify="left").pack(anchor="nw")
+
         def _build_constellations_tab(self):
-            top = ttk.Frame(self.constellations_tab)
+            top = ttk.Frame(self.constellations_storage_tab)
             top.pack(fill="x", padx=6, pady=4)
             ttk.Button(top, text=T("common.refresh"), command=self.reload_constellations_tree).pack(side="left")
 
@@ -3257,7 +3340,7 @@ def _build_gui():
                 top, text=T("common.search_button"), command=self._search_constellation)
             self.hits_search_button.pack(side="left")
 
-            paned = ttk.Panedwindow(self.constellations_tab, orient="horizontal")
+            paned = ttk.Panedwindow(self.constellations_storage_tab, orient="horizontal")
             paned.pack(fill="both", expand=True, padx=6, pady=4)
 
             tree_frame = ttk.Frame(paned)
