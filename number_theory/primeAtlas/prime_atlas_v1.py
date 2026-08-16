@@ -4452,11 +4452,23 @@ def _build_gui():
             # below" shape as the Constellations tab's own paned view, just stacked
             # instead of side-by-side since this table's rows are wide but few, while
             # its drill-down list is narrow but potentially long.
-            paned = ttk.Panedwindow(container, orient="vertical")
+            #
+            # Plain tk.PanedWindow here, not ttk.Panedwindow (used everywhere else in
+            # this file) -- ttk's sash is a near-invisible 1-2px line on most themes,
+            # which read as "no divider at all, can't resize" (user report). tk's
+            # PanedWindow exposes sashwidth/sashrelief directly, giving an actually
+            # visible grab bar. stretch="never" on the tree pane + a dynamic tree
+            # height (see _rebuild_const_records_tree's row_count param) means the top
+            # pane's natural size already tracks how many floors are in the table
+            # instead of always claiming a fixed block of mostly-empty space; the
+            # detail pane (stretch="always") absorbs any extra space on window resize.
+            # The sash stays fully manually draggable either way.
+            paned = tk.PanedWindow(container, orient="vertical", sashwidth=6,
+                                    sashrelief="raised", sashpad=1, bg="#c8c8c8")
             paned.pack(fill="both", expand=True)
 
             self.const_records_tree_frame = ttk.Frame(paned)
-            paned.add(self.const_records_tree_frame, weight=2)
+            paned.add(self.const_records_tree_frame, minsize=60, stretch="never")
             self.const_records_tree = None  # built fresh per scan -- see
                                              # _rebuild_const_records_tree(), column
                                              # count depends on how many variants k has
@@ -4477,7 +4489,7 @@ def _build_gui():
             self._rebuild_const_records_tree([])
 
             detail_frame = ttk.Frame(paned)
-            paned.add(detail_frame, weight=1)
+            paned.add(detail_frame, minsize=100, stretch="always")
             self.const_records_detail_label_var = tk.StringVar(
                 value=T("const_records.detail_hint"))
             ttk.Label(detail_frame, textvariable=self.const_records_detail_label_var,
@@ -4519,24 +4531,31 @@ def _build_gui():
             detail_vsb.pack(side="right", fill="y")
 
             # Same Ctrl+C / right-click "Copy" convenience as the Constellations tab's
-            # own hits preview list.
+            # own hits preview list. Double-click jumps to that exact hit in the
+            # Constellations tab's own Magazyn view -- see
+            # _on_const_records_detail_activate()'s own docstring.
             self.const_records_detail_list.bind(
                 "<Control-c>", lambda _e: self._copy_selected_const_records_detail_value())
             self.const_records_detail_list.bind(
                 "<Button-3>", self._show_const_records_detail_context_menu)
+            self.const_records_detail_list.bind(
+                "<Double-Button-1>", self._on_const_records_detail_activate)
             self._const_records_detail_context_menu = tk.Menu(self, tearoff=0)
             self._const_records_detail_context_menu.add_command(
                 label=T("common.copy"), command=self._copy_selected_const_records_detail_value)
 
             self._const_records_detail_rows = []  # [(number, offset), ...] for whichever
                                                     # cell was last double-clicked
+            self._const_records_detail_context = None  # {"base_exponent":, "pattern":}
+                                                         # for that same cell -- needed
+                                                         # by the jump-to-Magazyn handler
             self._const_records_detail_page = 0
             self._const_records_detail_total_pages = 1
 
             if pattern_catalog_v1.all_k():
                 self.const_records_k_combo.current(0)
 
-        def _rebuild_const_records_tree(self, variant_ids):
+        def _rebuild_const_records_tree(self, variant_ids, row_count=0):
             """(Re)builds self.const_records_tree with one column per variant id, plus
             the fixed leading 'exp' column -- a plain ttk.Treeview can't have its column
             SET changed after construction, and different k values have different
@@ -4560,6 +4579,16 @@ def _build_gui():
             scroll makes the table's real width consistent regardless of variant count,
             and lets the user actually scroll to whatever doesn't fit.
 
+            `row_count` (the number of floor-rows about to be inserted, known upfront by
+            the caller even though insertion happens after this returns) sizes the
+            Treeview's own `height` to match -- capped at 14 so a huge scan doesn't
+            balloon the visible area, floored at 3 so an empty/fresh table isn't
+            reduced to a sliver. Combined with the tree pane's stretch="never" in the
+            paned window (see _build_constellations_records_tab's own note), this makes
+            the top pane's size track the actual amount of data instead of always
+            claiming a fixed block of space regardless of how few rows there are --
+            user report: 2 rows of data sitting in a mostly-empty ~460px pane.
+
             The <Double-Button-1> binding for cell drill-down is (re)attached here too,
             not just once at tab-build time -- since this whole widget gets destroyed
             and recreated on every scan, a binding made only in
@@ -4572,8 +4601,9 @@ def _build_gui():
             if self.const_records_tree_hsb is not None:
                 self.const_records_tree_hsb.destroy()
             columns = ("exp",) + tuple(f"v{vid}" for vid in variant_ids)
+            height = max(3, min(row_count, 14)) if row_count else 3
             tree = ttk.Treeview(
-                self.const_records_tree_frame, columns=columns, show="headings", height=14)
+                self.const_records_tree_frame, columns=columns, show="headings", height=height)
             tree.heading("exp", text=T("const_records.col_exp"))
             tree.column("exp", width=70, anchor="e", stretch=False)
             for vid in variant_ids:
@@ -4739,7 +4769,7 @@ def _build_gui():
         def _show_const_records_results(self, k, variant_ids, variant_meta, rows, floor_min, floor_max):
             self._const_records_last = (k, variant_ids, variant_meta, rows)
             self._const_records_last_floor_bounds = (floor_min, floor_max)
-            self._rebuild_const_records_tree(variant_ids)
+            self._rebuild_const_records_tree(variant_ids, row_count=len(rows))
             for row in rows:
                 values = [f"10p{row['base_exponent']}"]
                 for vid in variant_ids:
@@ -4766,6 +4796,7 @@ def _build_gui():
             # showing no longer exists, so reset it rather than leaving a stale list on
             # screen that no longer corresponds to anything selectable.
             self._const_records_detail_rows = []
+            self._const_records_detail_context = None
             self.const_records_detail_label_var.set(T("const_records.detail_hint"))
             self._show_const_records_detail_page(0)
 
@@ -4775,7 +4806,12 @@ def _build_gui():
             offset the tree cell shows) into the paginated detail panel below --
             addresses the user's "nie mogę rozwinąć by je zobaczyć tak jak w zakładce
             konstelacje" report (this table's cells only ever showed a one-line
-            summary, with no way to see the rest without leaving the tab)."""
+            summary, with no way to see the rest without leaving the tab).
+
+            Stashes (base_exponent, pattern) in self._const_records_detail_context --
+            not just the raw values -- so a later double-click on one of the resulting
+            rows (_on_const_records_detail_activate) knows which floor/pattern that
+            row belongs to without having to re-derive it from the label text."""
             tree = self.const_records_tree
             if tree.identify_region(event.x, event.y) != "cell":
                 return
@@ -4788,14 +4824,16 @@ def _build_gui():
                 col_index = int(col_id[1:]) - 1  # 0-based into the columns tuple
             except (ValueError, IndexError):
                 return
-            k, variant_ids, _variant_meta, _rows = self._const_records_last
+            k, variant_ids, variant_meta, _rows = self._const_records_last
             vi = col_index - 1  # columns[0] is "exp" -- skip it, no cell data there
             if vi < 0 or vi >= len(variant_ids):
                 return
             vid = variant_ids[vi]
+            pattern = variant_meta[vid]
             path = hit_file_path(PORTAL_FOLDER, base_exponent, k, vid)
             if not os.path.exists(path):
                 self._const_records_detail_rows = []
+                self._const_records_detail_context = None
                 self.const_records_detail_label_var.set(
                     T("const_records.detail_empty", exp=base_exponent, id=vid))
                 self._show_const_records_detail_page(0)
@@ -4807,9 +4845,42 @@ def _build_gui():
                 return
             base = 10 ** base_exponent
             self._const_records_detail_rows = [(v, v - base) for v in values]
+            self._const_records_detail_context = {"base_exponent": base_exponent, "pattern": pattern}
             self.const_records_detail_label_var.set(
                 T("const_records.detail_title", exp=base_exponent, id=vid, count=len(values)))
             self._show_const_records_detail_page(0)
+
+        def _on_const_records_detail_activate(self, event):
+            """Double-click a hit in the drill-down list: jumps to the Constellations
+            tab's Magazyn sub-tab, expands/selects the exact floor+variant node there,
+            and scrolls its own hits preview straight to this number -- the same
+            navigation the Kalkulator konstelacji's 'Szukaj zaznaczoną liczbę' button
+            already does (_select_hits_pattern_in_tree / _load_hits_preview /
+            _jump_hits_preview_to_row), just triggered from here instead. Per user
+            request: 'dwukrotne kliknięcie na daną wartość z okna dolnego przenosi do
+            [...] magazyn [...] tak jak w szukajce'.
+
+            Each row here is a hit file's raw stored value, i.e. a tuple's BASE element
+            (position 0 in _hit_row_formatter's own numbering -- see
+            _on_const_records_cell_activate's read of prime_sieve_v1.read_prime_window,
+            which returns exactly those base values), so the jump always targets
+            position 0, never needing to look up which tuple position this row is."""
+            sel = self.const_records_detail_list.curselection()
+            if not sel or not self._const_records_detail_rows or self._const_records_detail_context is None:
+                return
+            global_index = self._const_records_detail_page * PAGE_SIZE + sel[0]
+            if global_index >= len(self._const_records_detail_rows):
+                return
+            hit_base, _offset = self._const_records_detail_rows[global_index]
+            ctx = self._const_records_detail_context
+            base_exponent = ctx["base_exponent"]
+            pattern = ctx["pattern"]
+
+            self.main_notebook.select(self.constellations_tab)
+            self.constellations_sub_notebook.select(self.constellations_storage_tab)
+            self._select_hits_pattern_in_tree(base_exponent, pattern)
+            self._load_hits_preview()
+            self._jump_hits_preview_to_row(hit_base, 0)
 
         def _const_records_detail_row_formatter(self, row):
             number, offset = row
