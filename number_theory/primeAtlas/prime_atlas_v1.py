@@ -576,7 +576,7 @@ def group_constellation_hits_by_k(entries):
     return result
 
 
-def build_constellation_records_table(portal_folder, k):
+def build_constellation_records_table(portal_folder, k, floor_min=None, floor_max=None):
     """Scans the user's OWN storage (constellations/k{k}/variant{id}/HITS_....bin -- NOT
     pzktupel.de) for every floor that has at least one hit file for pattern `k`, building
     a pzktupel.de-style exp x variant table: for each floor and each of k's catalog
@@ -584,6 +584,15 @@ def build_constellation_records_table(portal_folder, k):
     this project's own hits so far (hit files store sorted ascending starting values --
     see constellation_finder_v1.py's own module header -- so the smallest is simply the
     first stored value, no need to read/compare the whole file by hand).
+
+    `floor_min`/`floor_max` (both optional, inclusive): scope the scan to a specific
+    piętro/floor range instead of every floor in storage. Added because a project with
+    many populated floors makes the unscoped table both slow to build and noisy to read
+    (mostly "-" cells for floors the user isn't currently interested in) -- passing
+    bounds lets the caller match the curated exp range pzktupel.de's own reference
+    tables show (e.g. only exp 10..19) instead of dumping the whole storage. None means
+    unbounded on that side, matching the pre-existing (pre-filter) behaviour when both
+    are omitted.
 
     `is_record_floor` flags a cell whose floor happens to equal the pzktupel.de catalog's
     own record_digits - 1 (a D-digit record lives in floor D-1, since floor N holds
@@ -599,11 +608,11 @@ def build_constellation_records_table(portal_folder, k):
       variant_ids: this k's catalog ids in order (column order for a table/tree/export)
       variant_meta: {id: pattern_dict} (offsets/record_digits/discoverer/date)
       rows: [{"base_exponent": int, "cells": {id: cell_or_None}}, ...] sorted ascending
-            by base_exponent, one row per floor that has AT LEAST ONE hit for this k
-            (floors with zero hits for k, even if they have hits for some OTHER k, are
-            skipped -- nothing to show). cell_or_None is None when this floor has no hit
-            file for that particular variant, else
-            {"offset": int, "count": int, "is_record_floor": bool}.
+            by base_exponent, one row per floor (within [floor_min, floor_max] when
+            given) that has AT LEAST ONE hit for this k (floors with zero hits for k,
+            even if they have hits for some OTHER k, are skipped -- nothing to show).
+            cell_or_None is None when this floor has no hit file for that particular
+            variant, else {"offset": int, "count": int, "is_record_floor": bool}.
 
     Pure function (no tkinter), reusing list_pietra()/floor_has_constellation_hits()/
     hit_file_path() exactly as reload_constellations_tree() already does, so this is
@@ -615,6 +624,10 @@ def build_constellation_records_table(portal_folder, k):
     variant_meta = {w["id"]: w for w in variants}
     rows = []
     for base_exponent in list_pietra(portal_folder):
+        if floor_min is not None and base_exponent < floor_min:
+            continue
+        if floor_max is not None and base_exponent > floor_max:
+            continue
         if not floor_has_constellation_hits(portal_folder, base_exponent):
             continue
         cells = {}
@@ -4315,6 +4328,12 @@ def _build_gui():
             cell than the PDF/tree can show -- count and the record note spelled out
             instead of truncated).
 
+            Optional "Piętro od/do" fields scope the scan to a floor range (see
+            build_constellation_records_table()'s own docstring) -- added because an
+            unbounded scan over a storage with many populated floors produces a table
+            that's mostly noise (a wall of "-" cells for floors the user isn't looking
+            at right now), not because the scan itself is too slow to run unbounded.
+
             The scan runs on ITS OWN worker thread (queue pair here matches every other
             worker in this file -- see e.g. _primesieve_calc_worker_loop's own docstring
             for the shared rationale) since reading one stored value out of every hit
@@ -4332,6 +4351,12 @@ def _build_gui():
                 top_row, state="readonly", width=6,
                 values=[str(k) for k in pattern_catalog_v1.all_k()])
             self.const_records_k_combo.pack(side="left", padx=(6, 16))
+            ttk.Label(top_row, text=T("const_records.field_floor_from")).pack(side="left")
+            self.const_records_floor_from_entry = ttk.Entry(top_row, width=8)
+            self.const_records_floor_from_entry.pack(side="left", padx=(6, 12))
+            ttk.Label(top_row, text=T("const_records.field_floor_to")).pack(side="left")
+            self.const_records_floor_to_entry = ttk.Entry(top_row, width=8)
+            self.const_records_floor_to_entry.pack(side="left", padx=(6, 16))
             self.const_records_scan_button = ttk.Button(
                 top_row, text=T("const_records.scan_button"),
                 command=self._on_const_records_scan_clicked)
@@ -4393,13 +4418,20 @@ def _build_gui():
                     T("const_records.error_dialog_title"), T("const_calc.error_no_pattern"))
                 return
             k = int(k_str)
+            floor_min = _eval_quick_number(self.const_records_floor_from_entry.get())
+            floor_max = _eval_quick_number(self.const_records_floor_to_entry.get())
+            if floor_min is not None and floor_max is not None and floor_min > floor_max:
+                messagebox.showerror(
+                    T("const_records.error_dialog_title"), T("const_records.error_invalid_range"))
+                return
             self._const_records_busy = True
             self.const_records_scan_button.configure(state="disabled")
             self.totals_progress.stop()
             self.totals_progress.configure(mode="indeterminate")
             self.totals_progress.start(80)
             self.status.set(T("const_records.status_scanning", k=k))
-            self._const_records_work_queue.put({"k": k})
+            self._const_records_work_queue.put(
+                {"k": k, "floor_min": floor_min, "floor_max": floor_max})
 
         def _const_records_worker_loop(self):
             while True:
@@ -4407,7 +4439,8 @@ def _build_gui():
                 k = job["k"]
                 try:
                     variant_ids, variant_meta, rows = build_constellation_records_table(
-                        PORTAL_FOLDER, k)
+                        PORTAL_FOLDER, k,
+                        floor_min=job.get("floor_min"), floor_max=job.get("floor_max"))
                     self._const_records_result_queue.put((k, True, (variant_ids, variant_meta, rows)))
                 except Exception as e:  # noqa: BLE001 -- must never kill this thread
                     self._const_records_result_queue.put((k, False, str(e)))
