@@ -6123,12 +6123,27 @@ def _build_gui():
             # rather than stretched to fill the Toplevel (see _goldbach_ensure_viz_
             # window's own note on why the canvas is no longer packed with fill/expand).
             rows_per_col = GOLDBACH_VIZ_ROWS_PER_COL
-            cols = min(GOLDBACH_VIZ_MAX_COLS, max(1, -(-len(rows) // rows_per_col))) \
+            cols_wanted = min(GOLDBACH_VIZ_MAX_COLS, max(1, -(-len(rows) // rows_per_col))) \
                 if rows else 1
-            rows_per_col_actual = -(-len(rows) // cols) if rows else 0
 
             EQ_W, PLUS_W, GAP, COL_GAP = 16, 16, 8, 28
             card_w = n_box_w + GAP + EQ_W + GAP + p_box_w + GAP + PLUS_W + GAP + q_box_w
+            right_x = 16 + box_w + 20
+
+            # Cap the diagram to what actually fits ON SCREEN (not just what fits in
+            # the CANVAS) -- Artur reported a wide n (e.g. n=10_000_000, 8-digit
+            # values) producing a Toplevel wider than his screen, with the rightmost
+            # column of "n = p + q" cards simply run off the edge (no scrollbar, no
+            # way to reach it). Per his instruction ("jeśli nie zmieści się w oknie
+            # kolumna sum to niech się nie wyświetla") a column that would push the
+            # window past screen width is dropped entirely rather than drawn
+            # off-screen -- the truncation note below then reports the real shown/total
+            # count so it's clear more rows exist (use n or Eksportuj CSV to see them).
+            screen_w = win.winfo_screenwidth()
+            available_w = max(700, screen_w - 150)  # leave room for window chrome/taskbar
+            fit_cols = max(1, (available_w - right_x - 16 + COL_GAP) // (card_w + COL_GAP))
+            cols = max(1, min(cols_wanted, fit_cols))
+            rows_drawn = min(len(rows), cols * rows_per_col)
             grid_w = cols * card_w + (cols - 1) * COL_GAP
 
             canvas_w = max(
@@ -6137,7 +6152,8 @@ def _build_gui():
             )
             header_h = 106
             chips_h = 48 + chip_rows * 36 + (22 if len(chips) > len(chip_shown) else 0)
-            rows_h = 26 + rows_per_col_actual * 36 + (18 if result["rows_truncated"] else 0)
+            rows_truncated = result["rows_truncated"] or rows_drawn < len(rows)
+            rows_h = 26 + rows_per_col * 36 + (18 if rows_truncated else 0)
             footer_h = 60
             canvas_h = header_h + max(chips_h, rows_h) + footer_h
             canvas.configure(width=canvas_w, height=canvas_h)
@@ -6181,16 +6197,15 @@ def _build_gui():
                     font=("TkDefaultFont", 8), fill="#1e40af",
                     text=T("research_goldbach.viz_more_primes", count=extra))
 
-            right_x = 16 + box_w + 20
             row_y = top_y
             canvas.create_text(
                 right_x, row_y, anchor="nw", font=("TkDefaultFont", 10, "bold"),
                 width=canvas_w - right_x - 16,
                 text=T("research_goldbach.viz_segment_title", window_max=result["window_max"]))
             grid_top_y = row_y + 26
-            for i, row in enumerate(rows):
-                col_idx = i // rows_per_col_actual if rows_per_col_actual else 0
-                within_idx = i % rows_per_col_actual if rows_per_col_actual else 0
+            for i, row in enumerate(rows[:rows_drawn]):
+                col_idx = i // rows_per_col
+                within_idx = i % rows_per_col
                 cx = right_x + col_idx * (card_w + COL_GAP)
                 cy = grid_top_y + within_idx * 36
                 n = row["n"]
@@ -6217,13 +6232,13 @@ def _build_gui():
                                          outline=q_outline, width=1.5, fill=q_fill)
                 canvas.create_text(x + q_box_w / 2, cy + 13, fill=q_outline,
                                     font=("TkDefaultFont", 10, "bold"), text=str(q))
-            grid_bottom_y = grid_top_y + rows_per_col_actual * 36
-            if result["rows_truncated"]:
+            grid_bottom_y = grid_top_y + rows_per_col * 36
+            if rows_truncated:
                 canvas.create_text(
                     right_x, grid_bottom_y + 2, anchor="nw", font=("TkDefaultFont", 8),
                     fill="#64748b",
                     text=T("research_goldbach.viz_rows_truncated",
-                           shown=len(rows), total=result["segment_size"]))
+                           shown=rows_drawn, total=result["segment_size"]))
 
             footer_y = top_y + max(chips_h, rows_h) + 16
             if result["covered"]:
