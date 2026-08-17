@@ -329,22 +329,46 @@ def _safe_prime_gap_margin(x):
     return 400
 
 
-def read_is_prime_from_storage(portal_folder, limit, base_exponent=0):
+class MissingStorageRangeError(Exception):
+    """Raised by read_is_prime_from_storage when floor `floor` does not (yet) hold
+    verified data up to `needed_upto`. Carries both fields as attributes so the caller
+    can build a message naming the SPECIFIC floor that's short, rather than a generic
+    "storage is missing" message pointing at floor 0 regardless of which floor is
+    actually the problem (see read_is_prime_from_storage's own docstring for the bug
+    this replaced)."""
+
+    def __init__(self, floor, needed_upto):
+        self.floor = floor
+        self.needed_upto = needed_upto
+        super().__init__(f"floor {floor} missing data up to {needed_upto}")
+
+
+def read_is_prime_from_storage(portal_folder, limit):
     """Builds an is_prime bytearray covering [0, limit] purely from already-generated
-    floor storage (10p{base_exponent}/source_primes/PRIME_WINDOW_*.bin, PGS2 format --
-    see prime_sieve_v1.py's own format header) instead of running a fresh sieve. Used by
+    floor storage (10p{N}/source_primes/PRIME_WINDOW_*.bin, PGS2 format -- see
+    prime_sieve_v1.py's own format header) instead of running a fresh sieve. Used by
     the Goldbach tab's Wizualizacja feature (see _on_goldbach_visualize), per Artur's
     explicit instruction that this computation should read from the magazyn rather than
     recompute -- the per-n witness search itself still runs the exact same algorithm as
     goldbach_window.py's window_rows(), only the SOURCE of is_prime changes.
 
-    Floor base_exponent windows start at BASE = 10**base_exponent and are
-    QUICK_GEN_MAX_WINDOW_WIDTH wide each (target_idx 0, 1, 2, ... -> offsets 0,
-    10_000_000, 20_000_000, ... relative to BASE -- see
-    prime_sieve_v1.main_batch_scanner()). Floor 0 (BASE=1) is the natural choice here:
-    it is the floor every low-range feature in this app treats as the baseline (see
-    prune_empty_pietro_dirs' low-floor completion logic), and its windows cover small
-    numbers directly, which is what a Goldbach exploration needs.
+    Floors are NOT one continuous span starting at floor 0 -- each floor N covers only
+    its own natural range [10**N, 10**(N+1)) (width 9*10**N), the same boundary
+    enforced elsewhere in this file by _floor_window_count()/the range-clamping logic
+    around "floor_boundary = 10 ** (floor_lo + 1)", and by
+    prime_sieve_v4_1._low_floor_segments(). floor 0 = [1,10) (4 primes: 2,3,5,7),
+    floor 1 = [10,100) (21 primes), floor 2 = [100,1000) (143 primes), and so on --
+    this matches the real counts Artur's own storage reports. An EARLIER version of
+    this function wrongly treated floor 0 alone as extending indefinitely in
+    QUICK_GEN_MAX_WINDOW_WIDTH-wide chunks (i.e. as if floor 0 covered [1,10_000_001)),
+    so e.g. limit=200 was checked entirely against floor 0's single tiny file and
+    failed even though floors 0-2 were each genuinely complete -- Artur caught this
+    ("piętro zero nigdy nie będzie miało 100... wartość 100 jest na piętrze 2"). This
+    version instead walks floor 0, 1, 2, ... up to whichever floor's base exceeds
+    limit, reading each floor's OWN files (possibly split into
+    QUICK_GEN_MAX_WINDOW_WIDTH-wide window files only when a floor's natural width
+    exceeds that, per prime_sieve_v1.main_batch_scanner()) and stitching their primes
+    into one array.
 
     A window FILE existing on disk at the right offset does not by itself prove it
     actually covers the range needed -- a partial/test/interrupted-generation file can
@@ -357,40 +381,48 @@ def read_is_prime_from_storage(portal_folder, limit, base_exponent=0):
     _safe_prime_gap_margin() of the range it's relied on for -- short of that, the
     window is treated as not-yet-generated, same as if the file were simply missing.
 
-    Returns an is_prime bytearray of length limit+1 if EVERY window needed to cover
-    [0, limit] is present AND actually reaches far enough, or None otherwise -- never
-    partially or silently truncates (a silent gap would make a "covered" verdict
-    meaningless)."""
+    Returns an is_prime bytearray of length limit+1 if every floor needed to cover
+    [0, limit] is present AND actually reaches far enough within itself; raises
+    MissingStorageRangeError(floor, needed_upto) naming the SPECIFIC short floor
+    otherwise -- never partially or silently truncates (a silent gap would make a
+    "covered" verdict meaningless)."""
     window_m = QUICK_GEN_MAX_WINDOW_WIDTH
-    base = 10 ** base_exponent
-    if limit < base:
+    if limit < 2:
         return bytearray(limit + 1)
-    highest_needed_idx = (limit - base) // window_m
-
-    files_by_idx = {}
-    for name, path in list_source_filenames(portal_folder, base_exponent):
-        offset = _offset_from_filename(name)
-        if offset is None:
-            continue
-        files_by_idx[offset // window_m] = path
-
-    for idx in range(highest_needed_idx + 1):
-        if idx not in files_by_idx:
-            return None
 
     is_prime = bytearray(limit + 1)
-    for idx in range(highest_needed_idx + 1):
-        window_end = base + (idx + 1) * window_m  # exclusive nominal upper bound
-        needed_here = min(limit, window_end - 1)
-        window_max_prime = 0
-        for p in prime_sieve_v1.read_prime_window(files_by_idx[idx]):
-            if p > window_max_prime:
-                window_max_prime = p
-            if p <= limit:
-                is_prime[p] = 1
-        margin = _safe_prime_gap_margin(max(needed_here, 2))
-        if window_max_prime < needed_here - margin:
-            return None
+    floor = 0
+    while 10 ** floor <= limit:
+        base = 10 ** floor
+        floor_boundary = 10 ** (floor + 1)  # exclusive natural ceiling of this floor
+        needed_here_top = min(limit, floor_boundary - 1)
+        highest_needed_idx = (needed_here_top - base) // window_m
+
+        files_by_idx = {}
+        for name, path in list_source_filenames(portal_folder, floor):
+            offset = _offset_from_filename(name)
+            if offset is None:
+                continue
+            files_by_idx[offset // window_m] = path
+
+        for idx in range(highest_needed_idx + 1):
+            if idx not in files_by_idx:
+                raise MissingStorageRangeError(floor, needed_here_top)
+
+        for idx in range(highest_needed_idx + 1):
+            window_end = base + (idx + 1) * window_m  # exclusive nominal upper bound
+            needed_here = min(needed_here_top, window_end - 1)
+            window_max_prime = 0
+            for p in prime_sieve_v1.read_prime_window(files_by_idx[idx]):
+                if p > window_max_prime:
+                    window_max_prime = p
+                if p <= limit:
+                    is_prime[p] = 1
+            margin = _safe_prime_gap_margin(max(needed_here, 2))
+            if window_max_prime < needed_here - margin:
+                raise MissingStorageRangeError(floor, needed_here_top)
+
+        floor += 1
     return is_prime
 
 
@@ -5891,12 +5923,13 @@ def _build_gui():
                         self._goldbach_result_queue.put((op, True, result))
                     else:
                         limit = 2 * n
-                        is_prime = read_is_prime_from_storage(PORTAL_FOLDER, limit)
-                        if is_prime is None:
+                        try:
+                            is_prime = read_is_prime_from_storage(PORTAL_FOLDER, limit)
+                        except MissingStorageRangeError as e:
                             self._goldbach_result_queue.put((
                                 op, False,
                                 T("research_goldbach.error_storage_missing",
-                                  limit=f"{limit:,}")))
+                                  floor=e.floor, upto=f"{e.needed_upto:,}")))
                             continue
                         pmax = goldbach_largest_prime_le(is_prime, n)
                         if pmax is None:

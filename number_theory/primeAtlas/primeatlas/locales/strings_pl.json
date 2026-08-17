@@ -46,7 +46,7 @@
   "research_goldbach.pairs_dialog_title": "Wszystkie rozkłady n = {n}",
   "research_goldbach.visualize_button": "Wizualizacja",
   "research_goldbach.viz_hint": "Rysuje TO SAMO okno [4, 2·Pmax] co „Sprawdź okno” (Pmax = największa liczba pierwsza ≤ n) -- liczby pierwsze pobierane są z magazynu (piętro 0), nie liczone od nowa. Pokazuje bazę pierwszych ≤ Pmax jako jedyne dozwolone kandydatki na mniejszy składnik p, oraz które q wykraczają poza tę bazę (są „nowe”).",
-  "research_goldbach.error_storage_missing": "W magazynie brakuje piętra 0 do co najmniej {limit} -- wygeneruj ten zakres (zakładka Generowanie, piętro 0) i spróbuj ponownie.",
+  "research_goldbach.error_storage_missing": "W magazynie brakuje piętra {floor} do co najmniej {upto} -- wygeneruj ten zakres (zakładka Generowanie, piętro {floor}) i spróbuj ponownie.",
   "research_goldbach.viz_window_title_generic": "Wizualizacja okna Goldbacha",
   "research_goldbach.viz_status_shown": "Pokazano okno dla n={n} (Pmax={pmax}). Zmień n powyżej i sprawdź ponownie.",
   "research_goldbach.viz_window_title": "Okno: n = {n}, Pmax = {pmax}",
