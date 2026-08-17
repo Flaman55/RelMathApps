@@ -6084,8 +6084,6 @@ def _build_gui():
 
             chips = result["old_base_primes"]
             chip_shown = chips[:GOLDBACH_CASCADE_CHIP_CAP]
-            chip_cols = 6
-            chip_rows = max(1, -(-len(chip_shown) // chip_cols))
             rows = result["rows"]
 
             # Box widths scale to the actual digit count of the values THIS diagram is
@@ -6102,6 +6100,22 @@ def _build_gui():
             p_box_w = _digit_box_w(44, p_digits)
             q_box_w = _digit_box_w(44, q_digits)
             chip_w = _digit_box_w(34, p_digits)
+            chip_gap = 6
+
+            # chip_cols (and therefore the "STARA BAZA" box width) is derived from
+            # chip_w, not hardcoded -- a fixed 6-column grid at a fixed 230px box width
+            # was sized for 1-2 digit primes; once Pmax grew multi-digit (chip_w scaled
+            # up above), 6 columns no longer fit inside 230px and the overflow chips
+            # were drawn PAST the box's right edge, straight on top of the row grid
+            # beside it (Artur caught this: the "11 13" / "31 37" / "59 61" / "83 89"
+            # fragments overlapping the n=6/8/10/12 rows in his n=997 screenshot were
+            # literally chips 5 and 6 of each chip row spilling out). box_w is now
+            # computed to fit chip_cols columns EXACTLY, so there is no overflow at any
+            # digit count -- chip_cols itself narrows for big primes instead.
+            chip_cols_target_w = 210  # desired inner width for the chip grid
+            chip_cols = max(3, chip_cols_target_w // (chip_w + chip_gap))
+            chip_rows = max(1, -(-len(chip_shown) // chip_cols))
+            box_w = 24 + chip_cols * chip_w + (chip_cols - 1) * chip_gap
 
             # Rows fan out into up to GOLDBACH_VIZ_MAX_COLS columns instead of one long
             # strip -- a single column left the diagram pinned to the top-left with a
@@ -6117,7 +6131,6 @@ def _build_gui():
             card_w = n_box_w + GAP + EQ_W + GAP + p_box_w + GAP + PLUS_W + GAP + q_box_w
             grid_w = cols * card_w + (cols - 1) * COL_GAP
 
-            box_w = 230
             canvas_w = max(
                 16 + box_w + 20 + grid_w + 16,
                 16 + box_w + 16 + 300,  # never narrower than a comfortable minimum
@@ -6149,13 +6162,13 @@ def _build_gui():
             canvas.create_text(
                 16 + box_w / 2, top_y + 32, font=("TkDefaultFont", 8), fill="#3b82f6",
                 text=T("research_goldbach.viz_old_base_subtitle", pmax=result["pmax"]))
-            chip_h_px, gap = 30, 6
+            chip_h_px = 30
             start_x = 16 + 12
             start_y = top_y + 46
             for i, p in enumerate(chip_shown):
                 col, row = i % chip_cols, i // chip_cols
-                x0 = start_x + col * (chip_w + gap)
-                y0 = start_y + row * (chip_h_px + gap)
+                x0 = start_x + col * (chip_w + chip_gap)
+                y0 = start_y + row * (chip_h_px + chip_gap)
                 canvas.create_rectangle(x0, y0, x0 + chip_w, y0 + chip_h_px,
                                          outline="#93c5fd", width=1.5, fill="white")
                 canvas.create_text(x0 + chip_w / 2, y0 + chip_h_px / 2,
@@ -6164,7 +6177,7 @@ def _build_gui():
             extra = len(chips) - len(chip_shown)
             if extra > 0:
                 canvas.create_text(
-                    16 + box_w / 2, start_y + chip_rows * (chip_h_px + gap) + 10,
+                    16 + box_w / 2, start_y + chip_rows * (chip_h_px + chip_gap) + 10,
                     font=("TkDefaultFont", 8), fill="#1e40af",
                     text=T("research_goldbach.viz_more_primes", count=extra))
 
