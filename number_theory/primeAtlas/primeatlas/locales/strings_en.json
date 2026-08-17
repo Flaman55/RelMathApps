@@ -47,6 +47,8 @@
   "research_goldbach.visualize_button": "Visualize",
   "research_goldbach.viz_hint": "Draws the SAME window [4, 2*Pmax] as \"Check window\" (Pmax = largest prime <= n) -- primes are read from storage (floor 0), not recomputed. Shows the base of primes <= Pmax as the only allowed candidates for the smaller summand p, and which q values fall outside that base (are \"new\").",
   "research_goldbach.error_storage_missing": "Storage is missing floor 0 up to at least {limit} -- generate that range (Generation tab, floor 0) and try again.",
+  "research_goldbach.viz_window_title_generic": "Goldbach window visualization",
+  "research_goldbach.viz_status_shown": "Showing window for n={n} (Pmax={pmax}). Change n above and check again.",
   "research_goldbach.viz_window_title": "Window: n = {n}, Pmax = {pmax}",
   "research_goldbach.viz_header": "n={n}  Pmax={pmax} (largest prime <= n)  window=[4, {window_max}]",
   "research_goldbach.viz_subheader": "The old base (blue, primes <= Pmax) must supply the smaller summand for EVERY even number in the window [4, 2*Pmax] -- regardless of how many larger summands q already lie outside that base.",

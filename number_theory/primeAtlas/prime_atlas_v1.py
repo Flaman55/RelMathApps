@@ -2806,6 +2806,9 @@ def _build_gui():
             self._goldbach_busy = False
             self._goldbach_work_queue = queue.Queue()
             self._goldbach_result_queue = queue.Queue()
+            # Wizualizacja Toplevel is created lazily (see _goldbach_ensure_viz_window)
+            # and reused across clicks -- None here means "not open yet".
+            self._goldbach_viz_win = None
             threading.Thread(target=self._goldbach_worker_loop, daemon=True).start()
             self.after(150, self._poll_goldbach_results)
 
@@ -5721,16 +5724,21 @@ def _build_gui():
 
             self._goldbach_last_result = None
 
-        def _goldbach_parse_n(self):
-            """Shared client-side validation for both buttons -- parses the "n" field
-            via _eval_quick_number (so expressions like 10**4 work here too, same as the
-            primesieve calculator's and Testy pierwszosci's fields), requiring an
-            integer >= 2 (so a largest-prime-<=n exists to derive Pmax from -- see
-            goldbach_window.largest_prime_le's own docstring)."""
-            n = _eval_quick_number(self.goldbach_n_entry.get())
+        def _goldbach_parse_n_from(self, entry):
+            """Parses an "n" field via _eval_quick_number (so expressions like 10**4
+            work here too, same as the primesieve calculator's and Testy pierwszosci's
+            fields), requiring an integer >= 2 (so a largest-prime-<=n exists to derive
+            Pmax from -- see goldbach_window.largest_prime_le's own docstring). Takes
+            the Entry widget explicitly so both the main tab's field and the
+            Wizualizacja window's OWN field (see _goldbach_ensure_viz_window) share one
+            validation path."""
+            n = _eval_quick_number(entry.get())
             if n is None or n < 2:
                 raise ValueError(T("research_goldbach.error_n_invalid"))
             return n
+
+        def _goldbach_parse_n(self):
+            return self._goldbach_parse_n_from(self.goldbach_n_entry)
 
         def _on_goldbach_run(self):
             if self._goldbach_busy:
@@ -5745,27 +5753,100 @@ def _build_gui():
             self._goldbach_work_queue.put({"op": "window", "n": n, "mode": mode})
 
         def _on_goldbach_visualize(self):
-            """"Wizualizacja" button -- derives Pmax = largest prime <= n (SAME n as the
-            "Sprawdz okno" field) and draws the SAME [4, 2*Pmax] window that button
-            checks (goldbach_window.window_rows -- see its own docstring: "wizualizacja
-            zawsze siedzi w oknie 4-2Pmax", Artur's own instruction), sourcing is_prime
-            from the on-disk magazyn (read_is_prime_from_storage) rather than a fresh
-            sieve. Renders the "old base vs window" diagram in a Toplevel (see
-            _goldbach_show_window_visualization)."""
-            if self._goldbach_busy:
-                return
+            """"Wizualizacja" button -- derives Pmax = largest prime <= n (starting from
+            the SAME n as the "Sprawdz okno" field) and draws the SAME [4, 2*Pmax]
+            window that button checks (goldbach_window.window_rows -- see its own
+            docstring: "wizualizacja zawsze siedzi w oknie 4-2Pmax", Artur's own
+            instruction), sourcing is_prime from the on-disk magazyn
+            (read_is_prime_from_storage) rather than a fresh sieve. Opens (or reuses,
+            if already open) a Toplevel with its OWN n field + check button, so
+            different n values can be explored there directly without bouncing back to
+            this tab each time (see _goldbach_ensure_viz_window)."""
             try:
                 n = self._goldbach_parse_n()
             except ValueError as e:
                 messagebox.showerror(T("research_goldbach.error_dialog_title"), str(e))
                 return
+            win = self._goldbach_ensure_viz_window()
+            self.goldbach_viz_n_entry.delete(0, "end")
+            self.goldbach_viz_n_entry.insert(0, str(n))
+            win.deiconify()
+            win.lift()
+            self._goldbach_queue_viz(n)
+
+        def _on_goldbach_viz_refresh(self):
+            """The Wizualizacja Toplevel's OWN "Sprawdz okno" button -- reads n from
+            ITS OWN field (self.goldbach_viz_n_entry), not the main tab's, so the window
+            is self-sufficient once open."""
+            if self._goldbach_viz_win is None or not self._goldbach_viz_win.winfo_exists():
+                return
+            try:
+                n = self._goldbach_parse_n_from(self.goldbach_viz_n_entry)
+            except ValueError as e:
+                messagebox.showerror(T("research_goldbach.error_dialog_title"), str(e))
+                return
+            self._goldbach_queue_viz(n)
+
+        def _goldbach_queue_viz(self, n):
+            if self._goldbach_busy:
+                return
             self._goldbach_set_busy(True)
             self._goldbach_work_queue.put({"op": "viz", "n": n})
+
+        def _goldbach_ensure_viz_window(self):
+            """Creates the Wizualizacja Toplevel the first time it's needed, or returns
+            the existing one if it's still open -- so repeated clicks (from this tab's
+            button, or from the window's own check button) redraw ONE persistent
+            window instead of piling up a new Toplevel per click. Layout: a top row
+            with its own n entry + check button + status label, then a Canvas below
+            that _goldbach_show_window_visualization redraws in place (clear + redraw,
+            resizing the canvas to fit) rather than rebuilding from scratch."""
+            if self._goldbach_viz_win is not None and self._goldbach_viz_win.winfo_exists():
+                return self._goldbach_viz_win
+
+            win = tk.Toplevel(self)
+            win.title(T("research_goldbach.viz_window_title_generic"))
+
+            def _on_close():
+                win.destroy()
+                self._goldbach_viz_win = None
+
+            win.protocol("WM_DELETE_WINDOW", _on_close)
+
+            top = ttk.Frame(win)
+            top.pack(fill="x", padx=10, pady=(10, 4))
+            ttk.Label(top, text=T("research_goldbach.field_n")).pack(side="left")
+            self.goldbach_viz_n_entry = ttk.Entry(top, width=16)
+            self.goldbach_viz_n_entry.pack(side="left", padx=(6, 12))
+            self.goldbach_viz_n_entry.insert(0, self.goldbach_n_entry.get() or "1000")
+            self.goldbach_viz_n_entry.bind(
+                "<Return>", lambda _e: self._on_goldbach_viz_refresh())
+            self.goldbach_viz_check_button = ttk.Button(
+                top, text=T("research_goldbach.run_button"),
+                command=self._on_goldbach_viz_refresh)
+            self.goldbach_viz_check_button.pack(side="left")
+
+            self.goldbach_viz_status_var = tk.StringVar(value="")
+            ttk.Label(win, textvariable=self.goldbach_viz_status_var,
+                      wraplength=780, justify="left", foreground="#555").pack(
+                anchor="w", padx=10, pady=(0, 6))
+
+            canvas_frame = ttk.Frame(win)
+            canvas_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            self.goldbach_viz_canvas = tk.Canvas(
+                canvas_frame, width=820, height=120, background="white",
+                highlightthickness=0)
+            self.goldbach_viz_canvas.pack(fill="both", expand=True)
+
+            self._goldbach_viz_win = win
+            return win
 
         def _goldbach_set_busy(self, busy):
             self._goldbach_busy = busy
             state = "disabled" if busy else "normal"
             self.goldbach_run_button.configure(state=state)
+            if hasattr(self, "goldbach_viz_check_button"):
+                self.goldbach_viz_check_button.configure(state=state)
             if busy:
                 self.totals_progress.stop()
                 self.totals_progress.configure(mode="indeterminate")
@@ -5927,17 +6008,30 @@ def _build_gui():
             self.status.set(T("research_goldbach.status_exported", path=path))
 
         def _goldbach_show_window_visualization(self, result):
-            """Opens a Toplevel drawing the "old base vs window" diagram -- same visual
-            language as the one shown in chat, but built from a REAL window_rows()
-            result sourced from the magazyn (read_is_prime_from_storage), covering
-            EXACTLY the window [4, 2*Pmax] that "Sprawdz okno" also checks (never a
-            separate cascade step -- see goldbach_window.window_rows' own docstring and
-            Artur's own instruction: "wizualizacja zawsze siedzi w oknie 4-2Pmax").
-            Plain tk.Canvas, same zero-extra-installs approach as the Benchmark tab's
-            own hand-rolled chart (no matplotlib)."""
-            win = tk.Toplevel(self)
+            """Redraws the "old base vs window" diagram into the PERSISTENT Wizualizacja
+            Toplevel/Canvas (see _goldbach_ensure_viz_window) -- built from a REAL
+            window_rows() result sourced from the magazyn
+            (read_is_prime_from_storage), covering EXACTLY the window [4, 2*Pmax] that
+            "Sprawdz okno" also checks (never a separate cascade step -- see
+            goldbach_window.window_rows' own docstring and Artur's own instruction:
+            "wizualizacja zawsze siedzi w oknie 4-2Pmax"). The window itself, its n
+            field and its check button are created once and reused; this method only
+            clears and repopulates the canvas so repeated checks (from this tab's
+            button, or the window's own button) update ONE window in place instead of
+            piling up a new Toplevel per click. Plain tk.Canvas, same
+            zero-extra-installs approach as the Benchmark tab's own hand-rolled chart
+            (no matplotlib)."""
+            win = self._goldbach_ensure_viz_window()
             win.title(T("research_goldbach.viz_window_title",
                         n=result["n"], pmax=result["pmax"]))
+            self.goldbach_viz_status_var.set(T(
+                "research_goldbach.viz_status_shown", n=result["n"], pmax=result["pmax"]))
+            if self.goldbach_viz_n_entry.get().strip() != str(result["n"]):
+                self.goldbach_viz_n_entry.delete(0, "end")
+                self.goldbach_viz_n_entry.insert(0, str(result["n"]))
+
+            canvas = self.goldbach_viz_canvas
+            canvas.delete("all")
 
             chips = result["old_base_primes"]
             chip_shown = chips[:GOLDBACH_CASCADE_CHIP_CAP]
@@ -5951,10 +6045,7 @@ def _build_gui():
             rows_h = 26 + len(rows) * 36 + (18 if result["rows_truncated"] else 0)
             footer_h = 60
             canvas_h = header_h + max(chips_h, rows_h) + footer_h
-
-            canvas = tk.Canvas(win, width=canvas_w, height=canvas_h, background="white",
-                                highlightthickness=0)
-            canvas.pack(fill="both", expand=True)
+            canvas.configure(width=canvas_w, height=canvas_h)
 
             canvas.create_text(
                 16, 18, anchor="nw", font=("TkDefaultFont", 13, "bold"),
