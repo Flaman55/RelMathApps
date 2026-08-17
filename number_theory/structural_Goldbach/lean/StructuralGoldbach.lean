@@ -3,6 +3,7 @@ import StructuralGoldbach.Bridge
 import StructuralGoldbach.Structural
 import StructuralGoldbach.Determinism
 import StructuralGoldbach.Constructive
+import StructuralGoldbach.SelfContainment
 import StructuralGoldbach.SmallWitness
 import StructuralGoldbach.MovingCeiling
 import StructuralGoldbach.AnchorGrowth
@@ -33,6 +34,12 @@ to addition:
              before any new prime from the current window is needed. `CascadeOldBaseSufficiency`
              is the additive analogue of `void_isPrime`: the reach of what a finite base can
              build, not a density estimate of how many ways it can be built.
+* `SelfContainment` — the necessity side of additive self-containment, proved unconditionally
+             (zero `native_decide`): if a Goldbach representation of `n` exists and `n ≤ B + 2`,
+             it is forced into the base `≤ B` on *both* sides (`additiveSelfContained_of_hasGoldbachRep`).
+             This complements, not replaces, `windowCovered`'s existence claim on `[4, 2·Pmax]`
+             — the two are different theorems (necessity vs. existence), and `B + 2` is shown
+             sharp by an explicit example.
 * `SmallWitness` — the sharpest reduction so far: computation shows the worst-case witness in
              the old-base cascade grows polylogarithmically (`p ≈ C·(log n)^k`, k≈2.3–2.7,
              not yet pinned down asymptotically), not linearly in `n`. `SmallWitness` states
