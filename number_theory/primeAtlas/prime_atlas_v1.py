@@ -6280,26 +6280,46 @@ def _build_gui():
             self._goldbach_viz_win = win
             return win
 
+        def _goldbach_widget_configure(self, attr_name, **kwargs):
+            """configure() an optional, possibly-stale widget attribute without
+            blowing up -- `hasattr(self, attr_name)` alone isn't enough here: closing
+            the Wizualizacja or decompose Toplevel (see their own _on_close handlers)
+            destroys every Tk widget inside it, but does NOT clear out the Python
+            attribute still pointing at that now-dead widget (only the *_win attribute
+            itself gets reset to None). Configuring a destroyed widget raises
+            tk.TclError -- caught and ignored here, since "the window this button
+            lived in is gone" is a perfectly normal thing to happen mid-flight (a
+            worker job queued before the window was closed, whose result now arrives
+            after). Without this guard, that TclError propagates out of whichever
+            caller stopped it from reaching the code that resets self._goldbach_busy
+            back to False, permanently disabling every Goldbach button on the tab --
+            exactly the bug Artur reported (open+close "Pokaz wszystkie rozklady",
+            button stays greyed out, sums-grid "Nastepna" too)."""
+            widget = getattr(self, attr_name, None)
+            if widget is None:
+                return
+            try:
+                widget.configure(**kwargs)
+            except tk.TclError:
+                pass
+
         def _goldbach_set_busy(self, busy):
             self._goldbach_busy = busy
             state = "disabled" if busy else "normal"
             self.goldbach_run_button.configure(state=state)
-            if hasattr(self, "goldbach_viz_check_button"):
-                self.goldbach_viz_check_button.configure(state=state)
-            if hasattr(self, "goldbach_viz_decompose_button"):
-                self.goldbach_viz_decompose_button.configure(state=state)
+            self._goldbach_widget_configure("goldbach_viz_check_button", state=state)
+            self._goldbach_widget_configure("goldbach_viz_decompose_button", state=state)
             # Only force-DISABLE the row nav buttons here -- their correct enabled
             # state at the bounds (first/last page) is recalculated by
             # _update_nav_controls once a fresh result is drawn, so re-enabling them
             # unconditionally here would briefly un-disable Prev on page 0. Chip nav
             # buttons aren't gated by busy at all -- paging them is pure client-side
             # redraw, no worker round-trip (see _on_goldbach_viz_chip_prev/_next).
-            if busy and hasattr(self, "goldbach_viz_row_prev_btn"):
-                self.goldbach_viz_row_prev_btn.configure(state="disabled")
-                self.goldbach_viz_row_next_btn.configure(state="disabled")
-            if busy and hasattr(self, "goldbach_decompose_prev_btn"):
-                self.goldbach_decompose_prev_btn.configure(state="disabled")
-                self.goldbach_decompose_next_btn.configure(state="disabled")
+            if busy:
+                self._goldbach_widget_configure("goldbach_viz_row_prev_btn", state="disabled")
+                self._goldbach_widget_configure("goldbach_viz_row_next_btn", state="disabled")
+                self._goldbach_widget_configure("goldbach_decompose_prev_btn", state="disabled")
+                self._goldbach_widget_configure("goldbach_decompose_next_btn", state="disabled")
             if busy:
                 self.totals_progress.stop()
                 self.totals_progress.configure(mode="indeterminate")
@@ -6402,22 +6422,33 @@ def _build_gui():
 
         def _poll_goldbach_results(self):
             """Main-thread side -- same 150ms polling cadence as
-            _poll_primality_results, runs for the whole lifetime of the window."""
+            _poll_primality_results, runs for the whole lifetime of the window. The
+            per-message body is wrapped in its own try/except (Exception, not just
+            queue.Empty) so that ONE bad message -- e.g. a result arriving for a
+            Toplevel (Wizualizacja or decompose) the user already closed -- can never
+            skip the self.after(...) reschedule at the bottom and silently kill
+            polling for the rest of the session (see _goldbach_widget_configure's own
+            docstring for the specific bug this was covering for)."""
             try:
                 while True:
                     op, ok, payload = self._goldbach_result_queue.get_nowait()
-                    self._goldbach_set_busy(False)
-                    if not ok:
-                        self.status.set(T("research_goldbach.status_error"))
-                        messagebox.showerror(T("research_goldbach.error_dialog_title"), payload)
-                        continue
-                    self.status.set(T("research_goldbach.status_done"))
-                    if op == "window":
-                        self._goldbach_show_result(payload)
-                    elif op == "decompose":
-                        self._goldbach_show_decomposition_detail(payload)
-                    else:
-                        self._goldbach_show_window_visualization(payload)
+                    try:
+                        self._goldbach_set_busy(False)
+                        if not ok:
+                            self.status.set(T("research_goldbach.status_error"))
+                            messagebox.showerror(
+                                T("research_goldbach.error_dialog_title"), payload)
+                            continue
+                        self.status.set(T("research_goldbach.status_done"))
+                        if op == "window":
+                            self._goldbach_show_result(payload)
+                        elif op == "decompose":
+                            self._goldbach_show_decomposition_detail(payload)
+                        else:
+                            self._goldbach_show_window_visualization(payload)
+                    except Exception:  # noqa: BLE001 -- see docstring: never let one
+                                        # bad message skip the reschedule below
+                        pass
             except queue.Empty:
                 pass
             self.after(150, self._poll_goldbach_results)
