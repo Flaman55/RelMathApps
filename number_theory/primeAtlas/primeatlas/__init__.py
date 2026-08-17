@@ -15,7 +15,11 @@ from .restore_job import (
 from .delete_manager import PortalWiper
 from .i18n import Translator, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, LANGUAGE_NAMES
 from .primality import run_all_tests, factorize, try_import_sympy
-from .goldbach_window import check_window as goldbach_check_window
+from .goldbach_window import (
+    check_window as goldbach_check_window,
+    cascade_step as goldbach_cascade_step,
+    next_anchor as goldbach_next_anchor,
+)
 
 __all__ = [
     "AppSettings",
@@ -25,5 +29,5 @@ __all__ = [
     "PortalWiper",
     "Translator", "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "LANGUAGE_NAMES",
     "run_all_tests", "factorize", "try_import_sympy",
-    "goldbach_check_window",
+    "goldbach_check_window", "goldbach_cascade_step", "goldbach_next_anchor",
 ]

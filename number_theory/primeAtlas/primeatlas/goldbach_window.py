@@ -132,3 +132,77 @@ def check_window(Pmax, mode):
         "n_checked": len(rows), "counterexamples": counterexamples,
         "elapsed": elapsed, "rows": rows,
     }
+
+
+# ------------------------------------------------------------------------------------------
+# Cascade step -- Constructive.lean's nextAnchor / anchor / top / CascadeOldBaseSufficiency.
+# This is the "less fuel" framing (see the Wizualizacja diagram in the Goldbach tab): a
+# FROZEN base of primes <= top(k) = 2*anchor(k) must supply the smaller summand p for
+# every new even n in the segment (top(k), top(k+1)], with no credit for any prime that
+# first appears inside that very segment. Separate from check_window() above -- windowCovered
+# re-derives base=Pmax fresh for the WHOLE window [4, 2*Pmax] every time, while this checks
+# ONE cascade step with the base held fixed from the step before, which is the stronger,
+# harder-to-satisfy claim the paper's actual constructive proof line rests on.
+# ------------------------------------------------------------------------------------------
+
+def next_anchor(is_prime, Pmax):
+    """Largest prime in (Pmax, 2*Pmax], or 2*Pmax if none -- mirrors Constructive.lean's
+    nextAnchor exactly. `is_prime` must be long enough to index up to 2*Pmax (Bertrand's
+    postulate guarantees a prime is always found in this range for Pmax >= 1, so the
+    "none" fallback is a formality that should never actually trigger)."""
+    hi = 2 * Pmax
+    for candidate in range(hi, Pmax, -1):
+        if is_prime[candidate]:
+            return candidate
+    return hi
+
+
+def cascade_step(is_prime, anchor_k, row_cap=None):
+    """One cascade step starting at anchor(k) = anchor_k: computes top(k) = 2*anchor_k,
+    the next anchor (largest prime in (anchor_k, 2*anchor_k]), top(k+1) = 2*next_anchor,
+    and -- for every new even n in the segment (top(k), top(k+1)] -- the smallest prime
+    p <= top(k) (the OLD, frozen base) with n-p also prime (buildableFromBase(top(k), n),
+    Constructive.lean). `is_prime` must be long enough to index up to top(k+1) -- since
+    top(k+1) <= 4*anchor_k always (next_anchor <= 2*anchor_k), the caller should ensure
+    `is_prime` covers at least that.
+
+    `row_cap` limits how many per-n rows are returned (for GUI display) -- the coverage
+    verdict and counterexample list are still computed over the FULL segment regardless,
+    never just the truncated display slice.
+
+    Returns {"anchor_k":, "top_k":, "next_anchor":, "top_k1":, "old_base_primes": [...],
+    "segment_size": int, "rows": [{"n":,"p":,"q":,"q_is_new": bool}, ...],
+    "rows_truncated": bool, "counterexamples": [...], "covered": bool}."""
+    if anchor_k < 1:
+        raise ValueError("anchor_k must be >= 1")
+    top_k = 2 * anchor_k
+    nxt = next_anchor(is_prime, anchor_k)
+    top_k1 = 2 * nxt
+    old_base_primes = [p for p in range(2, top_k + 1) if is_prime[p]]
+
+    rows = []
+    counterexamples = []
+    segment_size = 0
+    for n in range(top_k + 2, top_k1 + 1, 2):
+        segment_size += 1
+        p_found = q_found = None
+        for p in old_base_primes:
+            if p > n // 2:
+                break
+            if is_prime[n - p]:
+                p_found, q_found = p, n - p
+                break
+        if p_found is None:
+            counterexamples.append(n)
+        if row_cap is None or len(rows) < row_cap:
+            rows.append({
+                "n": n, "p": p_found, "q": q_found,
+                "q_is_new": (q_found is not None and q_found > top_k),
+            })
+
+    return {
+        "anchor_k": anchor_k, "top_k": top_k, "next_anchor": nxt, "top_k1": top_k1,
+        "old_base_primes": old_base_primes, "segment_size": segment_size,
+        "rows": rows, "rows_truncated": (row_cap is not None and segment_size > row_cap),
+        "counterexamples": counterexamples, "covered": not counterexamples,
+    }

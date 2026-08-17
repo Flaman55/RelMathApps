@@ -101,7 +101,7 @@ from primeatlas import (  # noqa: E402
     AppSettings, Translator, DEFAULT_LANGUAGE, prune_empty_pietro_dirs,
     run_all_tests as primality_run_all_tests, factorize as primality_factorize,
     try_import_sympy as primality_try_import_sympy,
-    goldbach_check_window,
+    goldbach_check_window, goldbach_cascade_step,
 )
 
 # AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
@@ -130,6 +130,16 @@ FLOOR_PAGE_SIZE = 200  # PRIME_WINDOW_*.bin files shown per page when a floor no
                         # thousands of windows (10p15 alone passed 2,600+ and is still
                         # growing) -- reading every file's header AND inserting every file
                         # as a tree row on a single expand is what used to freeze the GUI.
+
+GOLDBACH_CASCADE_ROW_CAP = 14  # per-n decomposition rows drawn in the Goldbach tab's
+                                # Wizualizacja diagram -- the coverage verdict and
+                                # counterexample list are always computed over the FULL
+                                # cascade segment regardless (see
+                                # goldbach_window.cascade_step's row_cap docstring); this
+                                # only bounds how many rows the Canvas actually draws, so
+                                # the diagram stays readable even for a large anchor_k.
+GOLDBACH_CASCADE_CHIP_CAP = 24  # old-base prime chips drawn before switching to a
+                                 # "+N more" note -- same reasoning as the row cap above.
 
 QUICK_GEN_MAX_WINDOW_WIDTH = 10_000_000  # window width the (future) range ->
                           # window_count_per_run translation logic must not exceed. Not
@@ -299,6 +309,52 @@ def list_source_filenames(portal_folder, base_exponent):
         entries.append((_offset_from_filename(name), name))
     entries.sort(key=lambda e: (e[0] is None, e[0], e[1]))
     return [(name, os.path.join(source_dir, name)) for _offset, name in entries]
+
+
+def read_is_prime_from_storage(portal_folder, limit, base_exponent=0):
+    """Builds an is_prime bytearray covering [0, limit] purely from already-generated
+    floor storage (10p{base_exponent}/source_primes/PRIME_WINDOW_*.bin, PGS2 format --
+    see prime_sieve_v1.py's own format header) instead of running a fresh sieve. Used by
+    the Goldbach tab's Wizualizacja feature (see _on_goldbach_visualize), per Artur's
+    explicit instruction that this computation should read from the magazyn rather than
+    recompute -- the per-n witness search itself still runs the exact same algorithm as
+    goldbach_window.cascade_step(), only the SOURCE of is_prime changes.
+
+    Floor base_exponent windows start at BASE = 10**base_exponent and are
+    QUICK_GEN_MAX_WINDOW_WIDTH wide each (target_idx 0, 1, 2, ... -> offsets 0,
+    10_000_000, 20_000_000, ... relative to BASE -- see
+    prime_sieve_v1.main_batch_scanner()). Floor 0 (BASE=1) is the natural choice here:
+    it is the floor every low-range feature in this app treats as the baseline (see
+    prune_empty_pietro_dirs' low-floor completion logic), and its windows cover small
+    numbers directly, which is what a Goldbach anchor/cascade exploration needs.
+
+    Returns an is_prime bytearray of length limit+1 if EVERY window needed to cover
+    [0, limit] is present on disk, or None if any is missing -- never partially or
+    silently truncates (a silent gap would make a "covered" verdict meaningless)."""
+    window_m = QUICK_GEN_MAX_WINDOW_WIDTH
+    base = 10 ** base_exponent
+    if limit < base:
+        return bytearray(limit + 1)
+    highest_needed_idx = (limit - base) // window_m
+
+    files_by_idx = {}
+    for name, path in list_source_filenames(portal_folder, base_exponent):
+        offset = _offset_from_filename(name)
+        if offset is None:
+            continue
+        files_by_idx[offset // window_m] = path
+
+    for idx in range(highest_needed_idx + 1):
+        if idx not in files_by_idx:
+            return None
+
+    is_prime = bytearray(limit + 1)
+    for idx in range(highest_needed_idx + 1):
+        for p in prime_sieve_v1.read_prime_window(files_by_idx[idx]):
+            if p > limit:
+                break
+            is_prime[p] = 1
+    return is_prime
 
 
 def find_continuation_target_idx(portal_folder, base_exponent, window_m):
@@ -5583,6 +5639,14 @@ def _build_gui():
                 button_row, text=T("research_goldbach.export_csv_button"),
                 command=self._on_goldbach_export_csv, state="disabled")
             self.goldbach_export_button.pack(side="left", padx=(8, 0))
+            self.goldbach_visualize_button = ttk.Button(
+                button_row, text=T("research_goldbach.visualize_button"),
+                command=self._on_goldbach_visualize)
+            self.goldbach_visualize_button.pack(side="left", padx=(8, 0))
+
+            ttk.Label(self.research_goldbach_tab, text=T("research_goldbach.viz_hint"),
+                      wraplength=760, justify="left", foreground="#555").pack(
+                anchor="w", padx=6, pady=(0, 4))
 
             ttk.Label(self.research_goldbach_tab, text=T("research_goldbach.hint"),
                       wraplength=760, justify="left", foreground="#555").pack(
@@ -5637,7 +5701,25 @@ def _build_gui():
                 return
             mode = "touch_once" if self.goldbach_touch_once_var.get() else "all_combinations"
             self._goldbach_set_busy(True)
-            self._goldbach_work_queue.put({"pmax": pmax, "mode": mode})
+            self._goldbach_work_queue.put({"op": "window", "pmax": pmax, "mode": mode})
+
+        def _on_goldbach_visualize(self):
+            """"Wizualizacja" button -- treats the SAME Pmax field as anchor(k) and runs
+            ONE cascade step (Constructive.lean's CascadeOldBaseSufficiency), sourcing
+            is_prime from the on-disk magazyn (read_is_prime_from_storage) rather than a
+            fresh sieve, per Artur's explicit instruction. The witness search itself is
+            the exact same algorithm as goldbach_window.cascade_step() -- only where the
+            primes come from changes. Renders the "old frozen base vs new segment"
+            diagram in a Toplevel (see _goldbach_show_cascade_visualization)."""
+            if self._goldbach_busy:
+                return
+            try:
+                anchor_k = self._goldbach_parse_pmax()
+            except ValueError as e:
+                messagebox.showerror(T("research_goldbach.error_dialog_title"), str(e))
+                return
+            self._goldbach_set_busy(True)
+            self._goldbach_work_queue.put({"op": "cascade", "anchor_k": anchor_k})
 
         def _goldbach_set_busy(self, busy):
             self._goldbach_busy = busy
@@ -5655,31 +5737,55 @@ def _build_gui():
         def _goldbach_worker_loop(self):
             """Own daemon thread -- single-owner reasoning identical to
             _primality_worker_loop's own docstring (self._goldbach_busy blocks new
-            requests from the GUI side, so only one job is ever in flight). Pure
-            in-process Python (goldbach_window.check_window), no WSL subprocess."""
+            requests from the GUI side, so only one job is ever in flight). Two job
+            shapes distinguished by "op": "window" (goldbach_window.check_window, a
+            fresh in-process sieve) and "cascade" (goldbach_window.cascade_step, is_prime
+            sourced from the on-disk magazyn via read_is_prime_from_storage -- see
+            _on_goldbach_visualize). Neither needs a WSL subprocess."""
             while True:
                 job = self._goldbach_work_queue.get()
+                op = job["op"]
                 try:
-                    result = goldbach_check_window(job["pmax"], job["mode"])
-                    self._goldbach_result_queue.put((True, result))
+                    if op == "window":
+                        result = goldbach_check_window(job["pmax"], job["mode"])
+                        self._goldbach_result_queue.put((op, True, result))
+                    else:
+                        anchor_k = job["anchor_k"]
+                        limit = 4 * anchor_k  # safe upper bound for top(k+1): next_anchor
+                                               # <= 2*anchor_k (Bertrand), so top(k+1) =
+                                               # 2*next_anchor <= 4*anchor_k always -- see
+                                               # goldbach_window.cascade_step's docstring
+                        is_prime = read_is_prime_from_storage(PORTAL_FOLDER, limit)
+                        if is_prime is None:
+                            self._goldbach_result_queue.put((
+                                op, False,
+                                T("research_goldbach.error_storage_missing",
+                                  limit=f"{limit:,}")))
+                            continue
+                        result = goldbach_cascade_step(
+                            is_prime, anchor_k, row_cap=GOLDBACH_CASCADE_ROW_CAP)
+                        self._goldbach_result_queue.put((op, True, result))
                 except Exception as e:  # noqa: BLE001 -- surface any unexpected failure
                                          # to the GUI as an error dialog instead of
                                          # silently killing this worker thread
-                    self._goldbach_result_queue.put((False, str(e)))
+                    self._goldbach_result_queue.put((op, False, str(e)))
 
         def _poll_goldbach_results(self):
             """Main-thread side -- same 150ms polling cadence as
             _poll_primality_results, runs for the whole lifetime of the window."""
             try:
                 while True:
-                    ok, payload = self._goldbach_result_queue.get_nowait()
+                    op, ok, payload = self._goldbach_result_queue.get_nowait()
                     self._goldbach_set_busy(False)
                     if not ok:
                         self.status.set(T("research_goldbach.status_error"))
                         messagebox.showerror(T("research_goldbach.error_dialog_title"), payload)
                         continue
                     self.status.set(T("research_goldbach.status_done"))
-                    self._goldbach_show_result(payload)
+                    if op == "window":
+                        self._goldbach_show_result(payload)
+                    else:
+                        self._goldbach_show_cascade_visualization(payload)
             except queue.Empty:
                 pass
             self.after(150, self._poll_goldbach_results)
@@ -5757,6 +5863,122 @@ def _build_gui():
                         row["rep_count"] if row["rep_count"] is not None else "",
                         pairs_str])
             self.status.set(T("research_goldbach.status_exported", path=path))
+
+        def _goldbach_show_cascade_visualization(self, result):
+            """Opens a Toplevel drawing the "old frozen base vs new segment" diagram --
+            same visual language as the one shown in chat, but built from a REAL
+            cascade_step() result sourced from the magazyn (read_is_prime_from_storage),
+            not a hand-drawn illustration. Plain tk.Canvas, same zero-extra-installs
+            approach as the Benchmark tab's own hand-rolled chart (no matplotlib)."""
+            win = tk.Toplevel(self)
+            win.title(T("research_goldbach.viz_window_title", anchor_k=result["anchor_k"]))
+
+            chips = result["old_base_primes"]
+            chip_shown = chips[:GOLDBACH_CASCADE_CHIP_CAP]
+            chip_cols = 6
+            chip_rows = max(1, -(-len(chip_shown) // chip_cols))
+            rows = result["rows"]
+
+            canvas_w = 820
+            header_h = 90
+            chips_h = 48 + chip_rows * 36 + (22 if len(chips) > len(chip_shown) else 0)
+            rows_h = 26 + len(rows) * 36 + (18 if result["rows_truncated"] else 0)
+            footer_h = 60
+            canvas_h = header_h + max(chips_h, rows_h) + footer_h
+
+            canvas = tk.Canvas(win, width=canvas_w, height=canvas_h, background="white",
+                                highlightthickness=0)
+            canvas.pack(fill="both", expand=True)
+
+            canvas.create_text(
+                16, 18, anchor="nw", font=("TkDefaultFont", 13, "bold"),
+                text=T("research_goldbach.viz_header",
+                       anchor_k=result["anchor_k"], top_k=result["top_k"],
+                       next_anchor=result["next_anchor"], top_k1=result["top_k1"]))
+            canvas.create_text(
+                16, 44, anchor="nw", font=("TkDefaultFont", 9), fill="#64748b",
+                width=canvas_w - 32, text=T("research_goldbach.viz_subheader"))
+
+            top_y = header_h
+
+            box_w = 230
+            canvas.create_rectangle(16, top_y, 16 + box_w, top_y + chips_h,
+                                     outline="#2563eb", width=1.5, fill="#eff6ff")
+            canvas.create_text(16 + box_w / 2, top_y + 16, font=("TkDefaultFont", 10, "bold"),
+                                fill="#1d4ed8", text=T("research_goldbach.viz_old_base_title"))
+            canvas.create_text(
+                16 + box_w / 2, top_y + 32, font=("TkDefaultFont", 8), fill="#3b82f6",
+                text=T("research_goldbach.viz_old_base_subtitle", top_k=result["top_k"]))
+            chip_w, chip_h_px, gap = 34, 30, 6
+            start_x = 16 + 12
+            start_y = top_y + 46
+            for i, p in enumerate(chip_shown):
+                col, row = i % chip_cols, i // chip_cols
+                x0 = start_x + col * (chip_w + gap)
+                y0 = start_y + row * (chip_h_px + gap)
+                canvas.create_rectangle(x0, y0, x0 + chip_w, y0 + chip_h_px,
+                                         outline="#93c5fd", width=1.5, fill="white")
+                canvas.create_text(x0 + chip_w / 2, y0 + chip_h_px / 2,
+                                    font=("TkDefaultFont", 10, "bold"), fill="#1d4ed8",
+                                    text=str(p))
+            extra = len(chips) - len(chip_shown)
+            if extra > 0:
+                canvas.create_text(
+                    16 + box_w / 2, start_y + chip_rows * (chip_h_px + gap) + 10,
+                    font=("TkDefaultFont", 8), fill="#1e40af",
+                    text=T("research_goldbach.viz_more_primes", count=extra))
+
+            right_x = 16 + box_w + 20
+            row_y = top_y
+            canvas.create_text(
+                right_x, row_y, anchor="nw", font=("TkDefaultFont", 10, "bold"),
+                width=canvas_w - right_x - 16,
+                text=T("research_goldbach.viz_segment_title",
+                       top_k=result["top_k"], top_k1=result["top_k1"]))
+            row_y += 26
+            for row in rows:
+                n = row["n"]
+                p = row["p"] if row["p"] is not None else "?"
+                q = row["q"] if row["q"] is not None else "?"
+                canvas.create_rectangle(right_x, row_y, right_x + 46, row_y + 26,
+                                         fill="#0f172a", outline="")
+                canvas.create_text(right_x + 23, row_y + 13, fill="white",
+                                    font=("TkDefaultFont", 10, "bold"), text=str(n))
+                canvas.create_text(right_x + 60, row_y + 13, fill="#94a3b8", text="=")
+                canvas.create_rectangle(right_x + 74, row_y, right_x + 118, row_y + 26,
+                                         outline="#2563eb", width=1.5, fill="#dbeafe")
+                canvas.create_text(right_x + 96, row_y + 13, fill="#1d4ed8",
+                                    font=("TkDefaultFont", 10, "bold"), text=str(p))
+                canvas.create_text(right_x + 128, row_y + 13, fill="#94a3b8", text="+")
+                q_fill, q_outline = (
+                    ("#fef3c7", "#d97706") if row["q_is_new"] else ("#dbeafe", "#2563eb"))
+                canvas.create_rectangle(right_x + 142, row_y, right_x + 186, row_y + 26,
+                                         outline=q_outline, width=1.5, fill=q_fill)
+                canvas.create_text(right_x + 164, row_y + 13, fill=q_outline,
+                                    font=("TkDefaultFont", 10, "bold"), text=str(q))
+                if row["q_is_new"]:
+                    canvas.create_text(
+                        right_x + 198, row_y + 13, anchor="w", font=("TkDefaultFont", 8),
+                        fill="#d97706", text=T("research_goldbach.viz_q_new_note"))
+                row_y += 36
+            if result["rows_truncated"]:
+                canvas.create_text(
+                    right_x, row_y + 2, anchor="nw", font=("TkDefaultFont", 8), fill="#64748b",
+                    text=T("research_goldbach.viz_rows_truncated",
+                           shown=len(rows), total=result["segment_size"]))
+
+            footer_y = top_y + max(chips_h, rows_h) + 16
+            if result["covered"]:
+                footer_text = T("research_goldbach.viz_summary_covered",
+                                 segment_size=result["segment_size"])
+                footer_color = "#166534"
+            else:
+                footer_text = T(
+                    "research_goldbach.viz_summary_void",
+                    counterexamples=", ".join(str(x) for x in result["counterexamples"]))
+                footer_color = "#991b1b"
+            canvas.create_text(16, footer_y, anchor="nw", font=("TkDefaultFont", 10, "bold"),
+                                fill=footer_color, width=canvas_w - 32, text=footer_text)
 
         def _build_research_gaps_tab(self):
             """Prime gap explorer (raw gaps + Andrica/Firoozbakht/Cramer overlays) --
