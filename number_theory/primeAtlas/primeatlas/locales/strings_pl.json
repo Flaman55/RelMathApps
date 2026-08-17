@@ -2,7 +2,6 @@
   "app.title": "PrimeAtlas",
   "app.status_portal_initial": "Portal: {folder}",
   "app.status_portal_with_count": "Portal: {folder}  |  znaleziono folderów pięter: {count}",
-
   "tabs.primes": "Liczby pierwsze",
   "tabs.constellations": "Konstelacje",
   "tabs.research": "Badania",
@@ -53,13 +52,13 @@
   "research_goldbach.viz_status_shown": "Pokazano okno dla n={n} (Pmax={pmax}). Zmień n powyżej i sprawdź ponownie.",
   "research_goldbach.viz_window_title": "Okno: n = {n}, Pmax = {pmax}",
   "research_goldbach.viz_header": "n={n}  Pmax={pmax} (największa liczba pierwsza ≤ n)  okno=[4, {window_max}]",
-  "research_goldbach.viz_subheader": "Stara baza (niebieska, pierwsze ≤ Pmax) musi wystarczyć jako mniejszy składnik dla KAŻDEJ parzystej w oknie [4, 2·Pmax] -- niezależnie od tego, że wiele większych składników q leży już poza tą bazą.",
+  "research_goldbach.viz_subheader": "Stara baza (niebieska, pierwsze ≤ Pmax) dostarcza mniejszy składnik p dla KAŻDEJ parzystej pokazanej niżej -- buildableFromBase potwierdzone w każdym wierszu, niezależnie od tego, gdzie akurat leży q.",
   "research_goldbach.viz_old_base_title": "STARA BAZA",
   "research_goldbach.viz_old_base_subtitle": "pierwsze ≤ {pmax}",
   "research_goldbach.viz_more_primes": "+ {count} więcej",
   "research_goldbach.viz_segment_title": "Parzyste w oknie [4, {window_max}]",
   "research_goldbach.viz_q_new_note": "q > Pmax -- niepotrzebna dla p",
-  "research_goldbach.viz_legend_new_q": "bursztynowa ramka q = q > Pmax (spoza starej bazy, i tak niepotrzebna -- liczy się tylko p)",
+  "research_goldbach.viz_legend_new_q": "oba składniki (p i q) w tym samym niebieskim kolorze -- buildableFromBase zależy WYŁĄCZNIE od p ≤ Pmax, więc gdzie leży q nie ma znaczenia",
   "research_goldbach.viz_rows_truncated": "(pokazano {shown} z {total} wierszy okna)",
   "research_goldbach.viz_summary_covered": "Segment pokryty -- wszystkie {segment_size} nowych parzystych zbudowane wyłącznie ze starej bazy.",
   "research_goldbach.viz_summary_void": "UWAGA: brak rozkładu ze starej bazy dla: {counterexamples}.",
@@ -169,7 +168,6 @@
   "const_records.pdf_title": "PrimeAtlas -- Tabela rekordów konstelacji (k={k})",
   "const_records.pdf_subtitle": "Wygenerowano: {now}  --  wierszy (pięter): {rows}",
   "const_records.pdf_continued": "Tabela rekordów konstelacji (ciąg dalszy, strona {page})",
-
   "common.refresh": "Refresh",
   "common.prev_page": "◀ Poprzednia",
   "common.next_page": "Następna ▶",
@@ -196,7 +194,6 @@
   "common.no_floor": "Brak piętra 10p{base_exponent} ({digits}-cyfrowe liczby) w portalu.",
   "common.all_files": "Wszystkie pliki",
   "common.search_already_running": "Szukanie już trwa -- poczekaj na zakończenie.",
-
   "primes.detail_hint": "Wybierz plik, aby zobaczyć szczegóły.",
   "primes.col_pietro": "Piętro / file",
   "primes.col_count": "Primes",
@@ -226,7 +223,6 @@
   "primes.unreadable_header": "(nieczytelny nagłówek)",
   "primes.status_batch_start": "[*] Liczenie sum dla {count} pięter w tle (przy pierwszym uruchomieniu może to potrwać dłużej -- pojedyncze piętro rzędu 15 000 plików to ok. 1-1.5 min)...",
   "primes.status_searching": "[*] Szukam {number} w piętrze 10p{base_exponent}...",
-
   "const.detail_hint": "Wybierz wzorzec, aby zobaczyć szczegóły.",
   "const.col_pietro": "Piętro / pattern",
   "const.col_count": "Hits",
@@ -251,7 +247,6 @@
   "const.record_untracked": "Nieśledzone przez pzktupel.de (zbyt powszechne dla rekordu 'pierwszego odkrycia')",
   "const.hit_row_base": "{value}    [pozycja {position}/{total}: BAZA]",
   "const.hit_row_offset": "{value}    [pozycja {position}/{total}: offset +{offset}, baza={hit_base}]",
-
   "gen.section_loop": "Pipeline generowania (orchestrator_loop_v2.py)",
   "gen.section_const": "Szukanie k-tupli (constellation_finder_v1.py)",
   "gen.field_base_exponent": "Piętro (base_exponent, 10^N):",
@@ -279,7 +274,6 @@
   "gen.status_progress_sieve": "[*] Generowanie: sito {percent}% ({done}/{total} paczek)",
   "gen.status_progress_const": "[*] Szukanie konstelacji: plik {done}/{total}",
   "gen.status_progress_done": "[*] Generowanie zakończone.",
-
   "quick.section_title": "Szybkie generowanie",
   "quick.intro": "Podaj piętro albo zakres liczb do wygenerowania -- aplikacja przeliczy to na szerokość okna i liczbę okien w formularzu poniżej (szerokość okna ograniczona do 10 000 000).",
   "quick.mode_floor": "Tylko piętro",
@@ -325,7 +319,6 @@
   "quick.auto_button": "Auto",
   "quick.error_ram_probe_failed": "Nie udało się odczytać dostępnej pamięci RAM z WSL -- upewnij się, że WSL jest zainstalowany i działa, i spróbuj ponownie.",
   "quick.auto_ram_result": "Dostępny RAM w WSL: {available_gb} GB.\nZalecana maksymalna liczba okien na jedno uruchomienie: {recommended} (= {numbers_total} liczb).\n\nTo ostrożny szacunek oparty tylko o wspólny bufor wyjściowy sita -- narzut per-proces (rosnący z głębokością piętra) nie jest w nim uwzględniony. Sprawdź szczyt zużycia RAM w logu benchmarku po pierwszym uruchomieniu i dostosuj w razie potrzeby.",
-
   "bench.save_pdf": "Zapisz PDF",
   "bench.chart_hint": "   Wzrost kosztu wg piętra -- sekundy/10 mln, ostatni pomiar na piętro",
   "bench.col_pietro": "Piętro / run",
@@ -349,7 +342,6 @@
   "bench.stat_summary": "śr {avg} / min {min} / max {max}",
   "bench.stat_row_label": "Statystyka ({count} pomiar(ów) s/okno)",
   "bench.stat_no_data": "Statystyka: brak danych s/okno",
-
   "settings.language_frame": "Język / Language",
   "settings.language_label": "Język interfejsu:",
   "settings.language_restart_note": "Zmiana będzie widoczna po ponownym uruchomieniu aplikacji.",

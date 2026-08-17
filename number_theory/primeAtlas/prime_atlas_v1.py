@@ -6711,7 +6711,7 @@ def _build_gui():
                 16, 44, anchor="nw", font=("TkDefaultFont", 9), fill="#64748b",
                 width=canvas_w - 32, text=T("research_goldbach.viz_subheader"))
             canvas.create_text(
-                16, 82, anchor="nw", font=("TkDefaultFont", 8), fill="#d97706",
+                16, 82, anchor="nw", font=("TkDefaultFont", 8), fill="#166534",
                 text=T("research_goldbach.viz_legend_new_q"))
 
             top_y = header_h
@@ -6765,8 +6765,18 @@ def _build_gui():
                 x += p_box_w + GAP
                 canvas.create_text(x + PLUS_W / 2, cy + 13, fill="#94a3b8", text="+")
                 x += PLUS_W + GAP
-                q_fill, q_outline = (
-                    ("#fef3c7", "#d97706") if row["q_is_new"] else ("#dbeafe", "#2563eb"))
+                # q is drawn in the SAME blue as p, regardless of row["q_is_new"] --
+                # buildableFromBase (Constructive.lean) only ever bounds p, never q,
+                # so q's own base status is purely informational (kept in the data
+                # for the decompose-detail window) and carries no pass/fail meaning
+                # here. Coloring it amber/warning-orange when q > Pmax used to make
+                # an all-p-witnessed, fully-covered segment look like the base was
+                # running out as n grew -- it wasn't; every row below IS built from
+                # the old base via p. Artur, 2026-08-17: "skoro wszystkie są
+                # budowalne z bazy to takie wyświetlajmy" -- reported via screenshot
+                # where every q in view happened to exceed Pmax, painting the whole
+                # segment orange despite 100% of it being buildableFromBase.
+                q_fill, q_outline = "#dbeafe", "#2563eb"
                 canvas.create_rectangle(x, cy, x + q_box_w, cy + 26,
                                          outline=q_outline, width=1.5, fill=q_fill)
                 canvas.create_text(x + q_box_w / 2, cy + 13, fill=q_outline,

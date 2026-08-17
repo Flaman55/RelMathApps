@@ -2,7 +2,6 @@
   "app.title": "PrimeAtlas",
   "app.status_portal_initial": "Portal: {folder}",
   "app.status_portal_with_count": "Portal: {folder}  |  {count} floor folder(s) found",
-
   "tabs.primes": "Prime numbers",
   "tabs.constellations": "Constellations",
   "tabs.research": "Research",
@@ -53,13 +52,13 @@
   "research_goldbach.viz_status_shown": "Showing window for n={n} (Pmax={pmax}). Change n above and check again.",
   "research_goldbach.viz_window_title": "Window: n = {n}, Pmax = {pmax}",
   "research_goldbach.viz_header": "n={n}  Pmax={pmax} (largest prime <= n)  window=[4, {window_max}]",
-  "research_goldbach.viz_subheader": "The old base (blue, primes <= Pmax) must supply the smaller summand for EVERY even number in the window [4, 2*Pmax] -- regardless of how many larger summands q already lie outside that base.",
+  "research_goldbach.viz_subheader": "The old base (blue, primes <= Pmax) supplies the smaller summand p for EVERY even number shown below -- buildableFromBase confirmed in every row, regardless of where q happens to fall.",
   "research_goldbach.viz_old_base_title": "OLD BASE",
   "research_goldbach.viz_old_base_subtitle": "primes <= {pmax}",
   "research_goldbach.viz_more_primes": "+ {count} more",
   "research_goldbach.viz_segment_title": "Even numbers in window [4, {window_max}]",
   "research_goldbach.viz_q_new_note": "q > Pmax -- not needed for p",
-  "research_goldbach.viz_legend_new_q": "amber box for q = q > Pmax (outside the old base, not needed either way -- only p counts)",
+  "research_goldbach.viz_legend_new_q": "both summands (p and q) share the same blue -- buildableFromBase depends ONLY on p <= Pmax, so where q falls makes no difference",
   "research_goldbach.viz_rows_truncated": "(showing {shown} of {total} window rows)",
   "research_goldbach.viz_summary_covered": "Segment covered -- all {segment_size} new even numbers built from the old base alone.",
   "research_goldbach.viz_summary_void": "WARNING: no old-base decomposition for: {counterexamples}.",
@@ -169,7 +168,6 @@
   "const_records.pdf_title": "PrimeAtlas -- Constellation Records Table (k={k})",
   "const_records.pdf_subtitle": "Generated: {now}  --  rows (floors): {rows}",
   "const_records.pdf_continued": "Constellation records table (continued, page {page})",
-
   "common.refresh": "Refresh",
   "common.prev_page": "◀ Previous",
   "common.next_page": "Next ▶",
@@ -196,7 +194,6 @@
   "common.no_floor": "No floor 10p{base_exponent} ({digits}-digit numbers) in the portal.",
   "common.all_files": "All files",
   "common.search_already_running": "A search is already running -- wait for it to finish.",
-
   "primes.detail_hint": "Select a file to see its details.",
   "primes.col_pietro": "Floor / file",
   "primes.col_count": "Primes",
@@ -226,7 +223,6 @@
   "primes.unreadable_header": "(unreadable header)",
   "primes.status_batch_start": "[*] Computing totals for {count} floor(s) in the background (may take longer on first run -- a floor of ~15,000 files takes roughly 1-1.5 min)...",
   "primes.status_searching": "[*] Searching for {number} in floor 10p{base_exponent}...",
-
   "const.detail_hint": "Select a pattern to see its details.",
   "const.col_pietro": "Floor / pattern",
   "const.col_count": "Hits",
@@ -251,7 +247,6 @@
   "const.record_untracked": "Not tracked by pzktupel.de (too common for a 'first discovery' record)",
   "const.hit_row_base": "{value}    [position {position}/{total}: BASE]",
   "const.hit_row_offset": "{value}    [position {position}/{total}: offset +{offset}, base={hit_base}]",
-
   "gen.section_loop": "Generation pipeline (orchestrator_loop_v2.py)",
   "gen.section_const": "k-tuple search (constellation_finder_v1.py)",
   "gen.field_base_exponent": "Floor (base_exponent, 10^N):",
@@ -279,7 +274,6 @@
   "gen.status_progress_sieve": "[*] Generating: sieve {percent}% ({done}/{total} batches)",
   "gen.status_progress_const": "[*] Constellation search: file {done}/{total}",
   "gen.status_progress_done": "[*] Generation finished.",
-
   "quick.section_title": "Quick generation",
   "quick.intro": "Enter a floor or a number range to generate -- the app will translate it into the window width and window count in the form below (window width capped at 10,000,000).",
   "quick.mode_floor": "Floor only",
@@ -325,7 +319,6 @@
   "quick.primesieve_auto_from_result": "Floor {floor} currently has {existing_count} window(s) in storage.\nFrom has been set to {continuation_point} -- the first number not yet generated on this floor.",
   "quick.primesieve_auto_from_low_floor_result": "Floor {floor} is a low floor (0-6) -- it and every other floor in that range are generated together, in one combined run. From has been set to the start of floor {floor}.",
   "quick.primesieve_auto_from_low_floor_done": "Floor {floor} is a low floor (0-6) and is already fully generated -- every floor in that range is complete.",
-
   "bench.save_pdf": "Save PDF",
   "bench.chart_hint": "   Cost growth by floor -- seconds/10M, latest measurement per floor",
   "bench.col_pietro": "Floor / run",
@@ -349,7 +342,6 @@
   "bench.stat_summary": "avg {avg} / min {min} / max {max}",
   "bench.stat_row_label": "Stats ({count} measurement(s) s/window)",
   "bench.stat_no_data": "Stats: no s/window data",
-
   "settings.language_frame": "Język / Language",
   "settings.language_label": "Interface language:",
   "settings.language_restart_note": "The change will take effect after restarting the application.",
