@@ -430,12 +430,32 @@ def both_base_window_rows(is_prime, Pmax, Pmin=BOTH_BASE_PMIN, row_cap=None,
     import numpy as np
     window_max = Pmax + Pmin
 
-    lo = 4 if n_min is None else max(4, n_min)
-    hi = window_max if n_max is None else min(window_max, n_max)
+    # Both ends are clamped into [4, window_max] BEFORE the lo>hi check below --
+    # an earlier version only clamped lo's LOWER bound (max(4, n_min)) and hi's
+    # UPPER bound (min(window_max, n_max)), so a wildly out-of-range n_min (e.g.
+    # 10**15 against a window that only reaches ~10**7) left lo sitting at that
+    # huge unclamped value while hi got pulled down to window_max -- lo > hi
+    # correctly triggered the empty-range branch below, but that branch echoed
+    # the raw unclamped lo back out as "range_min", producing a nonsensical
+    # display like [1000000000000000, 9999992] instead of a clean bounded
+    # result. Symmetric fix on hi's lower bound too, so a wildly negative/too-
+    # small n_max can't do the mirror-image version of the same thing.
+    lo = 4 if n_min is None else min(max(4, n_min), window_max)
+    hi = window_max if n_max is None else max(min(window_max, n_max), 4)
     if lo % 2 == 1:
         lo += 1
     if hi % 2 == 1:
         hi -= 1
+    # Re-clamp AFTER rounding -- rounding lo UP by 1 (to reach an even n) can
+    # push it one past window_max when window_max itself is odd (Pmin=2, so
+    # window_max = Pmax+2 is odd whenever Pmax is odd, i.e. almost always,
+    # since Pmax is prime): a lo that clamped to exactly window_max above then
+    # rounds up to window_max+1, undoing the clamp just applied. Mirror case
+    # for hi rounding down past 4 doesn't actually occur (window_max>=4 always,
+    # per the Pmax>=2 check above), but is included for symmetry/safety rather
+    # than relying on that invariant staying true forever.
+    lo = max(4, min(lo, window_max))
+    hi = max(4, min(hi, window_max))
 
     is_prime_arr = np.frombuffer(is_prime, dtype=np.uint8)
     base_primes_arr = np.nonzero(is_prime_arr[:Pmax + 1])[0]

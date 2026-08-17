@@ -2922,6 +2922,17 @@ def _build_gui():
             self._pending_search_after_prime_gen = None
             self._pending_search_after_const_gen = None
 
+            # Same idea, one more slot: a Wizualizacja/decompose job that hit
+            # MissingStorageRangeError and whose "generate this range?" offer (see
+            # _goldbach_offer_generate_missing_range) was accepted. Records WHICH
+            # op to retry ("viz" or "decompose", None = nothing pending) -- the two
+            # ops read their target n from different places (self._goldbach_viz_
+            # current_n vs self._goldbach_decompose_current_n/current_pmax), so
+            # _on_loop_finished needs to know which one just failed to re-queue the
+            # right job instead of always re-running "viz" regardless of which op
+            # actually reported the gap.
+            self._pending_goldbach_retry_op = None
+
             # Whole-pipeline step count for the shared bottom progress bar -- see
             # _update_shared_progress_from_generation_chunk()'s own docstring. None between
             # runs / before the first batch-progress line of a run has arrived (so the real
@@ -6230,6 +6241,19 @@ def _build_gui():
                       wraplength=780, justify="left", foreground="#555").pack(
                 anchor="w", padx=10, pady=(0, 6))
 
+            # Own Progressbar, separate from the shared self.totals_progress in the
+            # MAIN window -- Artur, 2026-08-17: "progress br trzeba dodać też do
+            # samego okna wizualizacji bo w nim często jestem w trybie
+            # pełnoekranowym" -- the shared bottom bar is invisible while this
+            # Toplevel is maximized/fullscreen over it. Mirrored in lockstep with
+            # totals_progress by _goldbach_viz_progress_set (see its own
+            # docstring), called from every place that already updates
+            # totals_progress (_goldbach_set_busy, the "progress" queue tick in
+            # _poll_goldbach_results) so the two never drift out of sync.
+            self.goldbach_viz_progress = ttk.Progressbar(
+                win, mode="determinate", maximum=1, value=0)
+            self.goldbach_viz_progress.pack(fill="x", padx=10, pady=(0, 6))
+
             # Optional n sub-range for the sums grid -- Artur, 2026-08-17: without
             # this, viewing a page deep into a huge window still meant scanning the
             # ENTIRE window from n=4 on every request (row_cap/row_offset only ever
@@ -6392,10 +6416,12 @@ def _build_gui():
                 self.totals_progress.stop()
                 self.totals_progress.configure(mode="indeterminate")
                 self.totals_progress.start(80)
+                self._goldbach_viz_progress_set(indeterminate=True)
                 self.status.set(T("research_goldbach.status_computing"))
             else:
                 self.totals_progress.stop()
                 self.totals_progress.configure(mode="determinate", maximum=1, value=0)
+                self._goldbach_viz_progress_set(value=0)
 
         def _goldbach_refresh_nav_buttons(self):
             """Restores BOTH the Wizualizacja sums-grid Prev/Next and the decompose
@@ -6494,8 +6520,10 @@ def _build_gui():
                         except MissingStorageRangeError as e:
                             self._goldbach_result_queue.put((
                                 op, False,
-                                T("research_goldbach.error_storage_missing",
-                                  floor=e.floor, upto=f"{e.needed_upto:,}")))
+                                {"kind": "storage_missing", "floor": e.floor,
+                                 "needed_upto": e.needed_upto,
+                                 "message": T("research_goldbach.error_storage_missing",
+                                              floor=e.floor, upto=f"{e.needed_upto:,}")}))
                             continue
                         page = job.get("page", 0)
                         result = goldbach_all_decompositions(
@@ -6518,8 +6546,10 @@ def _build_gui():
                         except MissingStorageRangeError as e:
                             self._goldbach_result_queue.put((
                                 op, False,
-                                T("research_goldbach.error_storage_missing",
-                                  floor=e.floor, upto=f"{e.needed_upto:,}")))
+                                {"kind": "storage_missing", "floor": e.floor,
+                                 "needed_upto": e.needed_upto,
+                                 "message": T("research_goldbach.error_storage_missing",
+                                              floor=e.floor, upto=f"{e.needed_upto:,}")}))
                             continue
                         pmax = goldbach_largest_prime_le(is_prime, n)
                         if pmax is None:
@@ -6579,14 +6609,24 @@ def _build_gui():
                         self.totals_progress.stop()
                         self.totals_progress.configure(
                             mode="determinate", maximum=1, value=payload)
+                        self._goldbach_viz_progress_set(value=payload)
                         continue
                     try:
                         self._goldbach_set_busy(False)
                         self._goldbach_refresh_nav_buttons()
                         if not ok:
                             self.status.set(T("research_goldbach.status_error"))
-                            messagebox.showerror(
-                                T("research_goldbach.error_dialog_title"), payload)
+                            if isinstance(payload, dict) and payload.get("kind") == "storage_missing":
+                                # Not a generic failure -- read_is_prime_from_storage
+                                # found a specific gap (floor/needed_upto). Offer to
+                                # fill it instead of just naming it, same "offer to
+                                # generate the missing piece" UX search already uses
+                                # for prime/constellation lookups (see
+                                # _offer_generate_missing_prime_window's docstring).
+                                self._goldbach_offer_generate_missing_range(op, payload)
+                            else:
+                                messagebox.showerror(
+                                    T("research_goldbach.error_dialog_title"), payload)
                             continue
                         self.status.set(T("research_goldbach.status_done"))
                         if op == "window":
@@ -6601,6 +6641,79 @@ def _build_gui():
             except queue.Empty:
                 pass
             self.after(150, self._poll_goldbach_results)
+
+        def _goldbach_offer_generate_missing_range(self, op, payload):
+            """Offers to generate the primes storage a Wizualizacja/decompose job
+            just found missing (MissingStorageRangeError, translated into this dict
+            by the worker loop's own except MissingStorageRangeError blocks --
+            see _goldbach_worker_loop's docstring). Mirrors
+            _offer_generate_missing_prime_window()'s askyesno pattern, but launches
+            through _quick_gen_plan_literal_range()/_apply_loop_params_and_run() --
+            the SAME path Quick-gen's own Range mode button uses -- instead of the
+            primesieve single-window engine that helper uses: a Goldbach gap can
+            span many windows (the whole floor up to needed_upto), not just the one
+            window a single prime search needs, so the continuation-based
+            orchestrator engine (fills from wherever the floor's storage already
+            ends, up to the requested count) is the right fit here, not
+            primesieve's "write exactly this one window" contract.
+
+            Records `op` ("viz" or "decompose") into self._pending_goldbach_
+            retry_op once a run is actually launched, so _on_loop_finished knows
+            WHICH job to re-queue once generation completes -- the two ops read
+            their target n from different places (see that method's own
+            docstring), so blindly always retrying "viz" would silently drop a
+            decompose request that hit this same offer. read_is_prime_from_storage
+            only ever reports the FIRST short floor it hits while walking
+            0,1,2,... in order, so a range spanning multiple short floors may
+            still come back short again after one generation run -- re-queuing
+            just repeats this same offer for the next gap rather than trying to
+            solve every gap in one shot."""
+            floor = payload["floor"]
+            needed_upto = payload["needed_upto"]
+            if self._loop_runner is not None and self._loop_runner.is_running():
+                messagebox.showinfo(T("quick.dialog_title"), T("quick.error_already_running"))
+                return
+            plan = self._quick_gen_plan_literal_range(10 ** floor, needed_upto + 1)
+            if plan.get("error"):
+                messagebox.showerror(*plan["error"])
+                return
+            if plan.get("already"):
+                # Shouldn't normally happen (read_is_prime_from_storage's own check
+                # just said this floor was short), but if a race/edge case lands
+                # here anyway, fall back to the plain error rather than launching a
+                # no-op run.
+                messagebox.showerror(T("research_goldbach.error_dialog_title"), payload["message"])
+                return
+            if not messagebox.askyesno(
+                    T("common.dialog_search_title"),
+                    T("research_goldbach.offer_generate_missing_range",
+                      floor=floor, rounded_start=f"{plan['rounded_start']:,}",
+                      rounded_end=f"{plan['rounded_end']:,}")):
+                return
+            self._pending_goldbach_retry_op = op
+            self.status.set(T("research_goldbach.status_generating_range", floor=floor))
+            self._apply_loop_params_and_run(plan["floor"], 1, plan["window_count_per_run"])
+
+        def _goldbach_viz_progress_set(self, indeterminate=False, value=None):
+            """Mirrors totals_progress's own state onto the Wizualizacja Toplevel's
+            OWN Progressbar (see _goldbach_ensure_viz_window) -- Artur, 2026-08-17:
+            the shared bottom bar lives in the MAIN window and is invisible while
+            the Toplevel is maximized/fullscreen, which is how this tab is used
+            most of the time. Guarded with the same try/except tk.TclError pattern
+            _goldbach_widget_configure uses, since the Toplevel may already be
+            closed when a queued job's result/progress tick arrives."""
+            widget = getattr(self, "goldbach_viz_progress", None)
+            if widget is None:
+                return
+            try:
+                widget.stop()
+                if indeterminate:
+                    widget.configure(mode="indeterminate")
+                    widget.start(80)
+                else:
+                    widget.configure(mode="determinate", maximum=1, value=value or 0)
+            except tk.TclError:
+                pass
 
         def _goldbach_show_result(self, result):
             self._goldbach_last_result = result
@@ -8240,6 +8353,26 @@ def _build_gui():
                 pending = self._pending_search_after_prime_gen
                 self._pending_search_after_prime_gen = None
                 self._start_search_job(pending["kind"], pending["base_exponent"], pending["number"])
+
+            # Mirrors the block above, for a Wizualizacja/decompose "generate the
+            # missing range" offer instead of a prime/constellation search miss
+            # (see _goldbach_offer_generate_missing_range) -- re-queues whichever
+            # of the two ops actually reported the gap, now that generation should
+            # have filled it. "viz" re-reads n/row-page/od-do fresh from the still-
+            # open Toplevel's own entries (_goldbach_queue_viz); "decompose" reuses
+            # self._goldbach_decompose_current_n/current_pmax/page, already set by
+            # the original _on_goldbach_viz_decompose click and left untouched by
+            # the failed attempt (see _goldbach_queue_decompose_page's docstring).
+            # Runs regardless of exit code, same reasoning as the prime-window
+            # block: a failed/stopped run just means the retry reports the same
+            # gap again.
+            if self._pending_goldbach_retry_op is not None:
+                retry_op = self._pending_goldbach_retry_op
+                self._pending_goldbach_retry_op = None
+                if retry_op == "viz" and self._goldbach_viz_current_n is not None:
+                    self._goldbach_queue_viz(self._goldbach_viz_current_n, reset_page=False)
+                elif retry_op == "decompose" and self._goldbach_decompose_current_n is not None:
+                    self._goldbach_queue_decompose_page()
 
         def _poll_loop_output(self):
             self._drain_output_queue(self._loop_output_queue, self.loop_console,
