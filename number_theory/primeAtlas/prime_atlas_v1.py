@@ -101,6 +101,7 @@ from primeatlas import (  # noqa: E402
     AppSettings, Translator, DEFAULT_LANGUAGE, prune_empty_pietro_dirs,
     run_all_tests as primality_run_all_tests, factorize as primality_factorize,
     try_import_sympy as primality_try_import_sympy,
+    goldbach_check_window,
 )
 
 # AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
@@ -2703,6 +2704,17 @@ def _build_gui():
             self._primality_result_queue = queue.Queue()
             threading.Thread(target=self._primality_worker_loop, daemon=True).start()
             self.after(150, self._poll_primality_results)
+
+            # Goldbach structural-window worker (Badania -> Goldbach sub-tab): own queue
+            # pair for the same reason as every other worker block here -- unrelated
+            # result shape (a full per-n row list + counterexample list), pure Python
+            # like the primality worker, no WSL round trip (see goldbach_window.py's own
+            # header comment).
+            self._goldbach_busy = False
+            self._goldbach_work_queue = queue.Queue()
+            self._goldbach_result_queue = queue.Queue()
+            threading.Thread(target=self._goldbach_worker_loop, daemon=True).start()
+            self.after(150, self._poll_goldbach_results)
 
             # Constellation-records-table scan worker (Constellations -> Tabela rekordow
             # sub-tab, Faza 4): own queue pair for the same reason as every other worker
@@ -5535,10 +5547,216 @@ def _build_gui():
                       wraplength=700, justify="left").pack(anchor="nw", padx=12, pady=12)
 
         def _build_research_goldbach_tab(self):
-            """Goldbach's conjecture explorer (strong/weak modes) -- PLACEHOLDER, no logic
-            yet (Faza 0)."""
-            ttk.Label(self.research_goldbach_tab, text=T("research_goldbach.placeholder"),
-                      wraplength=700, justify="left").pack(anchor="nw", padx=12, pady=12)
+            """Goldbach structural-window check. Given an arbitrary Pmax, checks
+            windowCovered(Pmax) -- every even n in [4, 2*Pmax] must be a sum of two
+            primes -- exactly as formalized in Structural.lean / "A Structural Sieve
+            for Goldbach's Conjecture" (see primeatlas/goldbach_window.py's own header
+            for the full term-by-term correspondence, numerically verified there
+            against the paper's own worked examples). The checkbox switches between
+            "touch_once" (stop at the first witness per n -- windowCovered /
+            hasGoldbachRep, the paper's ACTIVE line of proof, coincides with
+            buildableFromBase(Pmax, n) on this window) and "all_combinations" (full
+            repCount(n) per n -- the paper's counting framing, kept there only for
+            comparison since it inherits the parity problem). Runs on its own worker
+            thread (own queue.Queue pair + 150ms poller, same pattern as
+            _primality_worker_loop/_poll_primality_results) since a large window is a
+            real, if brief, computation."""
+            top = ttk.Frame(self.research_goldbach_tab)
+            top.pack(fill="x", padx=6, pady=(10, 4))
+            ttk.Label(top, text=T("research_goldbach.field_pmax")).pack(side="left")
+            self.goldbach_pmax_entry = ttk.Entry(top, width=20)
+            self.goldbach_pmax_entry.pack(side="left", padx=(6, 16))
+            self.goldbach_pmax_entry.insert(0, "1000")
+
+            self.goldbach_touch_once_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(
+                top, text=T("research_goldbach.touch_once_checkbox"),
+                variable=self.goldbach_touch_once_var).pack(side="left")
+
+            button_row = ttk.Frame(self.research_goldbach_tab)
+            button_row.pack(fill="x", padx=6, pady=(0, 8))
+            self.goldbach_run_button = ttk.Button(
+                button_row, text=T("research_goldbach.run_button"),
+                command=self._on_goldbach_run)
+            self.goldbach_run_button.pack(side="left")
+            self.goldbach_export_button = ttk.Button(
+                button_row, text=T("research_goldbach.export_csv_button"),
+                command=self._on_goldbach_export_csv, state="disabled")
+            self.goldbach_export_button.pack(side="left", padx=(8, 0))
+
+            ttk.Label(self.research_goldbach_tab, text=T("research_goldbach.hint"),
+                      wraplength=760, justify="left", foreground="#555").pack(
+                anchor="w", padx=6, pady=(0, 8))
+
+            self.goldbach_summary_var = tk.StringVar(value="")
+            ttk.Label(self.research_goldbach_tab, textvariable=self.goldbach_summary_var,
+                      wraplength=760, justify="left").pack(anchor="w", padx=6, pady=(0, 8))
+
+            tree_frame = ttk.Frame(self.research_goldbach_tab)
+            tree_frame.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+            columns = ("n", "p", "q", "rep_count")
+            self.goldbach_results_tree = ttk.Treeview(
+                tree_frame, columns=columns, show="headings", height=16)
+            self.goldbach_results_tree.heading("n", text=T("research_goldbach.col_n"))
+            self.goldbach_results_tree.heading("p", text=T("research_goldbach.col_p"))
+            self.goldbach_results_tree.heading("q", text=T("research_goldbach.col_q"))
+            self.goldbach_results_tree.heading(
+                "rep_count", text=T("research_goldbach.col_rep_count"))
+            self.goldbach_results_tree.column("n", width=110, anchor="e")
+            self.goldbach_results_tree.column("p", width=110, anchor="e")
+            self.goldbach_results_tree.column("q", width=110, anchor="e")
+            self.goldbach_results_tree.column("rep_count", width=110, anchor="e")
+            gvsb = ttk.Scrollbar(
+                tree_frame, orient="vertical", command=self.goldbach_results_tree.yview)
+            self.goldbach_results_tree.configure(yscrollcommand=gvsb.set)
+            self.goldbach_results_tree.pack(side="left", fill="both", expand=True)
+            gvsb.pack(side="right", fill="y")
+            self.goldbach_results_tree.bind(
+                "<Double-1>", self._on_goldbach_row_double_click)
+
+            self._goldbach_last_result = None
+
+        def _goldbach_parse_pmax(self):
+            """Shared client-side validation for the Run button -- parses the Pmax
+            field via _eval_quick_number (so expressions like 10**4 work here too,
+            same as the primesieve calculator's and Testy pierwszosci's fields),
+            requiring an integer >= 2 (goldbach_window.check_window's own floor,
+            mirroring anchor(0) = 2 -- see that module's docstring)."""
+            pmax = _eval_quick_number(self.goldbach_pmax_entry.get())
+            if pmax is None or pmax < 2:
+                raise ValueError(T("research_goldbach.error_pmax_invalid"))
+            return pmax
+
+        def _on_goldbach_run(self):
+            if self._goldbach_busy:
+                return
+            try:
+                pmax = self._goldbach_parse_pmax()
+            except ValueError as e:
+                messagebox.showerror(T("research_goldbach.error_dialog_title"), str(e))
+                return
+            mode = "touch_once" if self.goldbach_touch_once_var.get() else "all_combinations"
+            self._goldbach_set_busy(True)
+            self._goldbach_work_queue.put({"pmax": pmax, "mode": mode})
+
+        def _goldbach_set_busy(self, busy):
+            self._goldbach_busy = busy
+            state = "disabled" if busy else "normal"
+            self.goldbach_run_button.configure(state=state)
+            if busy:
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="indeterminate")
+                self.totals_progress.start(80)
+                self.status.set(T("research_goldbach.status_computing"))
+            else:
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="determinate", maximum=1, value=0)
+
+        def _goldbach_worker_loop(self):
+            """Own daemon thread -- single-owner reasoning identical to
+            _primality_worker_loop's own docstring (self._goldbach_busy blocks new
+            requests from the GUI side, so only one job is ever in flight). Pure
+            in-process Python (goldbach_window.check_window), no WSL subprocess."""
+            while True:
+                job = self._goldbach_work_queue.get()
+                try:
+                    result = goldbach_check_window(job["pmax"], job["mode"])
+                    self._goldbach_result_queue.put((True, result))
+                except Exception as e:  # noqa: BLE001 -- surface any unexpected failure
+                                         # to the GUI as an error dialog instead of
+                                         # silently killing this worker thread
+                    self._goldbach_result_queue.put((False, str(e)))
+
+        def _poll_goldbach_results(self):
+            """Main-thread side -- same 150ms polling cadence as
+            _poll_primality_results, runs for the whole lifetime of the window."""
+            try:
+                while True:
+                    ok, payload = self._goldbach_result_queue.get_nowait()
+                    self._goldbach_set_busy(False)
+                    if not ok:
+                        self.status.set(T("research_goldbach.status_error"))
+                        messagebox.showerror(T("research_goldbach.error_dialog_title"), payload)
+                        continue
+                    self.status.set(T("research_goldbach.status_done"))
+                    self._goldbach_show_result(payload)
+            except queue.Empty:
+                pass
+            self.after(150, self._poll_goldbach_results)
+
+        def _goldbach_show_result(self, result):
+            self._goldbach_last_result = result
+            self.goldbach_results_tree.delete(*self.goldbach_results_tree.get_children())
+            rows = result["rows"]
+            truncated = len(rows) > PAGE_SIZE
+            for row in rows[:PAGE_SIZE]:
+                p = row["p"] if row["p"] is not None else T("research_goldbach.no_witness")
+                q = row["q"] if row["q"] is not None else ""
+                rc = row["rep_count"] if row["rep_count"] is not None else "-"
+                self.goldbach_results_tree.insert("", "end", values=(row["n"], p, q, rc))
+            if result["covered"]:
+                summary = T(
+                    "research_goldbach.summary_covered", n_checked=result["n_checked"],
+                    window_max=result["window_max"], elapsed=f"{result['elapsed']:.3f}")
+            else:
+                summary = T(
+                    "research_goldbach.summary_void",
+                    counterexamples=", ".join(str(x) for x in result["counterexamples"]),
+                    window_max=result["window_max"], elapsed=f"{result['elapsed']:.3f}")
+            if truncated:
+                summary += " " + T(
+                    "research_goldbach.summary_truncated", shown=PAGE_SIZE, total=len(rows))
+            self.goldbach_summary_var.set(summary)
+            self.goldbach_export_button.configure(state="normal")
+
+        def _on_goldbach_row_double_click(self, event):
+            """Drill-down for "all_combinations" mode -- shows the FULL deduplicated
+            witness-pair list for the double-clicked n (the results table only shows
+            the smallest pair + count, same drill-down spirit as the Constellations ->
+            Tabela rekordow tab's hit-list dialog). No-op in "touch_once" mode (pairs
+            is None there by design -- see goldbach_window.py's own docstring)."""
+            sel = self.goldbach_results_tree.selection()
+            if not sel or not self._goldbach_last_result:
+                return
+            n = self.goldbach_results_tree.item(sel[0])["values"][0]
+            row = next(
+                (r for r in self._goldbach_last_result["rows"] if r["n"] == n), None)
+            if row is None or row["pairs"] is None:
+                return
+            pairs_text = "\n".join(f"{p} + {q} = {n}" for p, q in row["pairs"])
+            messagebox.showinfo(
+                T("research_goldbach.pairs_dialog_title", n=n),
+                pairs_text or T("research_goldbach.no_witness"))
+
+        def _on_goldbach_export_csv(self):
+            if not self._goldbach_last_result:
+                return
+            result = self._goldbach_last_result
+            default_name = (
+                f"goldbach_window_pmax{result['pmax']}_{result['mode']}_"
+                f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+            path = filedialog.asksaveasfilename(
+                title=T("research_goldbach.export_csv_button"),
+                initialdir=PORTAL_FOLDER,
+                initialfile=default_name,
+                defaultextension=".csv",
+                filetypes=[("CSV", "*.csv"), (T("common.all_files"), "*.*")])
+            if not path:
+                return
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["n", "p", "q", "rep_count", "pairs"])
+                for row in result["rows"]:
+                    pairs_str = (
+                        "; ".join(f"{p}+{q}" for p, q in row["pairs"])
+                        if row["pairs"] else "")
+                    writer.writerow([
+                        row["n"],
+                        row["p"] if row["p"] is not None else "",
+                        row["q"] if row["q"] is not None else "",
+                        row["rep_count"] if row["rep_count"] is not None else "",
+                        pairs_str])
+            self.status.set(T("research_goldbach.status_exported", path=path))
 
         def _build_research_gaps_tab(self):
             """Prime gap explorer (raw gaps + Andrica/Firoozbakht/Cramer overlays) --
