@@ -5864,14 +5864,19 @@ def _build_gui():
 
         def _on_goldbach_visualize(self):
             """"Wizualizacja" button -- derives Pmax = largest prime <= n (starting from
-            the SAME n as the "Sprawdz okno" field) and draws the SAME [4, 2*Pmax]
-            window that button checks (goldbach_window.window_rows -- see its own
-            docstring: "wizualizacja zawsze siedzi w oknie 4-2Pmax", Artur's own
-            instruction), sourcing is_prime from the on-disk magazyn
+            the SAME n as the "Sprawdz okno" field) and draws the window Lean's
+            additiveSelfContained_of_hasGoldbachRep proves unconditionally
+            (goldbach_window.both_base_window_rows -- see that module's own
+            docstring), sourcing is_prime from the on-disk magazyn
             (read_is_prime_from_storage) rather than a fresh sieve. Opens (or reuses,
-            if already open) a Toplevel with its OWN n field + check button, so
+            if already open) a Toplevel with its OWN od/do range + check button, so
             different n values can be explored there directly without bouncing back to
-            this tab each time (see _goldbach_ensure_viz_window)."""
+            this tab each time (see _goldbach_ensure_viz_window). "od" is left at
+            whatever the Toplevel's own field already holds (its own default is 4,
+            set once at window creation) -- only "do" is overwritten from this tab's
+            n, matching how it always worked before the od/do merge (see
+            _goldbach_queue_viz's own docstring for why od/do are no longer
+            optional)."""
             try:
                 n = self._goldbach_parse_n()
             except ValueError as e:
@@ -5885,9 +5890,13 @@ def _build_gui():
             self._goldbach_queue_viz(n)
 
         def _on_goldbach_viz_refresh(self):
-            """The Wizualizacja Toplevel's OWN "Sprawdz okno" button -- reads n from
-            ITS OWN field (self.goldbach_viz_n_entry), not the main tab's, so the window
-            is self-sufficient once open."""
+            """The Wizualizacja Toplevel's OWN "Sprawdz okno" button -- reads "do"
+            from ITS OWN field (self.goldbach_viz_n_entry, still validated via
+            _goldbach_parse_n_from -- "do" plays exactly the role the old standalone
+            "n" field used to), not the main tab's, so the window is self-sufficient
+            once open. "od" is read/validated inside _goldbach_queue_viz itself
+            (shared with the row Prev/Next/goto handlers, which also need it re-
+            checked on every call -- see that method's own docstring)."""
             if self._goldbach_viz_win is None or not self._goldbach_viz_win.winfo_exists():
                 return
             try:
@@ -5898,37 +5907,50 @@ def _build_gui():
             self._goldbach_queue_viz(n)
 
         def _goldbach_queue_viz(self, n, reset_page=True):
-            """Queues a "viz" worker job for n. reset_page=True (the default, used by
-            a fresh "Sprawdz okno" click from either the main tab or the Wizualizacja
-            window's own button) starts back at row/chip page 0, since a different n
-            means a different window and a different old base entirely. reset_page=
-            False (used by the row Prev/Next handlers below) keeps whatever
-            self._goldbach_viz_row_page was already set to by the caller.
+            """Queues a "viz" worker job for the range [od, n] -- "n" here is the
+            SAME value the "do" field holds, i.e. it plays two roles at once: it's
+            what Pmax is derived from (largest prime <= n, exactly like the old
+            standalone "n" field), AND it's the scan's own upper bound. reset_page=
+            True (the default, used by a fresh "Sprawdz okno" click from either the
+            main tab or the Wizualizacja window's own button) starts back at
+            row/chip page 0, since a different n means a different window and a
+            different old base entirely. reset_page=False (used by the row
+            Prev/Next handlers below) keeps whatever self._goldbach_viz_row_page was
+            already set to by the caller.
 
-            n_min/n_max are read fresh from goldbach_viz_range_from_entry/
-            goldbach_viz_range_to_entry every call (not cached), via getattr since
-            those Entry widgets only exist once the Wizualizacja Toplevel has
-            actually been built -- blank or unparsable fields fall back to None
-            (full window), same "silently accept blank" convention as every other
-            optional field in this app (_eval_quick_number itself already treats
-            blank as invalid, so blank is special-cased here rather than relying on
-            its own ValueError path)."""
+            "od" is read fresh from goldbach_viz_range_from_entry every call (not
+            cached, via getattr since that Entry only exists once the Wizualizacja
+            Toplevel has actually been built) -- Artur, 2026-08-17: an earlier
+            version treated od/do as an "optional" pair (blank = full window), which
+            looked like two independent ranges once a standalone "n" field ALSO sat
+            above it ("ja chyba nie umiem uzywac zakresowosci"). Now there is only
+            one range: od defaults to 4 (not blank) and is validated here on every
+            call (>=4, and <= n-2 so at least one even number is actually in
+            range) -- an invalid od blocks the job with a clear error instead of
+            silently clamping into something the person didn't ask for."""
             if self._goldbach_busy:
+                return
+            from_entry = getattr(self, "goldbach_viz_range_from_entry", None)
+            od_raw = from_entry.get().strip() if from_entry is not None else ""
+            n_min = _eval_quick_number(od_raw) if od_raw else 4
+            if n_min is None or n_min < 4:
+                messagebox.showerror(
+                    T("research_goldbach.error_dialog_title"),
+                    T("research_goldbach.error_viz_range_from_invalid"))
+                return
+            if n_min > n - 2:
+                messagebox.showerror(
+                    T("research_goldbach.error_dialog_title"),
+                    T("research_goldbach.error_viz_range_from_too_high", do=f"{n:,}"))
                 return
             if reset_page:
                 self._goldbach_viz_row_page = 0
                 self._goldbach_viz_chip_page = 0
             self._goldbach_viz_current_n = n
             self._goldbach_set_busy(True)
-            from_entry = getattr(self, "goldbach_viz_range_from_entry", None)
-            to_entry = getattr(self, "goldbach_viz_range_to_entry", None)
-            n_min = (_eval_quick_number(from_entry.get())
-                     if from_entry is not None and from_entry.get().strip() else None)
-            n_max = (_eval_quick_number(to_entry.get())
-                     if to_entry is not None and to_entry.get().strip() else None)
             self._goldbach_work_queue.put({
                 "op": "viz", "n": n, "row_page": self._goldbach_viz_row_page,
-                "n_min": n_min, "n_max": n_max,
+                "n_min": n_min, "n_max": n,
             })
 
         def _on_goldbach_viz_row_prev(self):
@@ -6208,9 +6230,10 @@ def _build_gui():
             the existing one if it's still open -- so repeated clicks (from this tab's
             button, or from the window's own check button) redraw ONE persistent
             window instead of piling up a new Toplevel per click. Layout: a top row
-            with its own n entry + check button + status label, then a Canvas below
-            that _goldbach_show_window_visualization redraws in place (clear + redraw,
-            resizing the canvas to fit) rather than rebuilding from scratch."""
+            with its own od/do range fields + check button + status label, then a
+            Canvas below that _goldbach_show_window_visualization redraws in place
+            (clear + redraw, resizing the canvas to fit) rather than rebuilding from
+            scratch."""
             if self._goldbach_viz_win is not None and self._goldbach_viz_win.winfo_exists():
                 return self._goldbach_viz_win
 
@@ -6223,9 +6246,29 @@ def _build_gui():
 
             win.protocol("WM_DELETE_WINDOW", _on_close)
 
+            # Single od/do row -- Artur, 2026-08-17: an earlier version had a
+            # standalone "n" field here PLUS a separate "optional" od/do range
+            # below it, which looked like two independent ways to pick a range
+            # ("ja chyba nie umiem uzywac zakresowosci") when "do" was always
+            # effectively n's own role anyway (Pmax is derived from whatever's
+            # typed as the upper bound, exactly like the old n field did) --
+            # merged into one row so there's only one range to reason about, not
+            # two overlapping ones. "do" plays n's old role unchanged (still
+            # goldbach_viz_n_entry / _goldbach_parse_n_from, still what
+            # determines Pmax); "od" defaults to 4 (not blank) and is validated
+            # against "do" in _goldbach_queue_viz (>=4, and <= do-2 so at least
+            # one even n exists in the range) so the button always operates on a
+            # concrete, well-formed range -- no more separate "leave it blank for
+            # the full window" mode to explain.
             top = ttk.Frame(win)
             top.pack(fill="x", padx=10, pady=(10, 4))
-            ttk.Label(top, text=T("research_goldbach.field_n")).pack(side="left")
+            ttk.Label(top, text=T("research_goldbach.viz_range_label")).pack(side="left")
+            self.goldbach_viz_range_from_entry = ttk.Entry(top, width=16)
+            self.goldbach_viz_range_from_entry.pack(side="left", padx=(6, 12))
+            self.goldbach_viz_range_from_entry.insert(0, "4")
+            self.goldbach_viz_range_from_entry.bind(
+                "<Return>", lambda _e: self._on_goldbach_viz_refresh())
+            ttk.Label(top, text=T("research_goldbach.viz_range_to_label")).pack(side="left")
             self.goldbach_viz_n_entry = ttk.Entry(top, width=16)
             self.goldbach_viz_n_entry.pack(side="left", padx=(6, 12))
             self.goldbach_viz_n_entry.insert(0, self.goldbach_n_entry.get() or "1000")
@@ -6235,6 +6278,9 @@ def _build_gui():
                 top, text=T("research_goldbach.run_button"),
                 command=self._on_goldbach_viz_refresh)
             self.goldbach_viz_check_button.pack(side="left")
+            ttk.Label(win, text=T("research_goldbach.viz_range_hint"),
+                      wraplength=780, justify="left", foreground="#777").pack(
+                anchor="w", padx=10, pady=(0, 6))
 
             self.goldbach_viz_status_var = tk.StringVar(value="")
             ttk.Label(win, textvariable=self.goldbach_viz_status_var,
@@ -6253,34 +6299,6 @@ def _build_gui():
             self.goldbach_viz_progress = ttk.Progressbar(
                 win, mode="determinate", maximum=1, value=0)
             self.goldbach_viz_progress.pack(fill="x", padx=10, pady=(0, 6))
-
-            # Optional n sub-range for the sums grid -- Artur, 2026-08-17: without
-            # this, viewing a page deep into a huge window still meant scanning the
-            # ENTIRE window from n=4 on every request (row_cap/row_offset only ever
-            # sliced which rows got RETURNED, never which got COMPUTED -- see
-            # goldbach_window.both_base_window_rows' own docstring on the n_min/
-            # n_max parameters this wires into). Left blank, behavior is unchanged
-            # (full [4, Pmax+2] window). Filled in, only [od, do] gets scanned --
-            # "covered"/counterexamples then describe that sub-range, not the whole
-            # window, which _goldbach_show_window_visualization makes explicit in
-            # the header text so this is never mistaken for a full-window verdict.
-            range_row = ttk.Frame(win)
-            range_row.pack(fill="x", padx=10, pady=(0, 2))
-            ttk.Label(range_row, text=T("research_goldbach.viz_range_label")).pack(
-                side="left")
-            self.goldbach_viz_range_from_entry = ttk.Entry(range_row, width=16)
-            self.goldbach_viz_range_from_entry.pack(side="left", padx=(6, 4))
-            self.goldbach_viz_range_from_entry.bind(
-                "<Return>", lambda _e: self._on_goldbach_viz_refresh())
-            ttk.Label(range_row, text=T("research_goldbach.viz_range_to_label")).pack(
-                side="left")
-            self.goldbach_viz_range_to_entry = ttk.Entry(range_row, width=16)
-            self.goldbach_viz_range_to_entry.pack(side="left", padx=(6, 0))
-            self.goldbach_viz_range_to_entry.bind(
-                "<Return>", lambda _e: self._on_goldbach_viz_refresh())
-            ttk.Label(win, text=T("research_goldbach.viz_range_hint"),
-                      wraplength=780, justify="left", foreground="#777").pack(
-                anchor="w", padx=10, pady=(0, 6))
 
             # "Rozloz liczbe" -- Artur's request after noticing that the smallest-
             # witness search (_smallest_witness / window_rows) can land on a pair
