@@ -6655,8 +6655,21 @@ def _build_gui():
             win = self._goldbach_ensure_viz_window()
             win.title(T("research_goldbach.viz_window_title",
                         n=result["n"], pmax=result["pmax"]))
-            self.goldbach_viz_status_var.set(T(
-                "research_goldbach.viz_status_shown", n=result["n"], pmax=result["pmax"]))
+            # The coverage verdict (all covered / which n's aren't) is ALSO drawn at
+            # the very bottom of the canvas below (viz_summary_covered/void), but
+            # that can end up scrolled or clipped off screen for a tall diagram --
+            # Artur asked for the message to appear "somewhere" it's guaranteed
+            # visible, so it's repeated here in the status label at the TOP of the
+            # window, which never depends on the canvas's own size.
+            coverage_text = (
+                T("research_goldbach.viz_summary_covered",
+                  segment_size=result["segment_size"])
+                if result["covered"] else
+                T("research_goldbach.viz_summary_void",
+                  counterexamples=", ".join(str(x) for x in result["counterexamples"])))
+            self.goldbach_viz_status_var.set(
+                T("research_goldbach.viz_status_shown", n=result["n"], pmax=result["pmax"])
+                + "  " + coverage_text)
             if self.goldbach_viz_n_entry.get().strip() != str(result["n"]):
                 self.goldbach_viz_n_entry.delete(0, "end")
                 self.goldbach_viz_n_entry.insert(0, str(result["n"]))
@@ -6726,6 +6739,29 @@ def _build_gui():
             # rather than stretched to fill the Toplevel (see _goldbach_ensure_viz_
             # window's own note on why the canvas is no longer packed with fill/expand).
             rows_per_col = GOLDBACH_VIZ_ROWS_PER_COL
+            header_h = 106
+            footer_h = 60
+
+            # Cap rows_per_col to what actually fits ON SCREEN VERTICALLY, mirroring
+            # the column-width cap just below -- Artur reported that adding the mode
+            # toggle row (_goldbach_ensure_viz_window) pushed a full 3x14-row page
+            # (both_base mode, n=1000) tall enough that the canvas -- and with it the
+            # "wszystko pokryte" / counterexamples summary drawn at its very bottom --
+            # ran off the bottom of the screen with no scrollbar to reach it. Unlike
+            # the width cap (which drops whole COLUMNS), this shrinks how many ROWS
+            # each column holds, so a screen too short for 14 rows still shows AS MANY
+            # full rows as fit rather than none. available_h subtracts a flat margin
+            # for the Toplevel's own packed controls above the canvas (n/status/mode/
+            # decompose/chip-nav/row-nav rows) plus OS window chrome/taskbar, none of
+            # which is part of the canvas itself but all of which still has to fit
+            # alongside it on screen.
+            screen_h = win.winfo_screenheight()
+            available_h = max(260, screen_h - 380)
+            max_rows_h = available_h - header_h - footer_h
+            max_rows_per_col = max(1, (max_rows_h - 26 - 18) // 36)
+            if rows_per_col > max_rows_per_col:
+                rows_per_col = max_rows_per_col
+
             cols_wanted = min(GOLDBACH_VIZ_MAX_COLS, max(1, -(-len(rows) // rows_per_col))) \
                 if rows else 1
 
@@ -6753,7 +6789,6 @@ def _build_gui():
                 16 + box_w + 20 + grid_w + 16,
                 16 + box_w + 16 + 300,  # never narrower than a comfortable minimum
             )
-            header_h = 106
             chips_h = 48 + chip_rows * 36
             rows_truncated = result["rows_truncated"] or rows_drawn < len(rows)
             # Height reserved for the tallest column actually drawn -- with the fixed
@@ -6766,7 +6801,6 @@ def _build_gui():
             # same "wasted space" complaint this diagram had before).
             rows_per_col_used = max(1, min(rows_per_col, rows_drawn))
             rows_h = 26 + rows_per_col_used * 36 + (18 if rows_truncated else 0)
-            footer_h = 60
             canvas_h = header_h + max(chips_h, rows_h) + footer_h
             canvas.configure(width=canvas_w, height=canvas_h)
 
