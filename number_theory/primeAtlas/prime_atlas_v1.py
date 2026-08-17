@@ -141,13 +141,18 @@ GOLDBACH_VIZ_ROWS_PER_COL = 14  # per-n decomposition cards drawn in ONE column 
 GOLDBACH_VIZ_MAX_COLS = 3  # cap on how many columns the card grid wraps into, so a
                              # huge window doesn't stretch the diagram absurdly wide.
 GOLDBACH_CASCADE_ROW_CAP = GOLDBACH_VIZ_ROWS_PER_COL * GOLDBACH_VIZ_MAX_COLS
-    # per-n decomposition rows drawn in the Wizualizacja diagram -- the coverage
-    # verdict and counterexample list are always computed over the FULL window
-    # regardless (see goldbach_window.window_rows' row_cap docstring); this only
-    # bounds how many cards the Canvas actually draws, so the diagram stays readable
-    # even for a large Pmax.
-GOLDBACH_CASCADE_CHIP_CAP = 24  # old-base prime chips drawn before switching to a
-                                 # "+N more" note -- same reasoning as the row cap above.
+    # PAGE SIZE for the per-n decomposition rows, one backend goldbach_window_rows()
+    # call per page (see row_offset there) -- the coverage verdict and counterexample
+    # list are always computed over the FULL window regardless of which page is
+    # requested. Prev/Next buttons in the Wizualizacja window (see
+    # _on_goldbach_viz_row_prev/_next) step through pages of this size, per Artur's
+    # request for the same kind of navigation used elsewhere for large lists (Primes
+    # tab preview, benchmark log, etc. -- see _update_nav_controls).
+GOLDBACH_VIZ_CHIP_ROWS_PER_PAGE = 6  # old-base prime chips: how many CHIP ROWS (not
+    # individual chips -- chip_cols varies with Pmax's digit count) are shown per page
+    # before Prev/Next must be used. Purely a client-side page (old_base_primes is
+    # already fully computed by the backend), unlike row pagination above which needs
+    # a fresh backend call per page.
 
 QUICK_GEN_MAX_WINDOW_WIDTH = 10_000_000  # window width the (future) range ->
                           # window_count_per_run translation logic must not exceed. Not
@@ -2848,6 +2853,17 @@ def _build_gui():
             # Wizualizacja Toplevel is created lazily (see _goldbach_ensure_viz_window)
             # and reused across clicks -- None here means "not open yet".
             self._goldbach_viz_win = None
+            # Pagination state for the two independently-browsable sections of the
+            # diagram (see _goldbach_queue_viz / _on_goldbach_viz_chip_prev etc.):
+            # row_page drives a fresh backend goldbach_window_rows() call per page,
+            # chip_page is a pure client-side slice of the last result's
+            # old_base_primes (already fully computed, no backend cost to page
+            # through). current_n/last_result let the Prev/Next handlers act without
+            # the caller having to thread n and the previous result through again.
+            self._goldbach_viz_row_page = 0
+            self._goldbach_viz_chip_page = 0
+            self._goldbach_viz_current_n = None
+            self._goldbach_viz_last_result = None
             threading.Thread(target=self._goldbach_worker_loop, daemon=True).start()
             self.after(150, self._poll_goldbach_results)
 
@@ -5826,11 +5842,61 @@ def _build_gui():
                 return
             self._goldbach_queue_viz(n)
 
-        def _goldbach_queue_viz(self, n):
+        def _goldbach_queue_viz(self, n, reset_page=True):
+            """Queues a "viz" worker job for n. reset_page=True (the default, used by
+            a fresh "Sprawdz okno" click from either the main tab or the Wizualizacja
+            window's own button) starts back at row/chip page 0, since a different n
+            means a different window and a different old base entirely. reset_page=
+            False (used by the row Prev/Next handlers below) keeps whatever
+            self._goldbach_viz_row_page was already set to by the caller."""
             if self._goldbach_busy:
                 return
+            if reset_page:
+                self._goldbach_viz_row_page = 0
+                self._goldbach_viz_chip_page = 0
+            self._goldbach_viz_current_n = n
             self._goldbach_set_busy(True)
-            self._goldbach_work_queue.put({"op": "viz", "n": n})
+            self._goldbach_work_queue.put({
+                "op": "viz", "n": n, "row_page": self._goldbach_viz_row_page,
+            })
+
+        def _on_goldbach_viz_row_prev(self):
+            """Sums-grid "Poprzednia" -- steps back one PAGE of decomposition rows
+            (GOLDBACH_CASCADE_ROW_CAP per page). Needs a fresh worker call (see
+            _goldbach_queue_viz's own docstring) since only one page's rows are ever
+            held in memory at a time."""
+            if self._goldbach_busy or self._goldbach_viz_current_n is None:
+                return
+            if self._goldbach_viz_row_page > 0:
+                self._goldbach_viz_row_page -= 1
+                self._goldbach_queue_viz(self._goldbach_viz_current_n, reset_page=False)
+
+        def _on_goldbach_viz_row_next(self):
+            """Sums-grid "Nastepna" -- see _on_goldbach_viz_row_prev. The Next button is
+            disabled once goldbach_window_rows() reports rows_truncated=False for the
+            current page (see _goldbach_show_window_visualization), so this doesn't
+            need its own upper-bound check."""
+            if self._goldbach_busy or self._goldbach_viz_current_n is None:
+                return
+            self._goldbach_viz_row_page += 1
+            self._goldbach_queue_viz(self._goldbach_viz_current_n, reset_page=False)
+
+        def _on_goldbach_viz_chip_prev(self):
+            """STARA BAZA "Poprzednia" -- purely client-side: old_base_primes is
+            already fully present in the last worker result, so paging through it is
+            just a redraw with a different slice, no worker round-trip needed."""
+            if self._goldbach_viz_chip_page > 0:
+                self._goldbach_viz_chip_page -= 1
+                if self._goldbach_viz_last_result is not None:
+                    self._goldbach_show_window_visualization(self._goldbach_viz_last_result)
+
+        def _on_goldbach_viz_chip_next(self):
+            """STARA BAZA "Nastepna" -- see _on_goldbach_viz_chip_prev. Clamped against
+            the true page count inside _goldbach_show_window_visualization, so an extra
+            click past the end is harmless (the Next button is also disabled there)."""
+            self._goldbach_viz_chip_page += 1
+            if self._goldbach_viz_last_result is not None:
+                self._goldbach_show_window_visualization(self._goldbach_viz_last_result)
 
         def _goldbach_ensure_viz_window(self):
             """Creates the Wizualizacja Toplevel the first time it's needed, or returns
@@ -5870,6 +5936,44 @@ def _build_gui():
                       wraplength=780, justify="left", foreground="#555").pack(
                 anchor="w", padx=10, pady=(0, 6))
 
+            # Two INDEPENDENT navigation rows, per Artur's request for the same kind
+            # of Prev/Next paging used elsewhere for large lists (Primes tab preview,
+            # benchmark log -- see _update_nav_controls). STARA BAZA pages through
+            # old_base_primes client-side; the sums grid pages through the window's
+            # decomposition rows via a fresh backend call each time (see
+            # _goldbach_queue_viz's docstring for why they differ).
+            chip_nav = ttk.Frame(win)
+            chip_nav.pack(fill="x", padx=10, pady=(0, 2))
+            ttk.Label(chip_nav, text=T("research_goldbach.viz_nav_chips_label")).pack(
+                side="left")
+            self.goldbach_viz_chip_prev_btn = ttk.Button(
+                chip_nav, text=T("common.prev_page"),
+                command=self._on_goldbach_viz_chip_prev, state="disabled")
+            self.goldbach_viz_chip_prev_btn.pack(side="left", padx=(6, 4))
+            self.goldbach_viz_chip_page_label = tk.StringVar(value="")
+            ttk.Label(chip_nav, textvariable=self.goldbach_viz_chip_page_label,
+                      width=14, anchor="center").pack(side="left")
+            self.goldbach_viz_chip_next_btn = ttk.Button(
+                chip_nav, text=T("common.next_page"),
+                command=self._on_goldbach_viz_chip_next, state="disabled")
+            self.goldbach_viz_chip_next_btn.pack(side="left", padx=(4, 0))
+
+            row_nav = ttk.Frame(win)
+            row_nav.pack(fill="x", padx=10, pady=(0, 6))
+            ttk.Label(row_nav, text=T("research_goldbach.viz_nav_rows_label")).pack(
+                side="left")
+            self.goldbach_viz_row_prev_btn = ttk.Button(
+                row_nav, text=T("common.prev_page"),
+                command=self._on_goldbach_viz_row_prev, state="disabled")
+            self.goldbach_viz_row_prev_btn.pack(side="left", padx=(6, 4))
+            self.goldbach_viz_row_page_label = tk.StringVar(value="")
+            ttk.Label(row_nav, textvariable=self.goldbach_viz_row_page_label,
+                      width=14, anchor="center").pack(side="left")
+            self.goldbach_viz_row_next_btn = ttk.Button(
+                row_nav, text=T("common.next_page"),
+                command=self._on_goldbach_viz_row_next, state="disabled")
+            self.goldbach_viz_row_next_btn.pack(side="left", padx=(4, 0))
+
             # NOT fill="both"/expand=True here: an earlier version packed the canvas to
             # fill the whole Toplevel, which meant the Canvas widget stretched to
             # whatever size the window happened to be (its actual drawn content still
@@ -5895,6 +5999,15 @@ def _build_gui():
             self.goldbach_run_button.configure(state=state)
             if hasattr(self, "goldbach_viz_check_button"):
                 self.goldbach_viz_check_button.configure(state=state)
+            # Only force-DISABLE the row nav buttons here -- their correct enabled
+            # state at the bounds (first/last page) is recalculated by
+            # _update_nav_controls once a fresh result is drawn, so re-enabling them
+            # unconditionally here would briefly un-disable Prev on page 0. Chip nav
+            # buttons aren't gated by busy at all -- paging them is pure client-side
+            # redraw, no worker round-trip (see _on_goldbach_viz_chip_prev/_next).
+            if busy and hasattr(self, "goldbach_viz_row_prev_btn"):
+                self.goldbach_viz_row_prev_btn.configure(state="disabled")
+                self.goldbach_viz_row_next_btn.configure(state="disabled")
             if busy:
                 self.totals_progress.stop()
                 self.totals_progress.configure(mode="indeterminate")
@@ -5921,7 +6034,12 @@ def _build_gui():
             instruction that Wizualizacja should read from storage rather than
             recompute. Then runs goldbach_window.window_rows(is_prime, Pmax, ...) over
             that SAME array -- both the Pmax resolution and the window check share one
-            storage read. Neither op needs a WSL subprocess."""
+            storage read. job["row_page"] (default 0) selects which PAGE of
+            decomposition rows to compute (see GOLDBACH_CASCADE_ROW_CAP and the
+            row_offset param it's paired with) -- re-reads storage and re-derives Pmax
+            every page turn rather than caching, same cost profile as re-running the
+            whole check, which is acceptable since it's already async off the GUI
+            thread. Neither op needs a WSL subprocess."""
             while True:
                 job = self._goldbach_work_queue.get()
                 op = job["op"]
@@ -5952,9 +6070,12 @@ def _build_gui():
                             self._goldbach_result_queue.put((
                                 op, False, T("research_goldbach.error_no_prime_le_n", n=n)))
                             continue
+                        row_page = job.get("row_page", 0)
                         result = goldbach_window_rows(
-                            is_prime, pmax, row_cap=GOLDBACH_CASCADE_ROW_CAP)
+                            is_prime, pmax, row_cap=GOLDBACH_CASCADE_ROW_CAP,
+                            row_offset=row_page * GOLDBACH_CASCADE_ROW_CAP)
                         result["n"] = n
+                        result["row_page"] = row_page
                         self._goldbach_result_queue.put((op, True, result))
                 except Exception as e:  # noqa: BLE001 -- surface any unexpected failure
                                          # to the GUI as an error dialog instead of
@@ -6079,11 +6200,15 @@ def _build_gui():
                 self.goldbach_viz_n_entry.delete(0, "end")
                 self.goldbach_viz_n_entry.insert(0, str(result["n"]))
 
+            # Cache the full result so the chip Prev/Next handlers (pure client-side,
+            # see _on_goldbach_viz_chip_prev/_next's own docstrings) can call back into
+            # this same method without needing a fresh worker round-trip.
+            self._goldbach_viz_last_result = result
+
             canvas = self.goldbach_viz_canvas
             canvas.delete("all")
 
             chips = result["old_base_primes"]
-            chip_shown = chips[:GOLDBACH_CASCADE_CHIP_CAP]
             rows = result["rows"]
 
             # Box widths scale to the actual digit count of the values THIS diagram is
@@ -6114,8 +6239,25 @@ def _build_gui():
             # digit count -- chip_cols itself narrows for big primes instead.
             chip_cols_target_w = 210  # desired inner width for the chip grid
             chip_cols = max(3, chip_cols_target_w // (chip_w + chip_gap))
-            chip_rows = max(1, -(-len(chip_shown) // chip_cols))
             box_w = 24 + chip_cols * chip_w + (chip_cols - 1) * chip_gap
+
+            # STARA BAZA pagination (client-side, see _on_goldbach_viz_chip_prev/_next):
+            # old_base_primes can hold hundreds of thousands of entries for a large
+            # Pmax, so only ONE page's worth is ever sliced for drawing -- per Artur's
+            # request for the same kind of Prev/Next browsing used elsewhere in the app
+            # for large lists, instead of a static "+N more" note with no way to see
+            # the rest.
+            chip_page_size = chip_cols * GOLDBACH_VIZ_CHIP_ROWS_PER_PAGE
+            total_chip_pages = max(1, -(-len(chips) // chip_page_size)) if chips else 1
+            self._goldbach_viz_chip_page = max(
+                0, min(self._goldbach_viz_chip_page, total_chip_pages - 1))
+            chip_start = self._goldbach_viz_chip_page * chip_page_size
+            chip_shown = chips[chip_start:chip_start + chip_page_size]
+            chip_rows = max(1, -(-len(chip_shown) // chip_cols))
+            _update_nav_controls(
+                self.goldbach_viz_chip_page_label, self._goldbach_viz_chip_page,
+                total_chip_pages, self.goldbach_viz_chip_prev_btn,
+                self.goldbach_viz_chip_next_btn)
 
             # Rows fan out into up to GOLDBACH_VIZ_MAX_COLS columns instead of one long
             # strip -- a single column left the diagram pinned to the top-left with a
@@ -6151,9 +6293,18 @@ def _build_gui():
                 16 + box_w + 16 + 300,  # never narrower than a comfortable minimum
             )
             header_h = 106
-            chips_h = 48 + chip_rows * 36 + (22 if len(chips) > len(chip_shown) else 0)
+            chips_h = 48 + chip_rows * 36
             rows_truncated = result["rows_truncated"] or rows_drawn < len(rows)
-            rows_h = 26 + rows_per_col * 36 + (18 if rows_truncated else 0)
+            # Height reserved for the tallest column actually drawn -- with the fixed
+            # (non-rebalanced) rows_per_col assignment below, every column except
+            # possibly the last is exactly rows_per_col tall, so min(rows_per_col,
+            # rows_drawn) is always correct: it's rows_per_col once there's enough to
+            # fill a full column, or just rows_drawn for a single partial column (e.g.
+            # a small window with only a handful of rows total -- reserving a full
+            # page's height for those would leave a large empty gap below them, the
+            # same "wasted space" complaint this diagram had before).
+            rows_per_col_used = max(1, min(rows_per_col, rows_drawn))
+            rows_h = 26 + rows_per_col_used * 36 + (18 if rows_truncated else 0)
             footer_h = 60
             canvas_h = header_h + max(chips_h, rows_h) + footer_h
             canvas.configure(width=canvas_w, height=canvas_h)
@@ -6190,12 +6341,6 @@ def _build_gui():
                 canvas.create_text(x0 + chip_w / 2, y0 + chip_h_px / 2,
                                     font=("TkDefaultFont", 10, "bold"), fill="#1d4ed8",
                                     text=str(p))
-            extra = len(chips) - len(chip_shown)
-            if extra > 0:
-                canvas.create_text(
-                    16 + box_w / 2, start_y + chip_rows * (chip_h_px + chip_gap) + 10,
-                    font=("TkDefaultFont", 8), fill="#1e40af",
-                    text=T("research_goldbach.viz_more_primes", count=extra))
 
             row_y = top_y
             canvas.create_text(
@@ -6232,13 +6377,26 @@ def _build_gui():
                                          outline=q_outline, width=1.5, fill=q_fill)
                 canvas.create_text(x + q_box_w / 2, cy + 13, fill=q_outline,
                                     font=("TkDefaultFont", 10, "bold"), text=str(q))
-            grid_bottom_y = grid_top_y + rows_per_col * 36
+            grid_bottom_y = grid_top_y + rows_per_col_used * 36
             if rows_truncated:
                 canvas.create_text(
                     right_x, grid_bottom_y + 2, anchor="nw", font=("TkDefaultFont", 8),
                     fill="#64748b",
                     text=T("research_goldbach.viz_rows_truncated",
                            shown=rows_drawn, total=result["segment_size"]))
+
+            # total_row_pages is derived from segment_size/ROW_CAP -- deliberately NOT
+            # from rows_drawn (the on-screen, possibly-narrower-than-a-page count from
+            # the column-dropping above). A screen-width-dropped column means more of
+            # THIS SAME page would show if the window were wider, not that turning the
+            # page would reveal it -- so Next must only look available when there's
+            # genuinely another page of window beyond this one.
+            row_page = result.get("row_page", 0)
+            total_row_pages = max(
+                1, -(-result["segment_size"] // GOLDBACH_CASCADE_ROW_CAP))
+            _update_nav_controls(
+                self.goldbach_viz_row_page_label, row_page, total_row_pages,
+                self.goldbach_viz_row_prev_btn, self.goldbach_viz_row_next_btn)
 
             footer_y = top_y + max(chips_h, rows_h) + 16
             if result["covered"]:

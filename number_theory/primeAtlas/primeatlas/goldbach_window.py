@@ -99,7 +99,7 @@ def _smallest_witness(is_prime, n):
     return None, None
 
 
-def window_rows(is_prime, Pmax, row_cap=None):
+def window_rows(is_prime, Pmax, row_cap=None, row_offset=0):
     """Computes windowCovered(Pmax) (Structural.lean) -- every even n in [4, 2*Pmax] --
     using an EXTERNALLY supplied is_prime array (e.g. sourced from on-disk storage, see
     prime_atlas_v1.read_is_prime_from_storage) instead of building a fresh sieve. Runs
@@ -111,16 +111,24 @@ def window_rows(is_prime, Pmax, row_cap=None):
     checks, not a separate cascade step). `is_prime` must be long enough to index up to
     2*Pmax.
 
-    `row_cap` limits how many per-n rows are returned (for GUI display) -- the coverage
-    verdict and counterexample list are always computed over the FULL window regardless.
+    `row_cap` limits how many per-n rows are returned (for GUI display); `row_offset`
+    skips that many n's (in window order) before collection starts -- together these
+    are a simple offset/limit page window, letting the GUI page through the full
+    window's decomposition rows (Artur: chciał nawigacji jak gdzie indziej przy dużej
+    ilości danych) without ever materializing more than one page's worth of row dicts
+    at a time. The coverage verdict and counterexample list are ALWAYS computed over
+    the FULL window regardless of row_cap/row_offset -- pagination only affects which
+    slice of already-computed witnesses gets packaged into "rows".
 
     Returns {"pmax":, "window_max":, "old_base_primes": [...], "covered":,
-    "counterexamples": [...], "segment_size": int,
+    "counterexamples": [...], "segment_size": int, "row_offset": int,
     "rows": [{"n":,"p":,"q":,"q_is_new": bool}, ...], "rows_truncated": bool} --
     "old_base_primes" is every prime <= Pmax (the frozen base every p is drawn from,
     automatically -- see the module docstring's note on p <= Pmax); "q_is_new" flags
     q > Pmax (a prime that was NOT part of that base and so wasn't strictly needed to
-    find p, mirroring the Wizualizacja diagram's "old base vs new" framing)."""
+    find p, mirroring the Wizualizacja diagram's "old base vs new" framing);
+    "rows_truncated" means there are more rows AFTER this page (row_offset + len(rows)
+    < segment_size), i.e. whether a "next page" would return anything."""
     if Pmax < 2:
         raise ValueError("Pmax must be >= 2")
     window_max = 2 * Pmax
@@ -129,11 +137,12 @@ def window_rows(is_prime, Pmax, row_cap=None):
     counterexamples = []
     segment_size = 0
     for n in range(4, window_max + 1, 2):
+        idx = segment_size  # 0-based position of n within the window, before increment
         segment_size += 1
         p_found, q_found = _smallest_witness(is_prime, n)
         if p_found is None:
             counterexamples.append(n)
-        if row_cap is None or len(rows) < row_cap:
+        if idx >= row_offset and (row_cap is None or len(rows) < row_cap):
             rows.append({
                 "n": n, "p": p_found, "q": q_found,
                 "q_is_new": (q_found is not None and q_found > Pmax),
@@ -141,8 +150,8 @@ def window_rows(is_prime, Pmax, row_cap=None):
     return {
         "pmax": Pmax, "window_max": window_max, "old_base_primes": old_base_primes,
         "covered": not counterexamples, "counterexamples": counterexamples,
-        "segment_size": segment_size, "rows": rows,
-        "rows_truncated": (row_cap is not None and segment_size > row_cap),
+        "segment_size": segment_size, "row_offset": row_offset, "rows": rows,
+        "rows_truncated": (row_cap is not None and row_offset + len(rows) < segment_size),
     }
 
 
