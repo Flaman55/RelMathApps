@@ -155,6 +155,50 @@ def window_rows(is_prime, Pmax, row_cap=None, row_offset=0):
     }
 
 
+def all_decompositions(is_prime, n, pmax=None, cap=None):
+    """Exhaustively lists EVERY prime pair (p, q) with p <= q and p + q = n -- unlike
+    _smallest_witness (which stops at the first, smallest p), this is the "sliding
+    window" scan Artur asked for: slide p from 2 up to n//2 and record every hit, so
+    it's possible to see whether the SMALLEST witness happening to use a "new" prime
+    (q > Pmax) was actually forced, or whether an old-base-only (p <= pmax AND
+    q <= pmax) decomposition exists elsewhere in the list that window_rows()'s
+    single-witness search never looks for.
+
+    `is_prime` must be long enough to index up to n (i.e. len(is_prime) > n). `pmax`
+    is optional context (the anchor to flag pairs against, typically the currently
+    displayed window's Pmax) -- when given, each pair is flagged "both_old_base":
+    p <= pmax and q <= pmax; when omitted, both_old_base is None for every pair (no
+    base to compare against). `cap` limits how many pairs are collected (defensive
+    against huge n); "truncated" reports whether more existed beyond the cap -- the
+    verdict (old_base_sufficient) is still computed over the FULL scan regardless of
+    cap, same "verdict always full, display can be partial" split as window_rows().
+
+    Returns {"n":, "pmax":, "count": int (total pairs found), "decompositions":
+    [{"p":, "q":, "both_old_base": bool|None}, ...], "old_base_sufficient": bool|None,
+    "truncated": bool}."""
+    if n < 4 or n % 2 != 0:
+        raise ValueError("n must be even and >= 4")
+    if len(is_prime) <= n:
+        raise ValueError("is_prime array too short for n")
+    decompositions = []
+    count = 0
+    old_base_sufficient = False if pmax is not None else None
+    for p in range(2, n // 2 + 1):
+        if is_prime[p] and is_prime[n - p]:
+            q = n - p
+            count += 1
+            both_old_base = (p <= pmax and q <= pmax) if pmax is not None else None
+            if both_old_base:
+                old_base_sufficient = True
+            if cap is None or len(decompositions) < cap:
+                decompositions.append({"p": p, "q": q, "both_old_base": both_old_base})
+    return {
+        "n": n, "pmax": pmax, "count": count, "decompositions": decompositions,
+        "old_base_sufficient": old_base_sufficient,
+        "truncated": (cap is not None and count > len(decompositions)),
+    }
+
+
 def check_window(Pmax, mode):
     """Checks windowCovered(Pmax): every even n with 4 <= n <= 2*Pmax must be a sum of
     two primes. `mode` is "touch_once" or "all_combinations" (see module docstring).

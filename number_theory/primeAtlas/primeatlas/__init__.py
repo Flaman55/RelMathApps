@@ -20,6 +20,7 @@ from .goldbach_window import (
     cascade_step as goldbach_cascade_step,
     next_anchor as goldbach_next_anchor,
     window_rows as goldbach_window_rows,
+    all_decompositions as goldbach_all_decompositions,
     largest_prime_le as goldbach_largest_prime_le,
     sieve_is_prime as goldbach_sieve_is_prime,
 )

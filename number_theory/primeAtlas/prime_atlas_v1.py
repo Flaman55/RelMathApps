@@ -102,7 +102,8 @@ from primeatlas import (  # noqa: E402
     run_all_tests as primality_run_all_tests, factorize as primality_factorize,
     try_import_sympy as primality_try_import_sympy,
     goldbach_check_window, goldbach_cascade_step,
-    goldbach_window_rows, goldbach_largest_prime_le, goldbach_sieve_is_prime,
+    goldbach_window_rows, goldbach_all_decompositions,
+    goldbach_largest_prime_le, goldbach_sieve_is_prime,
 )
 
 # AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
@@ -153,6 +154,11 @@ GOLDBACH_VIZ_CHIP_ROWS_PER_PAGE = 6  # old-base prime chips: how many CHIP ROWS 
     # before Prev/Next must be used. Purely a client-side page (old_base_primes is
     # already fully computed by the backend), unlike row pagination above which needs
     # a fresh backend call per page.
+GOLDBACH_DECOMPOSE_ROW_CAP = 300  # defensive cap on how many (p, q) pairs the "Rozloz
+    # liczbe" detail window displays (see goldbach_all_decompositions + _goldbach_show_
+    # decomposition_detail) -- the old_base_sufficient verdict and total count are
+    # always computed over the FULL scan regardless of this cap, only the displayed
+    # rows are truncated.
 
 QUICK_GEN_MAX_WINDOW_WIDTH = 10_000_000  # window width the (future) range ->
                           # window_count_per_run translation logic must not exceed. Not
@@ -2864,6 +2870,10 @@ def _build_gui():
             self._goldbach_viz_chip_page = 0
             self._goldbach_viz_current_n = None
             self._goldbach_viz_last_result = None
+            # "Rozloz liczbe" detail Toplevel (all_decompositions of one specific n
+            # against the currently-open window's Pmax) -- same lazy-create-and-reuse
+            # pattern as _goldbach_viz_win, see _goldbach_ensure_decompose_window.
+            self._goldbach_decompose_win = None
             threading.Thread(target=self._goldbach_worker_loop, daemon=True).start()
             self.after(150, self._poll_goldbach_results)
 
@@ -5898,6 +5908,128 @@ def _build_gui():
             if self._goldbach_viz_last_result is not None:
                 self._goldbach_show_window_visualization(self._goldbach_viz_last_result)
 
+        def _on_goldbach_viz_decompose(self):
+            """"Pokaz wszystkie rozklady" -- reads a target n from the Wizualizacja
+            window's own decompose field and exhaustively scans EVERY prime pair
+            summing to it (goldbach_all_decompositions), flagged against the Pmax of
+            the window currently displayed above (self._goldbach_viz_last_result).
+            Needs a window to already be checked (for its Pmax) -- unlike the main n
+            field, this one is not restricted to n's inside [4, 2*Pmax], since the
+            question ("does n need a prime outside Pmax's base") makes sense for any
+            even n Artur wants to probe, not just ones already in the current window."""
+            if self._goldbach_busy:
+                return
+            if self._goldbach_viz_last_result is None:
+                messagebox.showerror(
+                    T("research_goldbach.error_dialog_title"),
+                    T("research_goldbach.error_decompose_no_window"))
+                return
+            try:
+                target_n = self._goldbach_parse_n_from(self.goldbach_viz_decompose_entry)
+            except ValueError as e:
+                messagebox.showerror(T("research_goldbach.error_dialog_title"), str(e))
+                return
+            if target_n < 4 or target_n % 2 != 0:
+                messagebox.showerror(
+                    T("research_goldbach.error_dialog_title"),
+                    T("research_goldbach.error_decompose_must_be_even"))
+                return
+            pmax = self._goldbach_viz_last_result["pmax"]
+            self._goldbach_set_busy(True)
+            self._goldbach_work_queue.put({
+                "op": "decompose", "n": target_n, "pmax": pmax,
+            })
+
+        def _goldbach_ensure_decompose_window(self):
+            """Lazy-create-and-reuse Toplevel for the decomposition detail list, same
+            pattern as _goldbach_ensure_viz_window (one persistent window redrawn in
+            place, not a new Toplevel piling up per click)."""
+            if (self._goldbach_decompose_win is not None
+                    and self._goldbach_decompose_win.winfo_exists()):
+                return self._goldbach_decompose_win
+
+            win = tk.Toplevel(self)
+
+            def _on_close():
+                win.destroy()
+                self._goldbach_decompose_win = None
+
+            win.protocol("WM_DELETE_WINDOW", _on_close)
+
+            self.goldbach_decompose_verdict_var = tk.StringVar(value="")
+            ttk.Label(win, textvariable=self.goldbach_decompose_verdict_var,
+                      wraplength=520, justify="left", font=("TkDefaultFont", 10, "bold"),
+                      padding=(10, 10, 10, 4)).pack(anchor="w")
+
+            self.goldbach_decompose_count_var = tk.StringVar(value="")
+            ttk.Label(win, textvariable=self.goldbach_decompose_count_var,
+                      padding=(10, 0, 10, 6)).pack(anchor="w")
+
+            tree_frame = ttk.Frame(win, padding=(10, 0, 10, 4))
+            tree_frame.pack(fill="both", expand=True)
+            columns = ("p", "q", "old_base")
+            tree = ttk.Treeview(
+                tree_frame, columns=columns, show="headings", height=16)
+            tree.heading("p", text=T("research_goldbach.decompose_col_p"))
+            tree.heading("q", text=T("research_goldbach.decompose_col_q"))
+            tree.heading("old_base", text=T("research_goldbach.decompose_col_base"))
+            tree.column("p", width=100, anchor="e")
+            tree.column("q", width=100, anchor="e")
+            tree.column("old_base", width=140, anchor="center")
+            tree.tag_configure("new", foreground="#a06a00")
+            scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=scroll.set)
+            tree.pack(side="left", fill="both", expand=True)
+            scroll.pack(side="left", fill="y")
+            self.goldbach_decompose_tree = tree
+
+            self.goldbach_decompose_truncated_var = tk.StringVar(value="")
+            ttk.Label(win, textvariable=self.goldbach_decompose_truncated_var,
+                      foreground="#555", padding=(10, 0, 10, 10)).pack(anchor="w")
+
+            self._goldbach_decompose_win = win
+            return win
+
+        def _goldbach_show_decomposition_detail(self, result):
+            """Renders one goldbach_all_decompositions() result into the detail
+            Toplevel: every (p, q) pair for the requested n, tagged where q lies
+            outside the old base (q > pmax) the same amber-ish framing as the diagram's
+            "new" chips, plus a headline verdict on whether an old-base-only pair
+            (both p, q <= pmax) exists ANYWHERE in the full list -- answering Artur's
+            actual question directly instead of leaving him to eyeball the rows."""
+            win = self._goldbach_ensure_decompose_window()
+            win.title(T("research_goldbach.decompose_window_title", n=result["n"]))
+            win.deiconify()
+            win.lift()
+
+            pmax = result["pmax"]
+            if result["old_base_sufficient"]:
+                self.goldbach_decompose_verdict_var.set(
+                    T("research_goldbach.decompose_verdict_yes", pmax=pmax))
+            else:
+                self.goldbach_decompose_verdict_var.set(
+                    T("research_goldbach.decompose_verdict_no", pmax=pmax))
+            self.goldbach_decompose_count_var.set(
+                T("research_goldbach.decompose_count", count=result["count"]))
+
+            tree = self.goldbach_decompose_tree
+            tree.delete(*tree.get_children())
+            yes_label = T("research_goldbach.decompose_base_yes")
+            no_label = T("research_goldbach.decompose_base_no")
+            for pair in result["decompositions"]:
+                is_old = pair["both_old_base"]
+                tree.insert(
+                    "", "end", values=(pair["p"], pair["q"],
+                                        yes_label if is_old else no_label),
+                    tags=() if is_old else ("new",))
+
+            if result["truncated"]:
+                self.goldbach_decompose_truncated_var.set(
+                    T("research_goldbach.decompose_truncated",
+                      cap=len(result["decompositions"]), count=result["count"]))
+            else:
+                self.goldbach_decompose_truncated_var.set("")
+
         def _goldbach_ensure_viz_window(self):
             """Creates the Wizualizacja Toplevel the first time it's needed, or returns
             the existing one if it's still open -- so repeated clicks (from this tab's
@@ -5935,6 +6067,27 @@ def _build_gui():
             ttk.Label(win, textvariable=self.goldbach_viz_status_var,
                       wraplength=780, justify="left", foreground="#555").pack(
                 anchor="w", padx=10, pady=(0, 6))
+
+            # "Rozloz liczbe" -- Artur's request after noticing that the smallest-
+            # witness search (_smallest_witness / window_rows) can land on a pair
+            # whose q > Pmax even when an old-base-only pair (both p, q <= Pmax) exists
+            # elsewhere in the full combination list -- e.g. n=1012 against Pmax=997:
+            # the smallest witness is 3+1009 (1009 is "new"), but 29+983 also works and
+            # stays entirely inside the old base. This exhaustively scans ALL pairs for
+            # one specific n (see goldbach_all_decompositions) against the Pmax of the
+            # window currently shown above, instead of only the single smallest one.
+            decompose_row = ttk.Frame(win)
+            decompose_row.pack(fill="x", padx=10, pady=(0, 6))
+            ttk.Label(decompose_row, text=T("research_goldbach.viz_decompose_label")).pack(
+                side="left")
+            self.goldbach_viz_decompose_entry = ttk.Entry(decompose_row, width=16)
+            self.goldbach_viz_decompose_entry.pack(side="left", padx=(6, 12))
+            self.goldbach_viz_decompose_entry.bind(
+                "<Return>", lambda _e: self._on_goldbach_viz_decompose())
+            self.goldbach_viz_decompose_button = ttk.Button(
+                decompose_row, text=T("research_goldbach.viz_decompose_button"),
+                command=self._on_goldbach_viz_decompose)
+            self.goldbach_viz_decompose_button.pack(side="left")
 
             # Two INDEPENDENT navigation rows, per Artur's request for the same kind
             # of Prev/Next paging used elsewhere for large lists (Primes tab preview,
@@ -5999,6 +6152,8 @@ def _build_gui():
             self.goldbach_run_button.configure(state=state)
             if hasattr(self, "goldbach_viz_check_button"):
                 self.goldbach_viz_check_button.configure(state=state)
+            if hasattr(self, "goldbach_viz_decompose_button"):
+                self.goldbach_viz_decompose_button.configure(state=state)
             # Only force-DISABLE the row nav buttons here -- their correct enabled
             # state at the bounds (first/last page) is recalculated by
             # _update_nav_controls once a fresh result is drawn, so re-enabling them
@@ -6020,7 +6175,7 @@ def _build_gui():
         def _goldbach_worker_loop(self):
             """Own daemon thread -- single-owner reasoning identical to
             _primality_worker_loop's own docstring (self._goldbach_busy blocks new
-            requests from the GUI side, so only one job is ever in flight). Two job
+            requests from the GUI side, so only one job is ever in flight). Three job
             shapes distinguished by "op":
 
             "window" -- resolves Pmax = largest prime <= n from a FRESH in-process
@@ -6039,7 +6194,18 @@ def _build_gui():
             row_offset param it's paired with) -- re-reads storage and re-derives Pmax
             every page turn rather than caching, same cost profile as re-running the
             whole check, which is acceptable since it's already async off the GUI
-            thread. Neither op needs a WSL subprocess."""
+            thread.
+
+            "decompose" -- job carries an explicit "pmax" (the ALREADY-displayed
+            window's Pmax, not re-derived from n, since the target n here is a
+            separate probe, not necessarily inside that window). Reads storage up to
+            n itself (only need is_prime long enough to index n), then runs
+            goldbach_window.all_decompositions(is_prime, n, pmax, cap=...) -- the
+            exhaustive "sliding window" scan Artur asked for, answering whether n
+            truly needs a prime beyond pmax's old base or whether the smallest-witness
+            search (used by "viz") just happened to land on one.
+
+            None of the three ops needs a WSL subprocess."""
             while True:
                 job = self._goldbach_work_queue.get()
                 op = job["op"]
@@ -6054,6 +6220,18 @@ def _build_gui():
                             continue
                         result = goldbach_check_window(pmax, job["mode"])
                         result["n"] = n
+                        self._goldbach_result_queue.put((op, True, result))
+                    elif op == "decompose":
+                        try:
+                            is_prime = read_is_prime_from_storage(PORTAL_FOLDER, n)
+                        except MissingStorageRangeError as e:
+                            self._goldbach_result_queue.put((
+                                op, False,
+                                T("research_goldbach.error_storage_missing",
+                                  floor=e.floor, upto=f"{e.needed_upto:,}")))
+                            continue
+                        result = goldbach_all_decompositions(
+                            is_prime, n, job["pmax"], cap=GOLDBACH_DECOMPOSE_ROW_CAP)
                         self._goldbach_result_queue.put((op, True, result))
                     else:
                         limit = 2 * n
@@ -6096,6 +6274,8 @@ def _build_gui():
                     self.status.set(T("research_goldbach.status_done"))
                     if op == "window":
                         self._goldbach_show_result(payload)
+                    elif op == "decompose":
+                        self._goldbach_show_decomposition_detail(payload)
                     else:
                         self._goldbach_show_window_visualization(payload)
             except queue.Empty:
