@@ -102,6 +102,7 @@ from primeatlas import (  # noqa: E402
     run_all_tests as primality_run_all_tests, factorize as primality_factorize,
     try_import_sympy as primality_try_import_sympy,
     goldbach_check_window, goldbach_cascade_step,
+    goldbach_window_rows, goldbach_largest_prime_le, goldbach_sieve_is_prime,
 )
 
 # AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
@@ -134,10 +135,10 @@ FLOOR_PAGE_SIZE = 200  # PRIME_WINDOW_*.bin files shown per page when a floor no
 GOLDBACH_CASCADE_ROW_CAP = 14  # per-n decomposition rows drawn in the Goldbach tab's
                                 # Wizualizacja diagram -- the coverage verdict and
                                 # counterexample list are always computed over the FULL
-                                # cascade segment regardless (see
-                                # goldbach_window.cascade_step's row_cap docstring); this
-                                # only bounds how many rows the Canvas actually draws, so
-                                # the diagram stays readable even for a large anchor_k.
+                                # window regardless (see goldbach_window.window_rows'
+                                # row_cap docstring); this only bounds how many rows the
+                                # Canvas actually draws, so the diagram stays readable
+                                # even for a large Pmax.
 GOLDBACH_CASCADE_CHIP_CAP = 24  # old-base prime chips drawn before switching to a
                                  # "+N more" note -- same reasoning as the row cap above.
 
@@ -311,6 +312,23 @@ def list_source_filenames(portal_folder, base_exponent):
     return [(name, os.path.join(source_dir, name)) for _offset, name in entries]
 
 
+def _safe_prime_gap_margin(x):
+    """Generous upper bound on the largest prime gap below x, used only to decide
+    whether a storage window's sweep plausibly reached x -- real maximal gaps are much
+    smaller (see e.g. Tomas Oliveira e Silva's maximal-gap tables: 34 below 10**5, 148
+    below 10**7, 282 below 10**9); these constants are deliberately generous, not tight,
+    since erring "too strict" only costs an extra generate-more-data prompt, while erring
+    "too loose" would silently trust incomplete data (exactly the bug this function
+    exists to prevent -- see read_is_prime_from_storage's own docstring)."""
+    for threshold, margin in (
+        (100, 10), (1_000, 20), (10_000, 40), (100_000, 80),
+        (1_000_000, 150), (10_000_000, 250), (2 ** 63, 400),
+    ):
+        if x < threshold:
+            return margin
+    return 400
+
+
 def read_is_prime_from_storage(portal_folder, limit, base_exponent=0):
     """Builds an is_prime bytearray covering [0, limit] purely from already-generated
     floor storage (10p{base_exponent}/source_primes/PRIME_WINDOW_*.bin, PGS2 format --
@@ -318,7 +336,7 @@ def read_is_prime_from_storage(portal_folder, limit, base_exponent=0):
     the Goldbach tab's Wizualizacja feature (see _on_goldbach_visualize), per Artur's
     explicit instruction that this computation should read from the magazyn rather than
     recompute -- the per-n witness search itself still runs the exact same algorithm as
-    goldbach_window.cascade_step(), only the SOURCE of is_prime changes.
+    goldbach_window.py's window_rows(), only the SOURCE of is_prime changes.
 
     Floor base_exponent windows start at BASE = 10**base_exponent and are
     QUICK_GEN_MAX_WINDOW_WIDTH wide each (target_idx 0, 1, 2, ... -> offsets 0,
@@ -326,11 +344,23 @@ def read_is_prime_from_storage(portal_folder, limit, base_exponent=0):
     prime_sieve_v1.main_batch_scanner()). Floor 0 (BASE=1) is the natural choice here:
     it is the floor every low-range feature in this app treats as the baseline (see
     prune_empty_pietro_dirs' low-floor completion logic), and its windows cover small
-    numbers directly, which is what a Goldbach anchor/cascade exploration needs.
+    numbers directly, which is what a Goldbach exploration needs.
+
+    A window FILE existing on disk at the right offset does not by itself prove it
+    actually covers the range needed -- a partial/test/interrupted-generation file can
+    sit at offset 0 with only a handful of primes in it (this happened: Artur's
+    storage_path at the time had exactly such a file, and an earlier version of this
+    function trusted its mere existence, silently building an is_prime array that read
+    as "mostly composite" above the file's real content and rendered a Wizualizacja
+    diagram full of "?" instead of an honest error). So for every window needed, this
+    also checks that the MAXIMUM prime actually found in that file reaches within
+    _safe_prime_gap_margin() of the range it's relied on for -- short of that, the
+    window is treated as not-yet-generated, same as if the file were simply missing.
 
     Returns an is_prime bytearray of length limit+1 if EVERY window needed to cover
-    [0, limit] is present on disk, or None if any is missing -- never partially or
-    silently truncates (a silent gap would make a "covered" verdict meaningless)."""
+    [0, limit] is present AND actually reaches far enough, or None otherwise -- never
+    partially or silently truncates (a silent gap would make a "covered" verdict
+    meaningless)."""
     window_m = QUICK_GEN_MAX_WINDOW_WIDTH
     base = 10 ** base_exponent
     if limit < base:
@@ -350,10 +380,17 @@ def read_is_prime_from_storage(portal_folder, limit, base_exponent=0):
 
     is_prime = bytearray(limit + 1)
     for idx in range(highest_needed_idx + 1):
+        window_end = base + (idx + 1) * window_m  # exclusive nominal upper bound
+        needed_here = min(limit, window_end - 1)
+        window_max_prime = 0
         for p in prime_sieve_v1.read_prime_window(files_by_idx[idx]):
-            if p > limit:
-                break
-            is_prime[p] = 1
+            if p > window_max_prime:
+                window_max_prime = p
+            if p <= limit:
+                is_prime[p] = 1
+        margin = _safe_prime_gap_margin(max(needed_here, 2))
+        if window_max_prime < needed_here - margin:
+            return None
     return is_prime
 
 
@@ -5603,26 +5640,30 @@ def _build_gui():
                       wraplength=700, justify="left").pack(anchor="nw", padx=12, pady=12)
 
         def _build_research_goldbach_tab(self):
-            """Goldbach structural-window check. Given an arbitrary Pmax, checks
-            windowCovered(Pmax) -- every even n in [4, 2*Pmax] must be a sum of two
-            primes -- exactly as formalized in Structural.lean / "A Structural Sieve
-            for Goldbach's Conjecture" (see primeatlas/goldbach_window.py's own header
-            for the full term-by-term correspondence, numerically verified there
-            against the paper's own worked examples). The checkbox switches between
-            "touch_once" (stop at the first witness per n -- windowCovered /
-            hasGoldbachRep, the paper's ACTIVE line of proof, coincides with
-            buildableFromBase(Pmax, n) on this window) and "all_combinations" (full
+            """Goldbach structural-window check. The field is labeled "n" (an arbitrary
+            integer) -- Pmax is DERIVED as the largest prime <= n (goldbach_window.
+            largest_prime_le), matching the paper's own convention that Pmax must itself
+            be a genuine prime, without requiring the person to type a prime by hand.
+            "Sprawdz okno" checks windowCovered(Pmax) -- every even n in [4, 2*Pmax]
+            must be a sum of two primes -- exactly as formalized in Structural.lean /
+            "A Structural Sieve for Goldbach's Conjecture" (see primeatlas/
+            goldbach_window.py's own header for the full term-by-term correspondence,
+            numerically verified there against the paper's own worked examples). The
+            checkbox switches between "touch_once" (stop at the first witness per n --
+            windowCovered/hasGoldbachRep, the paper's ACTIVE line of proof, coincides
+            with buildableFromBase(Pmax, n) on this window) and "all_combinations" (full
             repCount(n) per n -- the paper's counting framing, kept there only for
-            comparison since it inherits the parity problem). Runs on its own worker
-            thread (own queue.Queue pair + 150ms poller, same pattern as
-            _primality_worker_loop/_poll_primality_results) since a large window is a
-            real, if brief, computation."""
+            comparison since it inherits the parity problem). "Wizualizacja" draws the
+            SAME [4, 2*Pmax] window (never a separate cascade step -- see
+            goldbach_window.window_rows' own docstring), sourced from the on-disk
+            magazyn. Both run on the shared worker thread (own queue.Queue pair + 150ms
+            poller, same pattern as _primality_worker_loop/_poll_primality_results)."""
             top = ttk.Frame(self.research_goldbach_tab)
             top.pack(fill="x", padx=6, pady=(10, 4))
-            ttk.Label(top, text=T("research_goldbach.field_pmax")).pack(side="left")
-            self.goldbach_pmax_entry = ttk.Entry(top, width=20)
-            self.goldbach_pmax_entry.pack(side="left", padx=(6, 16))
-            self.goldbach_pmax_entry.insert(0, "1000")
+            ttk.Label(top, text=T("research_goldbach.field_n")).pack(side="left")
+            self.goldbach_n_entry = ttk.Entry(top, width=20)
+            self.goldbach_n_entry.pack(side="left", padx=(6, 16))
+            self.goldbach_n_entry.insert(0, "1000")
 
             self.goldbach_touch_once_var = tk.BooleanVar(value=True)
             ttk.Checkbutton(
@@ -5680,46 +5721,46 @@ def _build_gui():
 
             self._goldbach_last_result = None
 
-        def _goldbach_parse_pmax(self):
-            """Shared client-side validation for the Run button -- parses the Pmax
-            field via _eval_quick_number (so expressions like 10**4 work here too,
-            same as the primesieve calculator's and Testy pierwszosci's fields),
-            requiring an integer >= 2 (goldbach_window.check_window's own floor,
-            mirroring anchor(0) = 2 -- see that module's docstring)."""
-            pmax = _eval_quick_number(self.goldbach_pmax_entry.get())
-            if pmax is None or pmax < 2:
-                raise ValueError(T("research_goldbach.error_pmax_invalid"))
-            return pmax
+        def _goldbach_parse_n(self):
+            """Shared client-side validation for both buttons -- parses the "n" field
+            via _eval_quick_number (so expressions like 10**4 work here too, same as the
+            primesieve calculator's and Testy pierwszosci's fields), requiring an
+            integer >= 2 (so a largest-prime-<=n exists to derive Pmax from -- see
+            goldbach_window.largest_prime_le's own docstring)."""
+            n = _eval_quick_number(self.goldbach_n_entry.get())
+            if n is None or n < 2:
+                raise ValueError(T("research_goldbach.error_n_invalid"))
+            return n
 
         def _on_goldbach_run(self):
             if self._goldbach_busy:
                 return
             try:
-                pmax = self._goldbach_parse_pmax()
+                n = self._goldbach_parse_n()
             except ValueError as e:
                 messagebox.showerror(T("research_goldbach.error_dialog_title"), str(e))
                 return
             mode = "touch_once" if self.goldbach_touch_once_var.get() else "all_combinations"
             self._goldbach_set_busy(True)
-            self._goldbach_work_queue.put({"op": "window", "pmax": pmax, "mode": mode})
+            self._goldbach_work_queue.put({"op": "window", "n": n, "mode": mode})
 
         def _on_goldbach_visualize(self):
-            """"Wizualizacja" button -- treats the SAME Pmax field as anchor(k) and runs
-            ONE cascade step (Constructive.lean's CascadeOldBaseSufficiency), sourcing
-            is_prime from the on-disk magazyn (read_is_prime_from_storage) rather than a
-            fresh sieve, per Artur's explicit instruction. The witness search itself is
-            the exact same algorithm as goldbach_window.cascade_step() -- only where the
-            primes come from changes. Renders the "old frozen base vs new segment"
-            diagram in a Toplevel (see _goldbach_show_cascade_visualization)."""
+            """"Wizualizacja" button -- derives Pmax = largest prime <= n (SAME n as the
+            "Sprawdz okno" field) and draws the SAME [4, 2*Pmax] window that button
+            checks (goldbach_window.window_rows -- see its own docstring: "wizualizacja
+            zawsze siedzi w oknie 4-2Pmax", Artur's own instruction), sourcing is_prime
+            from the on-disk magazyn (read_is_prime_from_storage) rather than a fresh
+            sieve. Renders the "old base vs window" diagram in a Toplevel (see
+            _goldbach_show_window_visualization)."""
             if self._goldbach_busy:
                 return
             try:
-                anchor_k = self._goldbach_parse_pmax()
+                n = self._goldbach_parse_n()
             except ValueError as e:
                 messagebox.showerror(T("research_goldbach.error_dialog_title"), str(e))
                 return
             self._goldbach_set_busy(True)
-            self._goldbach_work_queue.put({"op": "cascade", "anchor_k": anchor_k})
+            self._goldbach_work_queue.put({"op": "viz", "n": n})
 
         def _goldbach_set_busy(self, busy):
             self._goldbach_busy = busy
@@ -5738,23 +5779,37 @@ def _build_gui():
             """Own daemon thread -- single-owner reasoning identical to
             _primality_worker_loop's own docstring (self._goldbach_busy blocks new
             requests from the GUI side, so only one job is ever in flight). Two job
-            shapes distinguished by "op": "window" (goldbach_window.check_window, a
-            fresh in-process sieve) and "cascade" (goldbach_window.cascade_step, is_prime
-            sourced from the on-disk magazyn via read_is_prime_from_storage -- see
-            _on_goldbach_visualize). Neither needs a WSL subprocess."""
+            shapes distinguished by "op":
+
+            "window" -- resolves Pmax = largest prime <= n from a FRESH in-process
+            sieve up to n, then runs goldbach_window.check_window(Pmax, mode) (which
+            sieves again, up to 2*Pmax -- a small amount of duplicate work, traded for
+            reusing check_window()'s existing, already-verified contract unchanged).
+
+            "viz" -- resolves Pmax the same way, but from is_prime sourced from the
+            on-disk magazyn (read_is_prime_from_storage, up to 2*n -- a safe upper
+            bound since Pmax <= n means 2*Pmax <= 2*n), per Artur's explicit
+            instruction that Wizualizacja should read from storage rather than
+            recompute. Then runs goldbach_window.window_rows(is_prime, Pmax, ...) over
+            that SAME array -- both the Pmax resolution and the window check share one
+            storage read. Neither op needs a WSL subprocess."""
             while True:
                 job = self._goldbach_work_queue.get()
                 op = job["op"]
+                n = job["n"]
                 try:
                     if op == "window":
-                        result = goldbach_check_window(job["pmax"], job["mode"])
+                        is_prime_n = goldbach_sieve_is_prime(n)
+                        pmax = goldbach_largest_prime_le(is_prime_n, n)
+                        if pmax is None:
+                            self._goldbach_result_queue.put((
+                                op, False, T("research_goldbach.error_no_prime_le_n", n=n)))
+                            continue
+                        result = goldbach_check_window(pmax, job["mode"])
+                        result["n"] = n
                         self._goldbach_result_queue.put((op, True, result))
                     else:
-                        anchor_k = job["anchor_k"]
-                        limit = 4 * anchor_k  # safe upper bound for top(k+1): next_anchor
-                                               # <= 2*anchor_k (Bertrand), so top(k+1) =
-                                               # 2*next_anchor <= 4*anchor_k always -- see
-                                               # goldbach_window.cascade_step's docstring
+                        limit = 2 * n
                         is_prime = read_is_prime_from_storage(PORTAL_FOLDER, limit)
                         if is_prime is None:
                             self._goldbach_result_queue.put((
@@ -5762,8 +5817,14 @@ def _build_gui():
                                 T("research_goldbach.error_storage_missing",
                                   limit=f"{limit:,}")))
                             continue
-                        result = goldbach_cascade_step(
-                            is_prime, anchor_k, row_cap=GOLDBACH_CASCADE_ROW_CAP)
+                        pmax = goldbach_largest_prime_le(is_prime, n)
+                        if pmax is None:
+                            self._goldbach_result_queue.put((
+                                op, False, T("research_goldbach.error_no_prime_le_n", n=n)))
+                            continue
+                        result = goldbach_window_rows(
+                            is_prime, pmax, row_cap=GOLDBACH_CASCADE_ROW_CAP)
+                        result["n"] = n
                         self._goldbach_result_queue.put((op, True, result))
                 except Exception as e:  # noqa: BLE001 -- surface any unexpected failure
                                          # to the GUI as an error dialog instead of
@@ -5785,7 +5846,7 @@ def _build_gui():
                     if op == "window":
                         self._goldbach_show_result(payload)
                     else:
-                        self._goldbach_show_cascade_visualization(payload)
+                        self._goldbach_show_window_visualization(payload)
             except queue.Empty:
                 pass
             self.after(150, self._poll_goldbach_results)
@@ -5802,11 +5863,12 @@ def _build_gui():
                 self.goldbach_results_tree.insert("", "end", values=(row["n"], p, q, rc))
             if result["covered"]:
                 summary = T(
-                    "research_goldbach.summary_covered", n_checked=result["n_checked"],
+                    "research_goldbach.summary_covered", n=result["n"], pmax=result["pmax"],
+                    n_checked=result["n_checked"],
                     window_max=result["window_max"], elapsed=f"{result['elapsed']:.3f}")
             else:
                 summary = T(
-                    "research_goldbach.summary_void",
+                    "research_goldbach.summary_void", n=result["n"], pmax=result["pmax"],
                     counterexamples=", ".join(str(x) for x in result["counterexamples"]),
                     window_max=result["window_max"], elapsed=f"{result['elapsed']:.3f}")
             if truncated:
@@ -5839,7 +5901,7 @@ def _build_gui():
                 return
             result = self._goldbach_last_result
             default_name = (
-                f"goldbach_window_pmax{result['pmax']}_{result['mode']}_"
+                f"goldbach_window_n{result['n']}_pmax{result['pmax']}_{result['mode']}_"
                 f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
             path = filedialog.asksaveasfilename(
                 title=T("research_goldbach.export_csv_button"),
@@ -5864,14 +5926,18 @@ def _build_gui():
                         pairs_str])
             self.status.set(T("research_goldbach.status_exported", path=path))
 
-        def _goldbach_show_cascade_visualization(self, result):
-            """Opens a Toplevel drawing the "old frozen base vs new segment" diagram --
-            same visual language as the one shown in chat, but built from a REAL
-            cascade_step() result sourced from the magazyn (read_is_prime_from_storage),
-            not a hand-drawn illustration. Plain tk.Canvas, same zero-extra-installs
-            approach as the Benchmark tab's own hand-rolled chart (no matplotlib)."""
+        def _goldbach_show_window_visualization(self, result):
+            """Opens a Toplevel drawing the "old base vs window" diagram -- same visual
+            language as the one shown in chat, but built from a REAL window_rows()
+            result sourced from the magazyn (read_is_prime_from_storage), covering
+            EXACTLY the window [4, 2*Pmax] that "Sprawdz okno" also checks (never a
+            separate cascade step -- see goldbach_window.window_rows' own docstring and
+            Artur's own instruction: "wizualizacja zawsze siedzi w oknie 4-2Pmax").
+            Plain tk.Canvas, same zero-extra-installs approach as the Benchmark tab's
+            own hand-rolled chart (no matplotlib)."""
             win = tk.Toplevel(self)
-            win.title(T("research_goldbach.viz_window_title", anchor_k=result["anchor_k"]))
+            win.title(T("research_goldbach.viz_window_title",
+                        n=result["n"], pmax=result["pmax"]))
 
             chips = result["old_base_primes"]
             chip_shown = chips[:GOLDBACH_CASCADE_CHIP_CAP]
@@ -5893,8 +5959,7 @@ def _build_gui():
             canvas.create_text(
                 16, 18, anchor="nw", font=("TkDefaultFont", 13, "bold"),
                 text=T("research_goldbach.viz_header",
-                       anchor_k=result["anchor_k"], top_k=result["top_k"],
-                       next_anchor=result["next_anchor"], top_k1=result["top_k1"]))
+                       n=result["n"], pmax=result["pmax"], window_max=result["window_max"]))
             canvas.create_text(
                 16, 44, anchor="nw", font=("TkDefaultFont", 9), fill="#64748b",
                 width=canvas_w - 32, text=T("research_goldbach.viz_subheader"))
@@ -5908,7 +5973,7 @@ def _build_gui():
                                 fill="#1d4ed8", text=T("research_goldbach.viz_old_base_title"))
             canvas.create_text(
                 16 + box_w / 2, top_y + 32, font=("TkDefaultFont", 8), fill="#3b82f6",
-                text=T("research_goldbach.viz_old_base_subtitle", top_k=result["top_k"]))
+                text=T("research_goldbach.viz_old_base_subtitle", pmax=result["pmax"]))
             chip_w, chip_h_px, gap = 34, 30, 6
             start_x = 16 + 12
             start_y = top_y + 46
@@ -5933,8 +5998,7 @@ def _build_gui():
             canvas.create_text(
                 right_x, row_y, anchor="nw", font=("TkDefaultFont", 10, "bold"),
                 width=canvas_w - right_x - 16,
-                text=T("research_goldbach.viz_segment_title",
-                       top_k=result["top_k"], top_k1=result["top_k1"]))
+                text=T("research_goldbach.viz_segment_title", window_max=result["window_max"]))
             row_y += 26
             for row in rows:
                 n = row["n"]

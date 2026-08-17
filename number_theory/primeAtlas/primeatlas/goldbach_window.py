@@ -45,6 +45,11 @@ a live check of buildableFromBase(Pmax, n) (Constructive.lean) for every n in th
 not just of the unbounded hasGoldbachRep -- the two framings coincide exactly on this
 window, which is itself a small confirmation that the translation below is faithful to
 the source.
+
+The GUI's number field is labeled "n" (an arbitrary integer), not "Pmax" -- Pmax is
+DERIVED as the largest prime <= n (see largest_prime_le()), matching the paper's own
+convention that Pmax must itself be a genuine prime, without requiring the person to
+type a prime by hand.
 """
 import time
 
@@ -68,6 +73,77 @@ def sieve_is_prime(limit):
             is_prime[p * p:: p] = bytearray(span)
         p += 1
     return is_prime
+
+
+def largest_prime_le(is_prime, n):
+    """Largest prime <= n, or None if none exists (n < 2) -- how the GUI derives Pmax
+    from the user-facing "n" field: Pmax := the largest prime <= n, matching the paper's
+    own convention that Pmax must itself be a genuine prime, without requiring the
+    person to type a prime by hand. Dual of next_anchor() below (that one searches
+    upward for the next prime; this one searches downward for the one at-or-below n).
+    `is_prime` must be long enough to index up to n."""
+    for candidate in range(min(n, len(is_prime) - 1), 1, -1):
+        if is_prime[candidate]:
+            return candidate
+    return None
+
+
+def _smallest_witness(is_prime, n):
+    """Smallest prime p with p <= n//2 and n-p also prime, or (None, None) if no such p
+    exists. The single witness-search primitive shared by check_window()'s "touch_once"
+    branch and window_rows() below, so both really do run "the exact same algorithm",
+    not just similarly-shaped code."""
+    for p in range(2, n // 2 + 1):
+        if is_prime[p] and is_prime[n - p]:
+            return p, n - p
+    return None, None
+
+
+def window_rows(is_prime, Pmax, row_cap=None):
+    """Computes windowCovered(Pmax) (Structural.lean) -- every even n in [4, 2*Pmax] --
+    using an EXTERNALLY supplied is_prime array (e.g. sourced from on-disk storage, see
+    prime_atlas_v1.read_is_prime_from_storage) instead of building a fresh sieve. Runs
+    the exact same touch_once witness search as check_window()'s touch_once branch
+    (_smallest_witness), just against a caller-supplied is_prime instead of one built
+    internally -- this is the Goldbach tab's Wizualizacja feature, per Artur's
+    instruction that "wizualizacja zawsze siedzi w oknie 4-2Pmax" (the visualization
+    always lives inside the [4, 2*Pmax] window -- the SAME window "Sprawdz okno"
+    checks, not a separate cascade step). `is_prime` must be long enough to index up to
+    2*Pmax.
+
+    `row_cap` limits how many per-n rows are returned (for GUI display) -- the coverage
+    verdict and counterexample list are always computed over the FULL window regardless.
+
+    Returns {"pmax":, "window_max":, "old_base_primes": [...], "covered":,
+    "counterexamples": [...], "segment_size": int,
+    "rows": [{"n":,"p":,"q":,"q_is_new": bool}, ...], "rows_truncated": bool} --
+    "old_base_primes" is every prime <= Pmax (the frozen base every p is drawn from,
+    automatically -- see the module docstring's note on p <= Pmax); "q_is_new" flags
+    q > Pmax (a prime that was NOT part of that base and so wasn't strictly needed to
+    find p, mirroring the Wizualizacja diagram's "old base vs new" framing)."""
+    if Pmax < 2:
+        raise ValueError("Pmax must be >= 2")
+    window_max = 2 * Pmax
+    old_base_primes = [p for p in range(2, Pmax + 1) if is_prime[p]]
+    rows = []
+    counterexamples = []
+    segment_size = 0
+    for n in range(4, window_max + 1, 2):
+        segment_size += 1
+        p_found, q_found = _smallest_witness(is_prime, n)
+        if p_found is None:
+            counterexamples.append(n)
+        if row_cap is None or len(rows) < row_cap:
+            rows.append({
+                "n": n, "p": p_found, "q": q_found,
+                "q_is_new": (q_found is not None and q_found > Pmax),
+            })
+    return {
+        "pmax": Pmax, "window_max": window_max, "old_base_primes": old_base_primes,
+        "covered": not counterexamples, "counterexamples": counterexamples,
+        "segment_size": segment_size, "rows": rows,
+        "rows_truncated": (row_cap is not None and segment_size > row_cap),
+    }
 
 
 def check_window(Pmax, mode):
@@ -102,11 +178,7 @@ def check_window(Pmax, mode):
     counterexamples = []
     for n in range(4, window_max + 1, 2):
         if mode == "touch_once":
-            p_found = q_found = None
-            for p in range(2, n // 2 + 1):
-                if is_prime[p] and is_prime[n - p]:
-                    p_found, q_found = p, n - p
-                    break
+            p_found, q_found = _smallest_witness(is_prime, n)
             if p_found is None:
                 counterexamples.append(n)
             rows.append({"n": n, "p": p_found, "q": q_found,
@@ -136,13 +208,11 @@ def check_window(Pmax, mode):
 
 # ------------------------------------------------------------------------------------------
 # Cascade step -- Constructive.lean's nextAnchor / anchor / top / CascadeOldBaseSufficiency.
-# This is the "less fuel" framing (see the Wizualizacja diagram in the Goldbach tab): a
-# FROZEN base of primes <= top(k) = 2*anchor(k) must supply the smaller summand p for
-# every new even n in the segment (top(k), top(k+1)], with no credit for any prime that
-# first appears inside that very segment. Separate from check_window() above -- windowCovered
-# re-derives base=Pmax fresh for the WHOLE window [4, 2*Pmax] every time, while this checks
-# ONE cascade step with the base held fixed from the step before, which is the stronger,
-# harder-to-satisfy claim the paper's actual constructive proof line rests on.
+# A separate, stronger claim from windowCovered above (base held fixed from the PREVIOUS
+# cascade step, rather than re-derived as Pmax for the whole window) -- not currently wired
+# into any GUI control (the Wizualizacja button uses window_rows() instead, to stay strictly
+# inside [4, 2*Pmax] per Artur's instruction), but kept here since it's a distinct, verified,
+# potentially useful piece of the formalization for a future dedicated cascade view.
 # ------------------------------------------------------------------------------------------
 
 def next_anchor(is_prime, Pmax):

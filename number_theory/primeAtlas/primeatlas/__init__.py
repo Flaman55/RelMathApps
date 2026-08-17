@@ -19,6 +19,9 @@ from .goldbach_window import (
     check_window as goldbach_check_window,
     cascade_step as goldbach_cascade_step,
     next_anchor as goldbach_next_anchor,
+    window_rows as goldbach_window_rows,
+    largest_prime_le as goldbach_largest_prime_le,
+    sieve_is_prime as goldbach_sieve_is_prime,
 )
 
 __all__ = [
@@ -30,4 +33,5 @@ __all__ = [
     "Translator", "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "LANGUAGE_NAMES",
     "run_all_tests", "factorize", "try_import_sympy",
     "goldbach_check_window", "goldbach_cascade_step", "goldbach_next_anchor",
+    "goldbach_window_rows", "goldbach_largest_prime_le", "goldbach_sieve_is_prime",
 ]
