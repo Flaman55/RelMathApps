@@ -77,16 +77,44 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
   covering both charts. The progress bar shown during a generation run models the
   whole pipeline as a sequence of steps (prep, then each sieve batch, then done)
   rather than only moving during the sieve phase and sitting empty through prep.
-- **Settings** -- configurable storage location, and backup/restore/delete of the
-  generated database, including manifest-based drift detection against what is
-  actually on disk. Both the backup list and the incomplete-restores list have their
-  own delete button, for pruning old backups or abandoned/paused restore jobs without
-  touching the generated data itself. See "Restore" below for how a restore run is
-  ordered and which engine it uses. Also includes an optional-library installer
-  (currently `sympy`, used by the Primality tests sub-tab's factorization when
-  present) that runs natively on Windows via `pip`, not through WSL -- checks
-  whether it is already importable and installs it on request, with the install's
-  own live output shown in place.
+- **Research (Badania)** -- an inner notebook of five sub-tabs, grouped by shared
+  question shape rather than by conjecture name; one is implemented so far, the other
+  four are structural placeholders reserved for later phases:
+  - **Goldbach** -- checks the strong-Goldbach window property for a chosen `n`:
+    whether every even number in `[4, Pmax+2]` (`Pmax` = largest prime `<= n`)
+    decomposes into two primes both `<= Pmax` -- exactly the window the project's own
+    Lean formalization (`additiveSelfContained_of_hasGoldbachRep`, linked directly
+    from this tab) proves unconditionally. "Sprawdz okno" runs a fresh, from-scratch
+    check (touch-once: stop at the first witness per `n`, with a full pair drill-down
+    in all-combinations mode); "Wizualizacja" instead opens a persistent diagram
+    window that reads primes from the already-generated magazyn rather than
+    re-sieving, with an `od`/`do` range to scan only part of a large window (`do`
+    doubles as the window-defining `n`), a live progress bar (both in the main window
+    and inside the Wizualizacja window itself, for fullscreen use), an offer to
+    generate any missing storage range on the spot, and a "Rozloz liczbe" exhaustive
+    decomposition checker for one specific number against the shown window's base.
+  - Square intervals (Legendre/Oppermann/Brocard), prime-generating polynomials
+    (Landau/Euler/Bunyakovsky), gaps (Andrica/Firoozbakht/Cramer), and pi(x)
+    approximations (li(x)/R(x) accuracy) are tab placeholders -- no computational
+    logic behind them yet.
+- **Settings** -- laid out as three vertically-scrollable sub-tabs (backup + restore +
+  delete together run taller than a non-maximized window, so each sub-tab scrolls
+  independently):
+  - **Ogolne** -- language switch and storage-location configuration.
+  - **Backup** -- backup create/list/delete, restore (manifest-based drift detection
+    against what is actually on disk, then a checkpointed, pausable/resumable/
+    cancellable regeneration job -- see "Restore" below for ordering and engine
+    choice), an incomplete-restores list with its own resume/delete, per-floor delete
+    (clears one chosen floor's primes and constellations together, or only that
+    floor's constellations while leaving its primes untouched -- for a clean
+    constellation-finder re-run without regenerating prime data), and the existing
+    whole-database delete.
+  - **Aktualizacje** -- an optional-library installer (currently `sympy`, used by the
+    Primality tests sub-tab's factorization when present) that runs natively on
+    Windows via `pip`, not through WSL -- checks whether it is already importable and
+    installs it on request, with the install's own live output shown in place. A note
+    marks PrimeAtlas's own self-update (checking/downloading a newer app version) as
+    planned but not yet built.
 
 ## Search
 
@@ -243,17 +271,24 @@ rather than a fixed default.
 ## Architecture
 
 ```
-prime_atlas_v1.py           GUI entry point (tkinter); five top-level tabs, two of
-                              which (Prime numbers, Constellations) are themselves
-                              inner notebooks of sub-tabs -- see "Features" above
+prime_atlas_v1.py           GUI entry point (tkinter); six top-level tabs, three of
+                              which (Prime numbers, Constellations, Research) are
+                              themselves inner notebooks of sub-tabs -- see
+                              "Features" above
 primeatlas/                 backend package used by the GUI, no tkinter dependency
   app_settings.py           storage path configuration
   manifest.py                backup manifest / snapshot model
   backup_store.py            backup creation
   restore_job.py             restore from backup
-  delete_manager.py          database deletion
-  settings_tab.py            Settings tab controller, incl. the optional-library
-                              (sympy) installer
+  delete_manager.py          whole-database delete (PortalWiper) and per-floor /
+                              per-floor-constellations-only delete (FloorWiper)
+  settings_tab.py            Settings tab controller (Ogolne/Backup/Aktualizacje
+                              sub-tabs, each independently scrollable), incl. the
+                              optional-library (sympy) installer
+  goldbach_window.py         Goldbach strong-window check/visualization backend
+                              (see "Features" above), no tkinter dependency -- reads
+                              primes from the on-disk magazyn via the same
+                              source_primes format the Prime numbers tab browses
   generation_console.py      stacked/detachable live-output console used by both
                               Generation sections
   primality.py                Miller-Rabin/Fermat/Solovay-Strassen primality tests
