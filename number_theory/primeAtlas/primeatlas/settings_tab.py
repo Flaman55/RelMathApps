@@ -1008,7 +1008,17 @@ class SettingsTab(ttk.Frame):
         rarely again), Backup (backup/restore/delete, all storage-destructive or
         storage-preserving operations grouped together), Aktualizacje (currently just
         the optional-library installer; PrimeAtlas's own self-update is a stated
-        FUTURE addition, not built yet -- see _build_updates_tab's own note)."""
+        FUTURE addition, not built yet -- see _build_updates_tab's own note).
+
+        Splitting into sub-tabs alone wasn't enough, though -- Backup on its own
+        (backup list + restore controls/log + per-floor delete + whole-database
+        delete) is still taller than a non-maximized window, per Artur's follow-up
+        report with a screenshot ("musimy jednak dodac pionowy scrollbar bo nie
+        wszystko sie miesci w trybie okienkowym"). Every sub-tab is wrapped in
+        _make_scrollable_tab() -- a Canvas+Scrollbar pair, not a fixed-height
+        Labelframe stack -- so ANY tab that grows past the window's current height
+        gets a scrollbar automatically instead of needing this fixed again the next
+        time a section is added."""
         outer = ttk.Frame(self)
         outer.pack(fill="both", expand=True, padx=6, pady=6)
 
@@ -1022,9 +1032,55 @@ class SettingsTab(ttk.Frame):
         notebook.add(backup_tab, text=self.T("settings.tab_backup"))
         notebook.add(updates_tab, text=self.T("settings.tab_updates"))
 
-        self._build_general_tab(general_tab)
-        self._build_backup_tab(backup_tab)
-        self._build_updates_tab(updates_tab)
+        self._build_general_tab(self._make_scrollable_tab(general_tab))
+        self._build_backup_tab(self._make_scrollable_tab(backup_tab))
+        self._build_updates_tab(self._make_scrollable_tab(updates_tab))
+
+    def _make_scrollable_tab(self, notebook_tab):
+        """Wraps a bare Notebook-tab Frame in a vertically-scrollable Canvas, and
+        returns the inner Frame content should actually be packed into (callers
+        never touch `notebook_tab` directly again). tkinter has no built-in
+        scrollable container -- this is the standard Canvas + Scrollbar + inner-
+        Frame-tracked-via-<Configure> pattern, kept local to this one method rather
+        than a separate module since SettingsTab is the only tkinter-importing file
+        in primeatlas/ (see this module's own docstring) and nothing else needs it
+        yet.
+
+        Two <Configure> bindings do the real work: the inner Frame's own tells the
+        Canvas how tall its scrollregion needs to be (grows as content is added,
+        e.g. once _refresh_floor_delete_list() populates the combobox); the
+        Canvas's own stretches the inner Frame to the Canvas's current WIDTH (not
+        height) on every resize, so widgets packed with fill="x" still reach the
+        visible right edge instead of freezing at whatever width they first
+        requested.
+
+        Mouse-wheel scrolling is bound/unbound on Enter/Leave (not bind_all for the
+        whole app's lifetime) so it only scrolls THIS canvas while the pointer is
+        over it, never fighting with e.g. the restore/libs ScrolledText widgets
+        packed inside, which have their own independent scrolling."""
+        canvas = tk.Canvas(notebook_tab, highlightthickness=0)
+        vsb = ttk.Scrollbar(notebook_tab, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        inner = ttk.Frame(canvas)
+        inner_window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _on_inner_configure)
+
+        def _on_canvas_configure(event):
+            canvas.itemconfigure(inner_window, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+        return inner
 
     def _build_general_tab(self, parent):
         outer = ttk.Frame(parent)
