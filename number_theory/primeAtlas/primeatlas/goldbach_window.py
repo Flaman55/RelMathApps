@@ -354,7 +354,7 @@ def report_both_base_coverage(is_prime, Pmax, Pmin=BOTH_BASE_PMIN):
 
 
 def both_base_window_rows(is_prime, Pmax, Pmin=BOTH_BASE_PMIN, row_cap=None,
-                           row_offset=0):
+                           row_offset=0, n_min=None, n_max=None, progress_cb=None):
     """GUI-facing counterpart of check_both_base_coverage, shaped to match
     window_rows()'s own contract (row_cap/row_offset paging, same key names where
     the concept overlaps) -- prime_atlas_v1.py's Wizualizacja now renders
@@ -371,15 +371,55 @@ def both_base_window_rows(is_prime, Pmax, Pmin=BOTH_BASE_PMIN, row_cap=None,
     `is_prime` must be long enough to index up to Pmax+Pmin (NOT 2*Pmax -- this
     window is narrower than window_rows()'s).
 
-    Returns {"pmax":, "window_max": (=Pmax+Pmin), "old_base_primes": [...],
-    "covered":, "counterexamples": [...], "segment_size":, "row_offset":,
-    "rows": [{"n":,"p":,"q":,"q_is_new": False always -- see below}, ...],
-    "rows_truncated": bool} -- same shape as window_rows(). "q_is_new" is always
-    False here (never omitted, so the shared rendering code doesn't need a
-    None-check): unlike window_rows(), where q is deliberately unconstrained and
-    "new" (q > Pmax) is the common case, here q is REQUIRED to be <= Pmax by the
-    criterion itself, so every drawn witness already has q in the base -- there is
-    no "new q" case to flag in this mode."""
+    `n_min`/`n_max` (Artur, 2026-08-17) let the caller restrict which part of
+    [4, Pmax+Pmin] actually gets scanned, instead of always walking from n=4 --
+    without this, viewing a page deep into a huge window still required a fresh
+    O(window width) scan from the very start on every single request (row_cap/
+    row_offset only ever sliced which rows were RETURNED, never which were
+    COMPUTED -- see the git history on this function). Both default to the full
+    window when omitted, so existing callers are unaffected. When given, they are
+    clamped into [4, Pmax+Pmin] and rounded to the nearest valid even boundary
+    (n_min up, n_max down). "covered"/"counterexamples"/"segment_size" describe
+    ONLY the resulting [n_min, n_max] range, NOT the full window -- the caller is
+    responsible for making that scope clear in whatever text it shows (see
+    prime_atlas_v1.py's viz_summary_covered/void usage). The returned
+    "range_min"/"range_max" record exactly what was used, distinct from the
+    unchanged "window_max" (the full window's own upper bound), so a UI can
+    render both without recomputing the clamp itself.
+
+    `progress_cb`, if given, is called as progress_cb(fraction: float) a handful
+    of times during the base sweep below (fraction = share of the range's n's
+    resolved so far, 0.0..1.0) -- purely a progress-reporting hook, no effect on
+    the result. Cheap to call often since it's just a Python callable, but not
+    called on EVERY single prime (see the sweep loop) to avoid turning a fast
+    vectorized computation back into a slow one via callback overhead.
+
+    Algorithm (Artur, 2026-08-17 -- replaced the previous "for each n, linear-
+    scan p" nested loop, which also re-derived old_base_primes via a scalar
+    Python filter over range(2, Pmax+1) on every call): both are now numpy-
+    vectorized sweeps over the SAME base-primes array, computed once.
+      1. old_base_primes: np.nonzero on the is_prime buffer (zero-copy view via
+         np.frombuffer) instead of a Python-level comprehension -- for Pmax in
+         the hundreds of millions this alone used to dominate the wall-clock
+         time, well before the witness search even started.
+      2. Witness search: rather than, for each n, trying candidate p=2,3,5,... in
+         a Python loop, this sweeps the base primes ONCE, and for each prime p
+         (ascending, so the first hit for any n is still its SMALLEST witness --
+         identical selection to the old algorithm) vectorizes "is n-p prime?"
+         across every STILL-UNRESOLVED n in the target range simultaneously via
+         numpy boolean indexing. Since witness primes are typically small (this
+         project's own WitnessStepBound measurements: the worst-case witness
+         across a cascade step grows only polylogarithmically, not linearly, in
+         the base size), this sweep resolves the overwhelming majority of a
+         range in its first handful of iterations, each iteration doing O(range
+         width) work in C rather than O(range width * average witness search
+         depth) work in the Python interpreter -- this is the "sum first, sort/
+         organize second, display third" restructuring Artur asked for: stage 1
+         is this sweep (results land pre-sorted by n, since they're written into
+         a fixed-position array indexed by n's own position in the range, not
+         appended in discovery order), stage 2 is assembling the plain dict rows
+         list for the requested page (cheap, already-sorted data), stage 3 is
+         the existing, unchanged Tk rendering code in prime_atlas_v1.py."""
     if Pmax < 2:
         raise ValueError("Pmax must be >= 2")
     if Pmax > BOTH_BASE_PMAX_CEILING:
@@ -387,28 +427,76 @@ def both_base_window_rows(is_prime, Pmax, Pmin=BOTH_BASE_PMIN, row_cap=None,
             f"both_base_window_rows is only verified up to Pmax="
             f"{BOTH_BASE_PMAX_CEILING:,}; Pmax={Pmax:,} exceeds that and is "
             f"refused rather than silently extrapolated")
+    import numpy as np
     window_max = Pmax + Pmin
-    old_base_primes = [p for p in range(2, Pmax + 1) if is_prime[p]]
+
+    lo = 4 if n_min is None else max(4, n_min)
+    hi = window_max if n_max is None else min(window_max, n_max)
+    if lo % 2 == 1:
+        lo += 1
+    if hi % 2 == 1:
+        hi -= 1
+
+    is_prime_arr = np.frombuffer(is_prime, dtype=np.uint8)
+    base_primes_arr = np.nonzero(is_prime_arr[:Pmax + 1])[0]
+    old_base_primes = base_primes_arr.tolist()
+
+    if lo > hi:
+        return {
+            "pmax": Pmax, "window_max": window_max, "range_min": lo, "range_max": hi,
+            "old_base_primes": old_base_primes, "covered": True, "counterexamples": [],
+            "segment_size": 0, "row_offset": row_offset, "rows": [],
+            "rows_truncated": False,
+        }
+
+    ns = np.arange(lo, hi + 1, 2, dtype=np.int64)
+    segment_size = ns.shape[0]
+    witness_p = np.zeros(segment_size, dtype=np.int64)   # 0 = unresolved sentinel
+    witness_q = np.zeros(segment_size, dtype=np.int64)
+    unresolved = np.ones(segment_size, dtype=bool)
+
+    # Only primes p <= hi - 2 can ever be a valid smaller summand for ANY n in
+    # this range (q = n - p >= 2 requires p <= n - 2 <= hi - 2) -- primes above
+    # that are in base_primes_arr (needed for old_base_primes/chip display above)
+    # but never tried as a witness candidate, closing off the sweep early instead
+    # of walking all the way to Pmax on a range that only needed a small prefix.
+    search_primes = base_primes_arr[base_primes_arr <= hi - 2]
+    report_every = max(1, len(search_primes) // 20)  # ~20 progress_cb calls total
+    for i, p in enumerate(search_primes):
+        if not unresolved.any():
+            break
+        idxs = np.nonzero(unresolved)[0]
+        cand_n = ns[idxs]
+        q = cand_n - p
+        in_range = (q >= 2) & (q <= Pmax)
+        hit = np.zeros(idxs.shape[0], dtype=bool)
+        q_in_range = q[in_range]
+        hit[in_range] = is_prime_arr[q_in_range].astype(bool)
+        hit_idxs = idxs[hit]
+        if hit_idxs.size:
+            witness_p[hit_idxs] = p
+            witness_q[hit_idxs] = q[in_range][is_prime_arr[q_in_range].astype(bool)]
+            unresolved[hit_idxs] = False
+        if progress_cb is not None and i % report_every == 0:
+            progress_cb(float(segment_size - unresolved.sum()) / segment_size)
+    if progress_cb is not None:
+        progress_cb(1.0)
+
+    counterexamples = ns[unresolved].tolist()
+
     rows = []
-    counterexamples = []
-    segment_size = 0
-    for n in range(4, window_max + 1, 2):
-        idx = segment_size
-        segment_size += 1
-        p_found = q_found = None
-        for p in range(2, min(Pmax, n // 2) + 1):
-            q = n - p
-            if q > Pmax:
-                continue
-            if is_prime[p] and is_prime[q]:
-                p_found, q_found = p, q
-                break
-        if p_found is None:
-            counterexamples.append(n)
-        if idx >= row_offset and (row_cap is None or len(rows) < row_cap):
-            rows.append({"n": n, "p": p_found, "q": q_found, "q_is_new": False})
+    row_end = segment_size if row_cap is None else min(segment_size, row_offset + row_cap)
+    for idx in range(max(0, row_offset), max(0, row_end)):
+        n = int(ns[idx])
+        if unresolved[idx]:
+            p_found = q_found = None
+        else:
+            p_found, q_found = int(witness_p[idx]), int(witness_q[idx])
+        rows.append({"n": n, "p": p_found, "q": q_found, "q_is_new": False})
+
     return {
-        "pmax": Pmax, "window_max": window_max, "old_base_primes": old_base_primes,
+        "pmax": Pmax, "window_max": window_max, "range_min": lo, "range_max": hi,
+        "old_base_primes": old_base_primes,
         "covered": not counterexamples, "counterexamples": counterexamples,
         "segment_size": segment_size, "row_offset": row_offset, "rows": rows,
         "rows_truncated": (

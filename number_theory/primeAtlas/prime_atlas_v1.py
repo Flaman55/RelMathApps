@@ -11,6 +11,7 @@ import queue
 import subprocess
 import shlex
 import time
+import webbrowser
 
 # ==========================================================================================
 # PrimeAtlas -- a tkinter desktop application for browsing, generating, and managing the
@@ -161,6 +162,14 @@ GOLDBACH_DECOMPOSE_ROW_CAP = 300  # defensive cap on how many (p, q) pairs the "
     # decomposition_detail) -- the old_base_sufficient verdict and total count are
     # always computed over the FULL scan regardless of this cap, only the displayed
     # rows are truncated.
+
+GOLDBACH_LEAN_REPO_URL = (
+    "https://github.com/Flaman55/RelMathApps/tree/main/number_theory/"
+    "structural_Goldbach/lean/StructuralGoldbach"
+)  # points at the Lean 4 formalization backing this tab (additiveSelfContained_of_
+    # hasGoldbachRep, windowCovered, the whole reduction chain) -- Artur, 2026-08-17:
+    # wired in once this repo path was confirmed current (SelfContainment.lean synced
+    # over and pushed, see project memory/commit history for that sync).
 
 QUICK_GEN_MAX_WINDOW_WIDTH = 10_000_000  # window width the (future) range ->
                           # window_count_per_run translation logic must not exceed. Not
@@ -5773,6 +5782,12 @@ def _build_gui():
                       wraplength=760, justify="left", foreground="#555").pack(
                 anchor="w", padx=6, pady=(0, 8))
 
+            lean_link = ttk.Label(
+                self.research_goldbach_tab, text=T("research_goldbach.lean_repo_link"),
+                foreground="#1d4ed8", cursor="hand2")
+            lean_link.pack(anchor="w", padx=6, pady=(0, 8))
+            lean_link.bind("<Button-1>", self._on_goldbach_open_lean_repo)
+
             self.goldbach_summary_var = tk.StringVar(value="")
             ttk.Label(self.research_goldbach_tab, textvariable=self.goldbach_summary_var,
                       wraplength=760, justify="left").pack(anchor="w", padx=6, pady=(0, 8))
@@ -5800,6 +5815,13 @@ def _build_gui():
                 "<Double-1>", self._on_goldbach_row_double_click)
 
             self._goldbach_last_result = None
+
+        def _on_goldbach_open_lean_repo(self, _event=None):
+            """Opens GOLDBACH_LEAN_REPO_URL in the system's default browser -- the only
+            external link in this tab, so a plain webbrowser.open() (no confirmation
+            dialog) is fine; it's a read-only navigation, not an action with side
+            effects on the user's own accounts or data."""
+            webbrowser.open(GOLDBACH_LEAN_REPO_URL)
 
         def _goldbach_parse_n_from(self, entry):
             """Parses an "n" field via _eval_quick_number (so expressions like 10**4
@@ -5870,7 +5892,16 @@ def _build_gui():
             window's own button) starts back at row/chip page 0, since a different n
             means a different window and a different old base entirely. reset_page=
             False (used by the row Prev/Next handlers below) keeps whatever
-            self._goldbach_viz_row_page was already set to by the caller."""
+            self._goldbach_viz_row_page was already set to by the caller.
+
+            n_min/n_max are read fresh from goldbach_viz_range_from_entry/
+            goldbach_viz_range_to_entry every call (not cached), via getattr since
+            those Entry widgets only exist once the Wizualizacja Toplevel has
+            actually been built -- blank or unparsable fields fall back to None
+            (full window), same "silently accept blank" convention as every other
+            optional field in this app (_eval_quick_number itself already treats
+            blank as invalid, so blank is special-cased here rather than relying on
+            its own ValueError path)."""
             if self._goldbach_busy:
                 return
             if reset_page:
@@ -5878,8 +5909,15 @@ def _build_gui():
                 self._goldbach_viz_chip_page = 0
             self._goldbach_viz_current_n = n
             self._goldbach_set_busy(True)
+            from_entry = getattr(self, "goldbach_viz_range_from_entry", None)
+            to_entry = getattr(self, "goldbach_viz_range_to_entry", None)
+            n_min = (_eval_quick_number(from_entry.get())
+                     if from_entry is not None and from_entry.get().strip() else None)
+            n_max = (_eval_quick_number(to_entry.get())
+                     if to_entry is not None and to_entry.get().strip() else None)
             self._goldbach_work_queue.put({
                 "op": "viz", "n": n, "row_page": self._goldbach_viz_row_page,
+                "n_min": n_min, "n_max": n_max,
             })
 
         def _on_goldbach_viz_row_prev(self):
@@ -6192,6 +6230,34 @@ def _build_gui():
                       wraplength=780, justify="left", foreground="#555").pack(
                 anchor="w", padx=10, pady=(0, 6))
 
+            # Optional n sub-range for the sums grid -- Artur, 2026-08-17: without
+            # this, viewing a page deep into a huge window still meant scanning the
+            # ENTIRE window from n=4 on every request (row_cap/row_offset only ever
+            # sliced which rows got RETURNED, never which got COMPUTED -- see
+            # goldbach_window.both_base_window_rows' own docstring on the n_min/
+            # n_max parameters this wires into). Left blank, behavior is unchanged
+            # (full [4, Pmax+2] window). Filled in, only [od, do] gets scanned --
+            # "covered"/counterexamples then describe that sub-range, not the whole
+            # window, which _goldbach_show_window_visualization makes explicit in
+            # the header text so this is never mistaken for a full-window verdict.
+            range_row = ttk.Frame(win)
+            range_row.pack(fill="x", padx=10, pady=(0, 2))
+            ttk.Label(range_row, text=T("research_goldbach.viz_range_label")).pack(
+                side="left")
+            self.goldbach_viz_range_from_entry = ttk.Entry(range_row, width=16)
+            self.goldbach_viz_range_from_entry.pack(side="left", padx=(6, 4))
+            self.goldbach_viz_range_from_entry.bind(
+                "<Return>", lambda _e: self._on_goldbach_viz_refresh())
+            ttk.Label(range_row, text=T("research_goldbach.viz_range_to_label")).pack(
+                side="left")
+            self.goldbach_viz_range_to_entry = ttk.Entry(range_row, width=16)
+            self.goldbach_viz_range_to_entry.pack(side="left", padx=(6, 0))
+            self.goldbach_viz_range_to_entry.bind(
+                "<Return>", lambda _e: self._on_goldbach_viz_refresh())
+            ttk.Label(win, text=T("research_goldbach.viz_range_hint"),
+                      wraplength=780, justify="left", foreground="#777").pack(
+                anchor="w", padx=10, pady=(0, 6))
+
             # "Rozloz liczbe" -- Artur's request after noticing that the smallest-
             # witness search (_smallest_witness / window_rows) can land on a pair
             # whose q > Pmax even when an old-base-only pair (both p, q <= Pmax) exists
@@ -6468,9 +6534,17 @@ def _build_gui():
                                   ceiling=f"{GOLDBACH_BOTH_BASE_PMAX_CEILING:,}")))
                             continue
                         row_page = job.get("row_page", 0)
+                        # Progress ticks go through the SAME result queue, tagged
+                        # "progress" so _poll_goldbach_results can special-case them
+                        # (update the bar, then re-loop for the next queue message)
+                        # instead of treating them as a finished job -- see that
+                        # method's own handling of op=="progress".
                         result = goldbach_both_base_window_rows(
                             is_prime, pmax, row_cap=GOLDBACH_CASCADE_ROW_CAP,
-                            row_offset=row_page * GOLDBACH_CASCADE_ROW_CAP)
+                            row_offset=row_page * GOLDBACH_CASCADE_ROW_CAP,
+                            n_min=job.get("n_min"), n_max=job.get("n_max"),
+                            progress_cb=lambda f: self._goldbach_result_queue.put(
+                                ("progress", True, f)))
                         result["n"] = n
                         result["row_page"] = row_page
                         self._goldbach_result_queue.put((op, True, result))
@@ -6491,6 +6565,21 @@ def _build_gui():
             try:
                 while True:
                     op, ok, payload = self._goldbach_result_queue.get_nowait()
+                    if op == "progress":
+                        # Not a finished job -- one tick of both_base_window_rows'
+                        # own progress_cb (see the worker loop's viz branch). Switch
+                        # the SHARED bottom bar (self.totals_progress -- same one the
+                        # floor-totals scan/Generation tab use) out of the
+                        # indeterminate spin _goldbach_set_busy(True) started it in
+                        # and into a real fraction; stop() first since an
+                        # indeterminate animation still running underneath a
+                        # determinate value looks broken (bar visibly jumps once the
+                        # animation's next tick fires). Busy state/nav buttons are
+                        # untouched -- the job is still running.
+                        self.totals_progress.stop()
+                        self.totals_progress.configure(
+                            mode="determinate", maximum=1, value=payload)
+                        continue
                     try:
                         self._goldbach_set_busy(False)
                         self._goldbach_refresh_nav_buttons()
@@ -6617,9 +6706,19 @@ def _build_gui():
                 if result["covered"] else
                 T("research_goldbach.viz_summary_void",
                   counterexamples=", ".join(str(x) for x in result["counterexamples"])))
+            # Only shown when the "od/do" fields actually narrowed the scan below
+            # the full [4, window_max] -- otherwise range_min/range_max just equal
+            # the window's own bounds and the note would be redundant noise on
+            # every single check. Without this, a restricted-range "covered"
+            # verdict could easily be misread as a claim about the WHOLE window.
+            range_note = (
+                "  " + T("research_goldbach.viz_range_note",
+                         range_min=result["range_min"], range_max=result["range_max"])
+                if result["range_min"] != 4 or result["range_max"] != result["window_max"]
+                else "")
             self.goldbach_viz_status_var.set(
                 T("research_goldbach.viz_status_shown", n=result["n"], pmax=result["pmax"])
-                + "  " + coverage_text)
+                + range_note + "  " + coverage_text)
             if self.goldbach_viz_n_entry.get().strip() != str(result["n"]):
                 self.goldbach_viz_n_entry.delete(0, "end")
                 self.goldbach_viz_n_entry.insert(0, str(result["n"]))
@@ -6792,7 +6891,8 @@ def _build_gui():
             canvas.create_text(
                 right_x, row_y, anchor="nw", font=("TkDefaultFont", 10, "bold"),
                 width=canvas_w - right_x - 16,
-                text=T("research_goldbach.viz_segment_title", window_max=result["window_max"]))
+                text=T("research_goldbach.viz_segment_title",
+                       range_min=result["range_min"], range_max=result["range_max"]))
             grid_top_y = row_y + 26
             for i, row in enumerate(rows[:rows_drawn]):
                 col_idx = i // rows_per_col
