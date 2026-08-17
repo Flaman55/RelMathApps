@@ -6329,6 +6329,48 @@ def _build_gui():
                 self.totals_progress.stop()
                 self.totals_progress.configure(mode="determinate", maximum=1, value=0)
 
+        def _goldbach_refresh_nav_buttons(self):
+            """Restores BOTH the Wizualizacja sums-grid Prev/Next and the decompose
+            window's own Prev/Next from their last-drawn results. Needed because
+            _goldbach_set_busy(True) force-disables ALL FOUR of these buttons for
+            ANY Goldbach job (window/viz/decompose share one busy flag and one
+            worker thread), but each pair's correct re-enabled state is normally
+            only recalculated by its OWN show_* function's _update_nav_controls
+            call -- _goldbach_show_decomposition_detail never touches the
+            sums-grid buttons, and _goldbach_show_window_visualization never
+            touches the decompose buttons. Since only ONE show_* function runs per
+            completed job, the OTHER pair was left stuck disabled from the
+            busy=True phase forever -- exactly what Artur reported: clicking
+            "Pokaz wszystkie rozklady" (a decompose job) leaves the Wizualizacja's
+            own "Sumy w oknie" Nastepna button greyed out even though that
+            viz result's true last-known page state hasn't changed at all.
+            Called unconditionally after every busy=False transition, regardless
+            of which op just completed -- each block below is a harmless no-op
+            (re-deriving the same state _update_nav_controls would already have
+            set) when its own op is the one that just finished."""
+            if self._goldbach_viz_last_result is not None:
+                result = self._goldbach_viz_last_result
+                row_page = result.get("row_page", 0)
+                total_row_pages = max(
+                    1, -(-result["segment_size"] // GOLDBACH_CASCADE_ROW_CAP))
+                try:
+                    _update_nav_controls(
+                        self.goldbach_viz_row_page_label, row_page, total_row_pages,
+                        self.goldbach_viz_row_prev_btn, self.goldbach_viz_row_next_btn)
+                except (tk.TclError, AttributeError):
+                    pass
+            if self._goldbach_decompose_last_result is not None:
+                result = self._goldbach_decompose_last_result
+                page = result.get("page", 0)
+                total_pages = max(
+                    1, -(-result["count"] // GOLDBACH_DECOMPOSE_ROW_CAP))
+                try:
+                    _update_nav_controls(
+                        self.goldbach_decompose_page_label, page, total_pages,
+                        self.goldbach_decompose_prev_btn, self.goldbach_decompose_next_btn)
+                except (tk.TclError, AttributeError):
+                    pass
+
         def _goldbach_worker_loop(self):
             """Own daemon thread -- single-owner reasoning identical to
             _primality_worker_loop's own docstring (self._goldbach_busy blocks new
@@ -6434,6 +6476,7 @@ def _build_gui():
                     op, ok, payload = self._goldbach_result_queue.get_nowait()
                     try:
                         self._goldbach_set_busy(False)
+                        self._goldbach_refresh_nav_buttons()
                         if not ok:
                             self.status.set(T("research_goldbach.status_error"))
                             messagebox.showerror(
