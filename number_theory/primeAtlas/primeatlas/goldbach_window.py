@@ -212,13 +212,20 @@ def all_decompositions(is_prime, n, pmax=None, cap=None, offset=0):
     is optional context (the anchor to flag pairs against, typically the currently
     displayed window's Pmax) -- when given, each pair is flagged "both_old_base":
     p <= pmax and q <= pmax; when omitted, both_old_base is None for every pair (no
-    base to compare against). `cap`/`offset` are a page window over the pair list
-    (mirrors window_rows' row_cap/row_offset -- same "GUI needs Prev/Next/goto over a
-    potentially huge list" need, since a large n can have tens of thousands of pairs,
-    see Artur's own n=9999992-ish screenshot: 53364 decompositions for one single n).
-    The verdict (old_base_sufficient) and total count are still computed over the
-    FULL scan regardless of cap/offset, same "verdict always full, display can be
-    partial" split as window_rows().
+    base to compare against, and the sort below becomes a no-op since every pair then
+    shares the same key).
+
+    The full pair list is sorted old-base pairs FIRST (both_old_base=True before
+    False), each group kept in its original p-increasing order (Python's sort is
+    stable) -- per Artur, after checking n = window_max = 2*Pmax by hand: that n has
+    EXACTLY ONE old-base pair, (Pmax, Pmax), which without this sort was the very
+    last of 53364 entries (page 178 of 178) -- putting it last in a p-ordered list is
+    correct but useless for actually finding it. `cap`/`offset` then page over this
+    REORDERED list (mirrors window_rows' row_cap/row_offset -- same "GUI needs
+    Prev/Next/goto over a potentially huge list" need). The verdict
+    (old_base_sufficient) and total count are still computed over the FULL scan
+    regardless of cap/offset, same "verdict always full, display can be partial"
+    split as window_rows().
 
     Returns {"n":, "pmax":, "count": int (total pairs found), "offset": int,
     "decompositions": [{"p":, "q":, "both_old_base": bool|None}, ...],
@@ -228,19 +235,18 @@ def all_decompositions(is_prime, n, pmax=None, cap=None, offset=0):
         raise ValueError("n must be even and >= 4")
     if len(is_prime) <= n:
         raise ValueError("is_prime array too short for n")
-    decompositions = []
-    count = 0
+    pairs = []
     old_base_sufficient = False if pmax is not None else None
     for p in range(2, n // 2 + 1):
         if is_prime[p] and is_prime[n - p]:
             q = n - p
-            idx = count  # 0-based position of this pair, before increment
-            count += 1
             both_old_base = (p <= pmax and q <= pmax) if pmax is not None else None
             if both_old_base:
                 old_base_sufficient = True
-            if idx >= offset and (cap is None or len(decompositions) < cap):
-                decompositions.append({"p": p, "q": q, "both_old_base": both_old_base})
+            pairs.append({"p": p, "q": q, "both_old_base": both_old_base})
+    count = len(pairs)
+    pairs.sort(key=lambda pair: 0 if pair["both_old_base"] else 1)
+    decompositions = pairs[offset:offset + cap] if cap is not None else pairs[offset:]
     return {
         "n": n, "pmax": pmax, "count": count, "offset": offset,
         "decompositions": decompositions, "old_base_sufficient": old_base_sufficient,
