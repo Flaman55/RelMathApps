@@ -428,5 +428,11 @@
   "settings.delete_cancel": "Cancel",
   "settings.delete_backed_up_as": "Backup saved as: {name}",
   "settings.delete_result": "Deleted {count} floor(s): {names}",
-  "settings.delete_errors_header": "Errors:"
+  "settings.delete_errors_header": "Errors:",
+  "research_goldbach.viz_mode_label": "Window mode:",
+  "research_goldbach.viz_mode_lean": "buildableFromBase (Lean), window [4, 2*Pmax]",
+  "research_goldbach.viz_mode_both_base": "both p and q from base, window [4, Pmax+3] (Pmax <= 10^9)",
+  "research_goldbach.viz_subheader_both_base": "'Both from base' mode: EVERY summand (p and q) must be a prime <= Pmax -- a stricter criterion than buildableFromBase. Window narrowed to [4, Pmax+3] (3 = the smallest odd prime), because for n>4 both summands are always odd, so n <= Pmax+3 guarantees both <= Pmax, as long as any representation exists at all. Verified without exception up to Pmax=10^9.",
+  "research_goldbach.viz_legend_both_base": "both summands (p and q) share the same blue -- here BOTH must be <= Pmax, that's a requirement, not just information",
+  "research_goldbach.error_both_base_pmax_too_large": "'Both from base' mode is only verified up to Pmax={ceiling} -- this n gives Pmax={pmax}, too large for this mode. Pick a smaller n, or switch to the buildableFromBase (Lean) mode."
 }

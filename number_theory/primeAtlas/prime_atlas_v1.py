@@ -103,6 +103,8 @@ from primeatlas import (  # noqa: E402
     try_import_sympy as primality_try_import_sympy,
     goldbach_check_window, goldbach_cascade_step,
     goldbach_window_rows, goldbach_all_decompositions,
+    goldbach_both_base_window_rows, GOLDBACH_BOTH_BASE_PMAX_CEILING,
+    GOLDBACH_BOTH_BASE_PMIN,
     goldbach_largest_prime_le, goldbach_sieve_is_prime,
 )
 
@@ -5862,13 +5864,28 @@ def _build_gui():
                 return
             self._goldbach_queue_viz(n)
 
+        def _on_goldbach_viz_mode_change(self):
+            """Fires when Artur flips the Wizualizacja mode radio buttons (lean vs
+            both_base -- see _goldbach_ensure_viz_window's own comment on the two
+            modes). Re-queues whatever n is currently shown under the newly picked
+            mode, same as a fresh "Sprawdz okno" click, so the diagram reflects the
+            new mode immediately instead of waiting for the next manual refresh."""
+            if self._goldbach_viz_current_n is None:
+                return
+            self._goldbach_queue_viz(self._goldbach_viz_current_n)
+
         def _goldbach_queue_viz(self, n, reset_page=True):
             """Queues a "viz" worker job for n. reset_page=True (the default, used by
             a fresh "Sprawdz okno" click from either the main tab or the Wizualizacja
             window's own button) starts back at row/chip page 0, since a different n
             means a different window and a different old base entirely. reset_page=
             False (used by the row Prev/Next handlers below) keeps whatever
-            self._goldbach_viz_row_page was already set to by the caller."""
+            self._goldbach_viz_row_page was already set to by the caller.
+
+            "viz_mode" is read from self.goldbach_viz_mode_var ("lean" or
+            "both_base" -- see _goldbach_ensure_viz_window's own comment); defaults
+            to "lean" via getattr since this StringVar only exists once the
+            Wizualizacja Toplevel has actually been built at least once."""
             if self._goldbach_busy:
                 return
             if reset_page:
@@ -5876,8 +5893,10 @@ def _build_gui():
                 self._goldbach_viz_chip_page = 0
             self._goldbach_viz_current_n = n
             self._goldbach_set_busy(True)
+            viz_mode = getattr(self, "goldbach_viz_mode_var", None)
             self._goldbach_work_queue.put({
                 "op": "viz", "n": n, "row_page": self._goldbach_viz_row_page,
+                "viz_mode": viz_mode.get() if viz_mode is not None else "lean",
             })
 
         def _on_goldbach_viz_row_prev(self):
@@ -6190,6 +6209,30 @@ def _build_gui():
                       wraplength=780, justify="left", foreground="#555").pack(
                 anchor="w", padx=10, pady=(0, 6))
 
+            # Mode toggle -- Artur, 2026-08-17: a SECOND, separate window/criterion
+            # alongside the original one, not a replacement for it. "lean" is the
+            # original, Lean-faithful buildableFromBase check ([4, 2*Pmax], only p
+            # bounded). "both_base" is the new, stricter check Artur asked to test
+            # after the buildableFromBase discussion: window narrowed to
+            # [4, Pmax+Pmin] (Pmin=3), BOTH p and q required <= Pmax -- proved (see
+            # goldbach_window.BOTH_BASE_PMIN's own docstring) and verified gap-free
+            # up to Pmax=10^9 this session, hence the cap at
+            # GOLDBACH_BOTH_BASE_PMAX_CEILING. Re-queues the currently-shown n under
+            # the newly selected mode immediately, same as any other control here.
+            mode_row = ttk.Frame(win)
+            mode_row.pack(fill="x", padx=10, pady=(0, 6))
+            ttk.Label(mode_row, text=T("research_goldbach.viz_mode_label")).pack(
+                side="left")
+            self.goldbach_viz_mode_var = tk.StringVar(value="lean")
+            ttk.Radiobutton(
+                mode_row, text=T("research_goldbach.viz_mode_lean"),
+                variable=self.goldbach_viz_mode_var, value="lean",
+                command=self._on_goldbach_viz_mode_change).pack(side="left", padx=(6, 12))
+            ttk.Radiobutton(
+                mode_row, text=T("research_goldbach.viz_mode_both_base"),
+                variable=self.goldbach_viz_mode_var, value="both_base",
+                command=self._on_goldbach_viz_mode_change).pack(side="left")
+
             # "Rozloz liczbe" -- Artur's request after noticing that the smallest-
             # witness search (_smallest_witness / window_rows) can land on a pair
             # whose q > Pmax even when an old-base-only pair (both p, q <= Pmax) exists
@@ -6436,7 +6479,18 @@ def _build_gui():
                         result["page"] = page
                         self._goldbach_result_queue.put((op, True, result))
                     else:
-                        limit = 2 * n
+                        viz_mode = job.get("viz_mode", "lean")
+                        # "both_base" mode's window is [4, Pmax+Pmin] -- much
+                        # narrower than "lean"'s [4, 2*Pmax] -- so it only ever
+                        # needs storage read up to n+Pmin, not 2*n. Checked BEFORE
+                        # the storage read (not after, unlike a plain ValueError
+                        # from both_base_window_rows itself) so an oversized n gets
+                        # a translated, dedicated error instead of a raw exception
+                        # string, matching every other error path here.
+                        if viz_mode == "both_base":
+                            limit = n + GOLDBACH_BOTH_BASE_PMIN
+                        else:
+                            limit = 2 * n
                         try:
                             is_prime = read_is_prime_from_storage(PORTAL_FOLDER, limit)
                         except MissingStorageRangeError as e:
@@ -6450,12 +6504,25 @@ def _build_gui():
                             self._goldbach_result_queue.put((
                                 op, False, T("research_goldbach.error_no_prime_le_n", n=n)))
                             continue
+                        if viz_mode == "both_base" and pmax > GOLDBACH_BOTH_BASE_PMAX_CEILING:
+                            self._goldbach_result_queue.put((
+                                op, False,
+                                T("research_goldbach.error_both_base_pmax_too_large",
+                                  pmax=f"{pmax:,}",
+                                  ceiling=f"{GOLDBACH_BOTH_BASE_PMAX_CEILING:,}")))
+                            continue
                         row_page = job.get("row_page", 0)
-                        result = goldbach_window_rows(
-                            is_prime, pmax, row_cap=GOLDBACH_CASCADE_ROW_CAP,
-                            row_offset=row_page * GOLDBACH_CASCADE_ROW_CAP)
+                        if viz_mode == "both_base":
+                            result = goldbach_both_base_window_rows(
+                                is_prime, pmax, row_cap=GOLDBACH_CASCADE_ROW_CAP,
+                                row_offset=row_page * GOLDBACH_CASCADE_ROW_CAP)
+                        else:
+                            result = goldbach_window_rows(
+                                is_prime, pmax, row_cap=GOLDBACH_CASCADE_ROW_CAP,
+                                row_offset=row_page * GOLDBACH_CASCADE_ROW_CAP)
                         result["n"] = n
                         result["row_page"] = row_page
+                        result["viz_mode"] = viz_mode
                         self._goldbach_result_queue.put((op, True, result))
                 except Exception as e:  # noqa: BLE001 -- surface any unexpected failure
                                          # to the GUI as an error dialog instead of
@@ -6703,16 +6770,20 @@ def _build_gui():
             canvas_h = header_h + max(chips_h, rows_h) + footer_h
             canvas.configure(width=canvas_w, height=canvas_h)
 
+            is_both_base = result.get("viz_mode") == "both_base"
             canvas.create_text(
                 16, 18, anchor="nw", font=("TkDefaultFont", 13, "bold"),
                 text=T("research_goldbach.viz_header",
                        n=result["n"], pmax=result["pmax"], window_max=result["window_max"]))
             canvas.create_text(
                 16, 44, anchor="nw", font=("TkDefaultFont", 9), fill="#64748b",
-                width=canvas_w - 32, text=T("research_goldbach.viz_subheader"))
+                width=canvas_w - 32,
+                text=T("research_goldbach.viz_subheader_both_base" if is_both_base
+                       else "research_goldbach.viz_subheader"))
             canvas.create_text(
                 16, 82, anchor="nw", font=("TkDefaultFont", 8), fill="#166534",
-                text=T("research_goldbach.viz_legend_new_q"))
+                text=T("research_goldbach.viz_legend_both_base" if is_both_base
+                       else "research_goldbach.viz_legend_new_q"))
 
             top_y = header_h
 

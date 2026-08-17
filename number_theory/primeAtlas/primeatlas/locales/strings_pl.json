@@ -428,5 +428,11 @@
   "settings.delete_cancel": "Anuluj",
   "settings.delete_backed_up_as": "Backup zapisany jako: {name}",
   "settings.delete_result": "Usunięto {count} piętro/piętr: {names}",
-  "settings.delete_errors_header": "Błędy:"
+  "settings.delete_errors_header": "Błędy:",
+  "research_goldbach.viz_mode_label": "Tryb okna:",
+  "research_goldbach.viz_mode_lean": "buildableFromBase (Lean), okno [4, 2·Pmax]",
+  "research_goldbach.viz_mode_both_base": "oba p i q z bazy, okno [4, Pmax+3] (Pmax ≤ 10⁹)",
+  "research_goldbach.viz_subheader_both_base": "Tryb 'oba z bazy': KAŻDY składnik (p i q) musi być pierwszą ≤ Pmax -- kryterium ostrzejsze niż buildableFromBase. Okno zwężone do [4, Pmax+3] (3 = najmniejsza nieparzysta liczba pierwsza), bo dla n>4 oba składniki są zawsze nieparzyste, więc n ≤ Pmax+3 gwarantuje oba ≤ Pmax, o ile jakakolwiek reprezentacja w ogóle istnieje. Zweryfikowane bez wyjątku do Pmax=10⁹.",
+  "research_goldbach.viz_legend_both_base": "oba składniki (p i q) w tym samym niebieskim kolorze -- tu OBA muszą być ≤ Pmax, to jest wymóg, nie tylko informacja",
+  "research_goldbach.error_both_base_pmax_too_large": "Tryb 'oba z bazy' jest zweryfikowany tylko do Pmax={ceiling} -- to n daje Pmax={pmax}, za dużo dla tego trybu. Wybierz mniejsze n albo przełącz na tryb buildableFromBase (Lean)."
 }

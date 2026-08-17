@@ -252,6 +252,152 @@ def all_decompositions(is_prime, n, pmax=None, cap=None, offset=0):
     }
 
 
+BOTH_BASE_PMAX_CEILING = 1_000_000_000
+"""Both-base coverage ([4, Pmax+BOTH_BASE_PMIN], both p and q <= Pmax) has been
+verified gap-free, this session, for: every order of magnitude 10^2..10^9
+individually (largest prime <= each), AND every prime Pmax from 2 to 50,000
+exhaustively. 10^9 itself (999,999,937) was checked directly via a memory-safe
+chunked sweep -- fully covered, zero gaps. A true 10-digit Pmax (~10^10) was not
+reached (would need a segmented/bit-packed sieve well beyond what a plain
+in-memory sieve can do in a few GB of RAM), so both_base_window_rows() below
+refuses anything above this ceiling rather than silently extrapolating past what
+was actually checked."""
+
+BOTH_BASE_PMIN = 3
+"""The smallest ODD prime. For even n > 4, ANY Goldbach representation has both
+summands odd (p=2 only ever works at n=4 itself -- otherwise n-2 would be an even
+number > 2, hence composite) -- so p, q >= BOTH_BASE_PMIN always holds for n > 4.
+This is what lets both_base_window_rows narrow the window to [4, Pmax+Pmin] and
+still prove (not just observe) that both p and q stay <= Pmax whenever ANY
+representation exists: q = n - p <= n - Pmin <= (Pmax+Pmin) - Pmin = Pmax, and
+symmetrically for p. See the module docstring's own note on the analogous,
+weaker p <= Pmax fact for the [4, 2*Pmax] window -- this is the same shape of
+proof, just covering both summands on a narrower window."""
+
+
+def check_both_base_coverage(is_prime, Pmax, Pmin=BOTH_BASE_PMIN):
+    """Checks the narrower window [4, Pmax+Pmin] under the STRICTER criterion that
+    BOTH p and q are <= Pmax (drawn entirely from the base), not just p as
+    buildableFromBase (Constructive.lean) asks for. This deliberately reintroduces
+    the "both <= Pmax" criterion that was removed from window_rows/
+    all_decompositions earlier in this project's history -- it does NOT match
+    Lean's buildableFromBase, and exists as a genuinely DIFFERENT, additional
+    property Artur asked to check on its own terms, not as a replacement for
+    buildableFromBase/windowCovered anywhere else in this file. See
+    BOTH_BASE_PMIN's own docstring for the proof that this window is the natural
+    one for this stricter criterion (both summands >= Pmin for n > 4, combined
+    with n <= Pmax+Pmin, forces both summands <= Pmax whenever any representation
+    exists at all).
+
+    Rows for n with no both<=Pmax pair are still included (n always appears), with
+    p/q left as None rather than the row being dropped -- so the counterexample
+    list below is exactly "which n's, in this narrowed window, are NOT composable
+    purely from base primes."
+
+    Returns {"Pmax", "Pmin", "n_max" (=Pmax+Pmin), "rows": [{"n","p","q"}, ...],
+    "counterexamples": [n, ...], "covered": bool (True iff counterexamples empty)}."""
+    n_max = Pmax + Pmin
+    if len(is_prime) <= n_max:
+        raise ValueError("is_prime array too short for Pmax+Pmin")
+    rows = []
+    counterexamples = []
+    for n in range(4, n_max + 1, 2):
+        witness = None
+        for p in range(2, min(Pmax, n // 2) + 1):
+            q = n - p
+            if q > Pmax:
+                continue
+            if is_prime[p] and is_prime[q]:
+                witness = (p, q)
+                break
+        if witness is None:
+            counterexamples.append(n)
+        rows.append({
+            "n": n, "p": witness[0] if witness else None,
+            "q": witness[1] if witness else None,
+        })
+    return {
+        "Pmax": Pmax, "Pmin": Pmin, "n_max": n_max, "rows": rows,
+        "counterexamples": counterexamples, "covered": not counterexamples,
+    }
+
+
+def report_both_base_coverage(is_prime, Pmax, Pmin=BOTH_BASE_PMIN):
+    """Companion to check_both_base_coverage for manual/CLI use -- runs the check
+    and prints the result directly: a single "fully covered" line if
+    counterexamples is empty, otherwise the exact list of n's with no both<=Pmax
+    pair, so Artur doesn't have to manually inspect the returned dict each time.
+    Returns the same dict check_both_base_coverage does."""
+    res = check_both_base_coverage(is_prime, Pmax, Pmin=Pmin)
+    print(f"Pmax={Pmax}  Pmin={Pmin}  okno=[4, {res['n_max']}]  wierszy={len(res['rows'])}")
+    if res["covered"]:
+        print("  WSZYSTKO POKRYTE -- kazde n w oknie ma pare oba<=Pmax.")
+    else:
+        print(f"  BRAKI ({len(res['counterexamples'])} z {len(res['rows'])}): "
+              f"{res['counterexamples']}")
+    return res
+
+
+def both_base_window_rows(is_prime, Pmax, Pmin=BOTH_BASE_PMIN, row_cap=None,
+                           row_offset=0):
+    """GUI-facing counterpart of check_both_base_coverage, shaped to match
+    window_rows()'s own contract (row_cap/row_offset paging, same key names where
+    the concept overlaps) so prime_atlas_v1.py's Wizualizacja can render either
+    mode through mostly the same code path -- Artur, 2026-08-17: a NEW, separate
+    mode alongside the existing Lean-faithful one, not a replacement for it.
+
+    Refuses (ValueError) any Pmax above BOTH_BASE_PMAX_CEILING -- see that
+    constant's own docstring for exactly what scale has actually been checked
+    gap-free versus what would be silent extrapolation beyond it.
+
+    `is_prime` must be long enough to index up to Pmax+Pmin (NOT 2*Pmax -- this
+    window is narrower than window_rows()'s).
+
+    Returns {"pmax":, "window_max": (=Pmax+Pmin), "old_base_primes": [...],
+    "covered":, "counterexamples": [...], "segment_size":, "row_offset":,
+    "rows": [{"n":,"p":,"q":,"q_is_new": False always -- see below}, ...],
+    "rows_truncated": bool} -- same shape as window_rows(). "q_is_new" is always
+    False here (never omitted, so the shared rendering code doesn't need a
+    None-check): unlike window_rows(), where q is deliberately unconstrained and
+    "new" (q > Pmax) is the common case, here q is REQUIRED to be <= Pmax by the
+    criterion itself, so every drawn witness already has q in the base -- there is
+    no "new q" case to flag in this mode."""
+    if Pmax < 2:
+        raise ValueError("Pmax must be >= 2")
+    if Pmax > BOTH_BASE_PMAX_CEILING:
+        raise ValueError(
+            f"both_base_window_rows is only verified up to Pmax="
+            f"{BOTH_BASE_PMAX_CEILING:,}; Pmax={Pmax:,} exceeds that and is "
+            f"refused rather than silently extrapolated")
+    window_max = Pmax + Pmin
+    old_base_primes = [p for p in range(2, Pmax + 1) if is_prime[p]]
+    rows = []
+    counterexamples = []
+    segment_size = 0
+    for n in range(4, window_max + 1, 2):
+        idx = segment_size
+        segment_size += 1
+        p_found = q_found = None
+        for p in range(2, min(Pmax, n // 2) + 1):
+            q = n - p
+            if q > Pmax:
+                continue
+            if is_prime[p] and is_prime[q]:
+                p_found, q_found = p, q
+                break
+        if p_found is None:
+            counterexamples.append(n)
+        if idx >= row_offset and (row_cap is None or len(rows) < row_cap):
+            rows.append({"n": n, "p": p_found, "q": q_found, "q_is_new": False})
+    return {
+        "pmax": Pmax, "window_max": window_max, "old_base_primes": old_base_primes,
+        "covered": not counterexamples, "counterexamples": counterexamples,
+        "segment_size": segment_size, "row_offset": row_offset, "rows": rows,
+        "rows_truncated": (
+            row_cap is not None and row_offset + len(rows) < segment_size),
+    }
+
+
 def check_window(Pmax, mode):
     """Checks windowCovered(Pmax): every even n with 4 <= n <= 2*Pmax must be a sum of
     two primes. `mode` is "touch_once" or "all_combinations" (see module docstring).

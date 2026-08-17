@@ -21,6 +21,9 @@ from .goldbach_window import (
     next_anchor as goldbach_next_anchor,
     window_rows as goldbach_window_rows,
     all_decompositions as goldbach_all_decompositions,
+    both_base_window_rows as goldbach_both_base_window_rows,
+    BOTH_BASE_PMAX_CEILING as GOLDBACH_BOTH_BASE_PMAX_CEILING,
+    BOTH_BASE_PMIN as GOLDBACH_BOTH_BASE_PMIN,
     largest_prime_le as goldbach_largest_prime_le,
     sieve_is_prime as goldbach_sieve_is_prime,
 )
@@ -34,5 +37,8 @@ __all__ = [
     "Translator", "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "LANGUAGE_NAMES",
     "run_all_tests", "factorize", "try_import_sympy",
     "goldbach_check_window", "goldbach_cascade_step", "goldbach_next_anchor",
-    "goldbach_window_rows", "goldbach_largest_prime_le", "goldbach_sieve_is_prime",
+    "goldbach_window_rows", "goldbach_all_decompositions",
+    "goldbach_both_base_window_rows", "GOLDBACH_BOTH_BASE_PMAX_CEILING",
+    "GOLDBACH_BOTH_BASE_PMIN",
+    "goldbach_largest_prime_le", "goldbach_sieve_is_prime",
 ]
