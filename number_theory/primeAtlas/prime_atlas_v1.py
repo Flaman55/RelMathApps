@@ -2602,17 +2602,20 @@ def _build_gui():
 
             self.primes_tab = ttk.Frame(notebook)
             self.constellations_tab = ttk.Frame(notebook)
+            self.research_tab = ttk.Frame(notebook)
             self.generation_tab = ttk.Frame(notebook)
             self.benchmark_tab = ttk.Frame(notebook)
             self.settings_tab_container = ttk.Frame(notebook)
             notebook.add(self.primes_tab, text=T("tabs.primes"))
             notebook.add(self.constellations_tab, text=T("tabs.constellations"))
+            notebook.add(self.research_tab, text=T("tabs.research"))
             notebook.add(self.generation_tab, text=T("tabs.generation"))
             notebook.add(self.benchmark_tab, text=T("tabs.benchmark"))
             notebook.add(self.settings_tab_container, text=T("tabs.settings"))
 
             self._build_primes_section()
             self._build_constellations_section()
+            self._build_research_section()
             self._build_generation_tab()
             self._build_benchmark_tab()
             self._build_settings_tab(SettingsTab)
@@ -5459,6 +5462,95 @@ def _build_gui():
                     self._select_hits_pattern_in_tree(base_exponent, calc_pending["pattern"])
                     self._load_hits_preview()
                     self._jump_hits_preview_to_row(match["base"], match["position"])
+
+        # --- Research tab: skeleton only (Faza 0) --------------------------------------
+
+        def _build_research_section(self):
+            """Same nested-notebook pattern as _build_primes_section() /
+            _build_constellations_section() (see either's own docstring for the full
+            rationale) -- a new top-level 'Research' tab, positioned between
+            Constellations and Generation.
+
+            Sub-tabs are grouped by SHARED QUESTION SHAPE, not by conjecture name (Artur's
+            own restructuring, 2026-08-17), so one engine/analysis serves several classical
+            conjectures via parameter presets instead of duplicating near-identical code:
+              - Square intervals: 'does [a(n), b(n)] contain >=1 prime?' -- Legendre
+                ([n^2, (n+1)^2]), Oppermann ([n^2, n^2+n] and [n^2+n, (n+1)^2]), and Brocard
+                ([p_n^2, p_(n+1)^2], prime-indexed) are the same question with a different
+                boundary formula -- three presets plus a custom formula, ONE tab.
+              - Prime-generating polynomials: 'are there infinitely many primes among
+                f(n)'s values?' -- Landau's n^2+1 is one instance of this, alongside Euler's
+                n^2+n+41 and a custom polynomial (Bunyakovsky conjecture in general).
+              - Goldbach: additive representation (strong: n=p+q even; weak: n=p+q+r odd,
+                proven) -- genuinely a different question shape, stays its own tab.
+              - Gaps: consecutive-prime growth family -- raw gaps PLUS the inequalities that
+                are really just different statistics on the same p_n/p_(n+1) sequence
+                (Andrica: sqrt(p_(n+1))-sqrt(p_n)<1; Firoozbakht: p_(n+1)^(1/(n+1)) <
+                p_n^(1/n); Cramer: gap vs (log p)^2 as a theoretical ceiling) -- selectable
+                overlays on ONE tab, not separate tabs.
+              - pi(x) approximations: accuracy of li(x)/R(x) against the real count -- a
+                measurement-quality question, not a yes/no conjecture check, stays its own
+                tab.
+            Hardy-Littlewood / twin-prime / Polignac density questions are NOT a sub-tab
+            here -- they're the same computation the EXISTING Constellations tab already
+            does (pattern hit-counting), so that family becomes a future density-comparison
+            VIEW added to Constellations (actual hits vs Hardy-Littlewood asymptotic
+            prediction) instead of a duplicate engine here. See this project's own task
+            list for that follow-up.
+
+            SKELETON ONLY, deliberately -- per Artur's own instruction (2026-08-17), this
+            phase adds the tab structure with NO computational logic behind any of the
+            five sub-tabs; each is a placeholder label for now. Logic gets filled in
+            incrementally, one sub-tab at a time, in later phases -- see each
+            _build_research_*_tab() method below for where that content will go."""
+            sub = ttk.Notebook(self.research_tab)
+            sub.pack(fill="both", expand=True)
+            self.research_sub_notebook = sub
+            self.research_squares_tab = ttk.Frame(sub)
+            self.research_polynomials_tab = ttk.Frame(sub)
+            self.research_goldbach_tab = ttk.Frame(sub)
+            self.research_gaps_tab = ttk.Frame(sub)
+            self.research_pi_approx_tab = ttk.Frame(sub)
+            sub.add(self.research_squares_tab, text=T("tabs.research_squares"))
+            sub.add(self.research_polynomials_tab, text=T("tabs.research_polynomials"))
+            sub.add(self.research_goldbach_tab, text=T("tabs.research_goldbach"))
+            sub.add(self.research_gaps_tab, text=T("tabs.research_gaps"))
+            sub.add(self.research_pi_approx_tab, text=T("tabs.research_pi_approx"))
+            self._build_research_squares_tab()
+            self._build_research_polynomials_tab()
+            self._build_research_goldbach_tab()
+            self._build_research_gaps_tab()
+            self._build_research_pi_approx_tab()
+
+        def _build_research_squares_tab(self):
+            """Square-interval explorer (Legendre/Oppermann/Brocard presets + custom
+            boundary formula) -- PLACEHOLDER, no logic yet (Faza 0)."""
+            ttk.Label(self.research_squares_tab, text=T("research_squares.placeholder"),
+                      wraplength=700, justify="left").pack(anchor="nw", padx=12, pady=12)
+
+        def _build_research_polynomials_tab(self):
+            """Prime-generating polynomial explorer (Landau n^2+1, Euler n^2+n+41, custom)
+            -- PLACEHOLDER, no logic yet (Faza 0)."""
+            ttk.Label(self.research_polynomials_tab, text=T("research_polynomials.placeholder"),
+                      wraplength=700, justify="left").pack(anchor="nw", padx=12, pady=12)
+
+        def _build_research_goldbach_tab(self):
+            """Goldbach's conjecture explorer (strong/weak modes) -- PLACEHOLDER, no logic
+            yet (Faza 0)."""
+            ttk.Label(self.research_goldbach_tab, text=T("research_goldbach.placeholder"),
+                      wraplength=700, justify="left").pack(anchor="nw", padx=12, pady=12)
+
+        def _build_research_gaps_tab(self):
+            """Prime gap explorer (raw gaps + Andrica/Firoozbakht/Cramer overlays) --
+            PLACEHOLDER, no logic yet (Faza 0)."""
+            ttk.Label(self.research_gaps_tab, text=T("research_gaps.placeholder"),
+                      wraplength=700, justify="left").pack(anchor="nw", padx=12, pady=12)
+
+        def _build_research_pi_approx_tab(self):
+            """pi(x) approximation accuracy explorer (li(x), R(x)) -- PLACEHOLDER, no logic
+            yet (Faza 0)."""
+            ttk.Label(self.research_pi_approx_tab, text=T("research_pi_approx.placeholder"),
+                      wraplength=700, justify="left").pack(anchor="nw", padx=12, pady=12)
 
         # --- Tab 3: Generation (launch orchestrator_loop_v2 / constellation_finder) --
 
