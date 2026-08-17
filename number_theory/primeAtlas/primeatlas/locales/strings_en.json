@@ -76,7 +76,6 @@
   "research_goldbach.decompose_col_base": "Old base?",
   "research_goldbach.decompose_base_yes": "YES",
   "research_goldbach.decompose_base_no": "NO (q is new)",
-  "research_goldbach.decompose_truncated": "(showing first {cap} of {count} decompositions)",
   "research_gaps.placeholder": "Prime gap explorer -- coming in a later phase.",
   "research_pi_approx.placeholder": "Accuracy of π(x) approximations (li(x), R(x)) against the real count -- coming in a later phase.",
   "primesieve_calc.field_operation": "Operation:",

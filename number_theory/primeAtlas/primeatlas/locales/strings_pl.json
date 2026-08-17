@@ -76,7 +76,6 @@
   "research_goldbach.decompose_col_base": "Stara baza?",
   "research_goldbach.decompose_base_yes": "TAK",
   "research_goldbach.decompose_base_no": "NIE (q nowa)",
-  "research_goldbach.decompose_truncated": "(pokazano pierwsze {cap} z {count} rozkładów)",
   "research_gaps.placeholder": "Eksplorator luk między liczbami pierwszymi -- w przygotowaniu, pojawi się w kolejnym etapie prac.",
   "research_pi_approx.placeholder": "Dokładność przybliżeń π(x) (li(x), R(x)) względem rzeczywistego zliczenia -- w przygotowaniu, pojawi się w kolejnym etapie prac.",
   "primesieve_calc.field_operation": "Operacja:",

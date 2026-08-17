@@ -2874,6 +2874,16 @@ def _build_gui():
             # against the currently-open window's Pmax) -- same lazy-create-and-reuse
             # pattern as _goldbach_viz_win, see _goldbach_ensure_decompose_window.
             self._goldbach_decompose_win = None
+            # Pagination state for the decompose detail list -- same backend-call-per-
+            # page shape as the sums row nav above (a large n can have tens of
+            # thousands of pairs, see Artur's own n~=9999992 screenshot: 53364 pairs
+            # for one single n). current_n/current_pmax let Prev/Next/goto re-issue a
+            # job for the SAME target without the caller re-supplying them each time;
+            # last_result caches just enough (count) to clamp a goto target locally.
+            self._goldbach_decompose_page = 0
+            self._goldbach_decompose_current_n = None
+            self._goldbach_decompose_current_pmax = None
+            self._goldbach_decompose_last_result = None
             threading.Thread(target=self._goldbach_worker_loop, daemon=True).start()
             self.after(150, self._poll_goldbach_results)
 
@@ -5891,6 +5901,31 @@ def _build_gui():
             self._goldbach_viz_row_page += 1
             self._goldbach_queue_viz(self._goldbach_viz_current_n, reset_page=False)
 
+        def _on_goldbach_viz_row_goto(self):
+            """Sums-grid "Idz" -- jumps directly to a typed page number instead of
+            stepping one page at a time, same as the app's other large-list nav rows
+            (see e.g. _goto_floor_page/_goto_benchmark_page). Clamped against the last
+            known segment_size (if a result has already been drawn) so a wildly
+            out-of-range page number doesn't just come back empty -- an unclamped page
+            still WOULD come back correctly empty (row_offset simply exceeds
+            segment_size), this just avoids the round-trip and the confusing "page 500
+            / 12" label that would otherwise result."""
+            if self._goldbach_busy or self._goldbach_viz_current_n is None:
+                return
+            raw = self.goldbach_viz_row_goto_entry.get().strip()
+            if not raw.isdigit():
+                return
+            target = int(raw) - 1
+            if self._goldbach_viz_last_result is not None:
+                total_row_pages = max(
+                    1, -(-self._goldbach_viz_last_result["segment_size"]
+                         // GOLDBACH_CASCADE_ROW_CAP))
+                target = max(0, min(target, total_row_pages - 1))
+            else:
+                target = max(0, target)
+            self._goldbach_viz_row_page = target
+            self._goldbach_queue_viz(self._goldbach_viz_current_n, reset_page=False)
+
         def _on_goldbach_viz_chip_prev(self):
             """STARA BAZA "Poprzednia" -- purely client-side: old_base_primes is
             already fully present in the last worker result, so paging through it is
@@ -5905,6 +5940,18 @@ def _build_gui():
             the true page count inside _goldbach_show_window_visualization, so an extra
             click past the end is harmless (the Next button is also disabled there)."""
             self._goldbach_viz_chip_page += 1
+            if self._goldbach_viz_last_result is not None:
+                self._goldbach_show_window_visualization(self._goldbach_viz_last_result)
+
+        def _on_goldbach_viz_chip_goto(self):
+            """STARA BAZA "Idz" -- pure client-side like chip prev/next, so this just
+            sets the page and redraws; _goldbach_show_window_visualization clamps it
+            against the true page count itself (same as it already does for chip
+            prev/next going past either end)."""
+            raw = self.goldbach_viz_chip_goto_entry.get().strip()
+            if not raw.isdigit():
+                return
+            self._goldbach_viz_chip_page = max(0, int(raw) - 1)
             if self._goldbach_viz_last_result is not None:
                 self._goldbach_show_window_visualization(self._goldbach_viz_last_result)
 
@@ -5934,11 +5981,56 @@ def _build_gui():
                     T("research_goldbach.error_dialog_title"),
                     T("research_goldbach.error_decompose_must_be_even"))
                 return
-            pmax = self._goldbach_viz_last_result["pmax"]
+            self._goldbach_decompose_current_n = target_n
+            self._goldbach_decompose_current_pmax = self._goldbach_viz_last_result["pmax"]
+            self._goldbach_decompose_page = 0
+            self._goldbach_queue_decompose_page()
+
+        def _goldbach_queue_decompose_page(self):
+            """Issues a "decompose" worker job for self._goldbach_decompose_page of
+            self._goldbach_decompose_current_n against self._goldbach_decompose_
+            current_pmax -- shared by the initial "Pokaz wszystkie rozklady" click and
+            the detail window's own Prev/Next/goto handlers, so they all re-request the
+            SAME target n/pmax and only the page differs."""
             self._goldbach_set_busy(True)
             self._goldbach_work_queue.put({
-                "op": "decompose", "n": target_n, "pmax": pmax,
+                "op": "decompose", "n": self._goldbach_decompose_current_n,
+                "pmax": self._goldbach_decompose_current_pmax,
+                "page": self._goldbach_decompose_page,
             })
+
+        def _on_goldbach_decompose_prev(self):
+            if self._goldbach_busy or self._goldbach_decompose_current_n is None:
+                return
+            if self._goldbach_decompose_page > 0:
+                self._goldbach_decompose_page -= 1
+                self._goldbach_queue_decompose_page()
+
+        def _on_goldbach_decompose_next(self):
+            """Next button is disabled once the last drawn result's own "truncated" is
+            False (see _goldbach_show_decomposition_detail), so no upper-bound check
+            needed here -- same convention as the sums-grid row nav."""
+            if self._goldbach_busy or self._goldbach_decompose_current_n is None:
+                return
+            self._goldbach_decompose_page += 1
+            self._goldbach_queue_decompose_page()
+
+        def _on_goldbach_decompose_goto(self):
+            if self._goldbach_busy or self._goldbach_decompose_current_n is None:
+                return
+            raw = self.goldbach_decompose_goto_entry.get().strip()
+            if not raw.isdigit():
+                return
+            target = int(raw) - 1
+            if self._goldbach_decompose_last_result is not None:
+                total_pages = max(1, -(
+                    -self._goldbach_decompose_last_result["count"]
+                    // GOLDBACH_DECOMPOSE_ROW_CAP))
+                target = max(0, min(target, total_pages - 1))
+            else:
+                target = max(0, target)
+            self._goldbach_decompose_page = target
+            self._goldbach_queue_decompose_page()
 
         def _goldbach_ensure_decompose_window(self):
             """Lazy-create-and-reuse Toplevel for the decomposition detail list, same
@@ -5963,7 +6055,33 @@ def _build_gui():
 
             self.goldbach_decompose_count_var = tk.StringVar(value="")
             ttk.Label(win, textvariable=self.goldbach_decompose_count_var,
-                      padding=(10, 0, 10, 6)).pack(anchor="w")
+                      padding=(10, 0, 10, 2)).pack(anchor="w")
+
+            # Prev/label/Next/goto -- same layout as the Wizualizacja's own row_nav,
+            # needed here for the same reason: a large n can have tens of thousands of
+            # pairs (Artur's own n~=9999992 screenshot: 53364), and the old silent
+            # "(showing first 300 of 53364)" note with no way to see the rest was
+            # exactly the gap Artur flagged.
+            decompose_nav = ttk.Frame(win, padding=(10, 0, 10, 4))
+            decompose_nav.pack(fill="x")
+            self.goldbach_decompose_prev_btn = ttk.Button(
+                decompose_nav, text=T("common.prev_page"),
+                command=self._on_goldbach_decompose_prev, state="disabled")
+            self.goldbach_decompose_prev_btn.pack(side="left")
+            self.goldbach_decompose_page_label = tk.StringVar(value="")
+            ttk.Label(decompose_nav, textvariable=self.goldbach_decompose_page_label,
+                      width=14, anchor="center").pack(side="left", padx=(4, 4))
+            self.goldbach_decompose_next_btn = ttk.Button(
+                decompose_nav, text=T("common.next_page"),
+                command=self._on_goldbach_decompose_next, state="disabled")
+            self.goldbach_decompose_next_btn.pack(side="left")
+            self.goldbach_decompose_goto_entry = ttk.Entry(decompose_nav, width=6)
+            self.goldbach_decompose_goto_entry.pack(side="left", padx=(12, 0))
+            self.goldbach_decompose_goto_entry.bind(
+                "<Return>", lambda _e: self._on_goldbach_decompose_goto())
+            ttk.Button(decompose_nav, text=T("common.goto"),
+                       command=self._on_goldbach_decompose_goto).pack(
+                side="left", padx=(4, 0))
 
             tree_frame = ttk.Frame(win, padding=(10, 0, 10, 4))
             tree_frame.pack(fill="both", expand=True)
@@ -5983,24 +6101,24 @@ def _build_gui():
             scroll.pack(side="left", fill="y")
             self.goldbach_decompose_tree = tree
 
-            self.goldbach_decompose_truncated_var = tk.StringVar(value="")
-            ttk.Label(win, textvariable=self.goldbach_decompose_truncated_var,
-                      foreground="#555", padding=(10, 0, 10, 10)).pack(anchor="w")
-
             self._goldbach_decompose_win = win
             return win
 
         def _goldbach_show_decomposition_detail(self, result):
             """Renders one goldbach_all_decompositions() result into the detail
-            Toplevel: every (p, q) pair for the requested n, tagged where q lies
-            outside the old base (q > pmax) the same amber-ish framing as the diagram's
-            "new" chips, plus a headline verdict on whether an old-base-only pair
-            (both p, q <= pmax) exists ANYWHERE in the full list -- answering Artur's
-            actual question directly instead of leaving him to eyeball the rows."""
+            Toplevel: every (p, q) pair for the requested n ON THIS PAGE, tagged where
+            q lies outside the old base (q > pmax) the same amber-ish framing as the
+            diagram's "new" chips, plus a headline verdict on whether an old-base-only
+            pair (both p, q <= pmax) exists ANYWHERE in the FULL list -- computed over
+            the whole scan regardless of which page is showing, answering Artur's
+            actual question directly instead of leaving him to eyeball the rows. Page
+            nav (Prev/Next/goto) mirrors the sums-grid row nav in the main diagram."""
             win = self._goldbach_ensure_decompose_window()
             win.title(T("research_goldbach.decompose_window_title", n=result["n"]))
             win.deiconify()
             win.lift()
+
+            self._goldbach_decompose_last_result = result
 
             pmax = result["pmax"]
             if result["old_base_sufficient"]:
@@ -6023,12 +6141,11 @@ def _build_gui():
                                         yes_label if is_old else no_label),
                     tags=() if is_old else ("new",))
 
-            if result["truncated"]:
-                self.goldbach_decompose_truncated_var.set(
-                    T("research_goldbach.decompose_truncated",
-                      cap=len(result["decompositions"]), count=result["count"]))
-            else:
-                self.goldbach_decompose_truncated_var.set("")
+            page = result.get("page", 0)
+            total_pages = max(1, -(-result["count"] // GOLDBACH_DECOMPOSE_ROW_CAP))
+            _update_nav_controls(
+                self.goldbach_decompose_page_label, page, total_pages,
+                self.goldbach_decompose_prev_btn, self.goldbach_decompose_next_btn)
 
         def _goldbach_ensure_viz_window(self):
             """Creates the Wizualizacja Toplevel the first time it's needed, or returns
@@ -6110,6 +6227,12 @@ def _build_gui():
                 chip_nav, text=T("common.next_page"),
                 command=self._on_goldbach_viz_chip_next, state="disabled")
             self.goldbach_viz_chip_next_btn.pack(side="left", padx=(4, 0))
+            self.goldbach_viz_chip_goto_entry = ttk.Entry(chip_nav, width=6)
+            self.goldbach_viz_chip_goto_entry.pack(side="left", padx=(12, 0))
+            self.goldbach_viz_chip_goto_entry.bind(
+                "<Return>", lambda _e: self._on_goldbach_viz_chip_goto())
+            ttk.Button(chip_nav, text=T("common.goto"),
+                       command=self._on_goldbach_viz_chip_goto).pack(side="left", padx=(4, 0))
 
             row_nav = ttk.Frame(win)
             row_nav.pack(fill="x", padx=10, pady=(0, 6))
@@ -6126,6 +6249,12 @@ def _build_gui():
                 row_nav, text=T("common.next_page"),
                 command=self._on_goldbach_viz_row_next, state="disabled")
             self.goldbach_viz_row_next_btn.pack(side="left", padx=(4, 0))
+            self.goldbach_viz_row_goto_entry = ttk.Entry(row_nav, width=6)
+            self.goldbach_viz_row_goto_entry.pack(side="left", padx=(12, 0))
+            self.goldbach_viz_row_goto_entry.bind(
+                "<Return>", lambda _e: self._on_goldbach_viz_row_goto())
+            ttk.Button(row_nav, text=T("common.goto"),
+                       command=self._on_goldbach_viz_row_goto).pack(side="left", padx=(4, 0))
 
             # NOT fill="both"/expand=True here: an earlier version packed the canvas to
             # fill the whole Toplevel, which meant the Canvas widget stretched to
@@ -6163,6 +6292,9 @@ def _build_gui():
             if busy and hasattr(self, "goldbach_viz_row_prev_btn"):
                 self.goldbach_viz_row_prev_btn.configure(state="disabled")
                 self.goldbach_viz_row_next_btn.configure(state="disabled")
+            if busy and hasattr(self, "goldbach_decompose_prev_btn"):
+                self.goldbach_decompose_prev_btn.configure(state="disabled")
+                self.goldbach_decompose_next_btn.configure(state="disabled")
             if busy:
                 self.totals_progress.stop()
                 self.totals_progress.configure(mode="indeterminate")
@@ -6230,8 +6362,11 @@ def _build_gui():
                                 T("research_goldbach.error_storage_missing",
                                   floor=e.floor, upto=f"{e.needed_upto:,}")))
                             continue
+                        page = job.get("page", 0)
                         result = goldbach_all_decompositions(
-                            is_prime, n, job["pmax"], cap=GOLDBACH_DECOMPOSE_ROW_CAP)
+                            is_prime, n, job["pmax"], cap=GOLDBACH_DECOMPOSE_ROW_CAP,
+                            offset=page * GOLDBACH_DECOMPOSE_ROW_CAP)
+                        result["page"] = page
                         self._goldbach_result_queue.put((op, True, result))
                     else:
                         limit = 2 * n
