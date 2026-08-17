@@ -132,13 +132,20 @@ FLOOR_PAGE_SIZE = 200  # PRIME_WINDOW_*.bin files shown per page when a floor no
                         # growing) -- reading every file's header AND inserting every file
                         # as a tree row on a single expand is what used to freeze the GUI.
 
-GOLDBACH_CASCADE_ROW_CAP = 14  # per-n decomposition rows drawn in the Goldbach tab's
-                                # Wizualizacja diagram -- the coverage verdict and
-                                # counterexample list are always computed over the FULL
-                                # window regardless (see goldbach_window.window_rows'
-                                # row_cap docstring); this only bounds how many rows the
-                                # Canvas actually draws, so the diagram stays readable
-                                # even for a large Pmax.
+GOLDBACH_VIZ_ROWS_PER_COL = 14  # per-n decomposition cards drawn in ONE column of the
+                                  # Goldbach tab's Wizualizacja diagram before wrapping
+                                  # to a new column -- see _goldbach_show_window_
+                                  # visualization's multi-column layout, which fills
+                                  # the window's width instead of piling every row into
+                                  # one narrow strip with empty space beside it.
+GOLDBACH_VIZ_MAX_COLS = 3  # cap on how many columns the card grid wraps into, so a
+                             # huge window doesn't stretch the diagram absurdly wide.
+GOLDBACH_CASCADE_ROW_CAP = GOLDBACH_VIZ_ROWS_PER_COL * GOLDBACH_VIZ_MAX_COLS
+    # per-n decomposition rows drawn in the Wizualizacja diagram -- the coverage
+    # verdict and counterexample list are always computed over the FULL window
+    # regardless (see goldbach_window.window_rows' row_cap docstring); this only
+    # bounds how many cards the Canvas actually draws, so the diagram stays readable
+    # even for a large Pmax.
 GOLDBACH_CASCADE_CHIP_CAP = 24  # old-base prime chips drawn before switching to a
                                  # "+N more" note -- same reasoning as the row cap above.
 
@@ -5863,12 +5870,21 @@ def _build_gui():
                       wraplength=780, justify="left", foreground="#555").pack(
                 anchor="w", padx=10, pady=(0, 6))
 
+            # NOT fill="both"/expand=True here: an earlier version packed the canvas to
+            # fill the whole Toplevel, which meant the Canvas widget stretched to
+            # whatever size the window happened to be (its actual drawn content still
+            # only covering its own configured width/height), leaving a big blank area
+            # to the right and pinning everything to the top-left -- exactly the bug
+            # Artur reported ("mamy tyle wolnej przestrzeni a wszystko z lewej
+            # strony"). Packing it at its natural size instead means the Toplevel
+            # itself auto-sizes to the canvas's actual content on every redraw (see
+            # the win.geometry("") reset in _goldbach_show_window_visualization).
             canvas_frame = ttk.Frame(win)
-            canvas_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            canvas_frame.pack(padx=10, pady=(0, 10))
             self.goldbach_viz_canvas = tk.Canvas(
                 canvas_frame, width=820, height=120, background="white",
                 highlightthickness=0)
-            self.goldbach_viz_canvas.pack(fill="both", expand=True)
+            self.goldbach_viz_canvas.pack()
 
             self._goldbach_viz_win = win
             return win
@@ -6072,10 +6088,43 @@ def _build_gui():
             chip_rows = max(1, -(-len(chip_shown) // chip_cols))
             rows = result["rows"]
 
-            canvas_w = 820
-            header_h = 90
+            # Box widths scale to the actual digit count of the values THIS diagram is
+            # drawing (window_max/pmax), instead of a fixed pixel width -- a fixed
+            # width sized for 2-digit examples would silently clip or overflow once n
+            # (and therefore p/q) grows into 5+ digits.
+            def _digit_box_w(min_w, digits):
+                return max(min_w, 11 * digits + 22)
+
+            n_digits = len(str(result["window_max"]))
+            p_digits = len(str(result["pmax"]))
+            q_digits = len(str(result["window_max"]))  # q can approach window_max
+            n_box_w = _digit_box_w(46, n_digits)
+            p_box_w = _digit_box_w(44, p_digits)
+            q_box_w = _digit_box_w(44, q_digits)
+            chip_w = _digit_box_w(34, p_digits)
+
+            # Rows fan out into up to GOLDBACH_VIZ_MAX_COLS columns instead of one long
+            # strip -- a single column left the diagram pinned to the top-left with a
+            # large blank area beside it once the window was sized to fit its content
+            # rather than stretched to fill the Toplevel (see _goldbach_ensure_viz_
+            # window's own note on why the canvas is no longer packed with fill/expand).
+            rows_per_col = GOLDBACH_VIZ_ROWS_PER_COL
+            cols = min(GOLDBACH_VIZ_MAX_COLS, max(1, -(-len(rows) // rows_per_col))) \
+                if rows else 1
+            rows_per_col_actual = -(-len(rows) // cols) if rows else 0
+
+            EQ_W, PLUS_W, GAP, COL_GAP = 16, 16, 8, 28
+            card_w = n_box_w + GAP + EQ_W + GAP + p_box_w + GAP + PLUS_W + GAP + q_box_w
+            grid_w = cols * card_w + (cols - 1) * COL_GAP
+
+            box_w = 230
+            canvas_w = max(
+                16 + box_w + 20 + grid_w + 16,
+                16 + box_w + 16 + 300,  # never narrower than a comfortable minimum
+            )
+            header_h = 106
             chips_h = 48 + chip_rows * 36 + (22 if len(chips) > len(chip_shown) else 0)
-            rows_h = 26 + len(rows) * 36 + (18 if result["rows_truncated"] else 0)
+            rows_h = 26 + rows_per_col_actual * 36 + (18 if result["rows_truncated"] else 0)
             footer_h = 60
             canvas_h = header_h + max(chips_h, rows_h) + footer_h
             canvas.configure(width=canvas_w, height=canvas_h)
@@ -6087,10 +6136,12 @@ def _build_gui():
             canvas.create_text(
                 16, 44, anchor="nw", font=("TkDefaultFont", 9), fill="#64748b",
                 width=canvas_w - 32, text=T("research_goldbach.viz_subheader"))
+            canvas.create_text(
+                16, 82, anchor="nw", font=("TkDefaultFont", 8), fill="#d97706",
+                text=T("research_goldbach.viz_legend_new_q"))
 
             top_y = header_h
 
-            box_w = 230
             canvas.create_rectangle(16, top_y, 16 + box_w, top_y + chips_h,
                                      outline="#2563eb", width=1.5, fill="#eff6ff")
             canvas.create_text(16 + box_w / 2, top_y + 16, font=("TkDefaultFont", 10, "bold"),
@@ -6098,7 +6149,7 @@ def _build_gui():
             canvas.create_text(
                 16 + box_w / 2, top_y + 32, font=("TkDefaultFont", 8), fill="#3b82f6",
                 text=T("research_goldbach.viz_old_base_subtitle", pmax=result["pmax"]))
-            chip_w, chip_h_px, gap = 34, 30, 6
+            chip_h_px, gap = 30, 6
             start_x = 16 + 12
             start_y = top_y + 46
             for i, p in enumerate(chip_shown):
@@ -6123,35 +6174,41 @@ def _build_gui():
                 right_x, row_y, anchor="nw", font=("TkDefaultFont", 10, "bold"),
                 width=canvas_w - right_x - 16,
                 text=T("research_goldbach.viz_segment_title", window_max=result["window_max"]))
-            row_y += 26
-            for row in rows:
+            grid_top_y = row_y + 26
+            for i, row in enumerate(rows):
+                col_idx = i // rows_per_col_actual if rows_per_col_actual else 0
+                within_idx = i % rows_per_col_actual if rows_per_col_actual else 0
+                cx = right_x + col_idx * (card_w + COL_GAP)
+                cy = grid_top_y + within_idx * 36
                 n = row["n"]
                 p = row["p"] if row["p"] is not None else "?"
                 q = row["q"] if row["q"] is not None else "?"
-                canvas.create_rectangle(right_x, row_y, right_x + 46, row_y + 26,
+                x = cx
+                canvas.create_rectangle(x, cy, x + n_box_w, cy + 26,
                                          fill="#0f172a", outline="")
-                canvas.create_text(right_x + 23, row_y + 13, fill="white",
+                canvas.create_text(x + n_box_w / 2, cy + 13, fill="white",
                                     font=("TkDefaultFont", 10, "bold"), text=str(n))
-                canvas.create_text(right_x + 60, row_y + 13, fill="#94a3b8", text="=")
-                canvas.create_rectangle(right_x + 74, row_y, right_x + 118, row_y + 26,
+                x += n_box_w + GAP
+                canvas.create_text(x + EQ_W / 2, cy + 13, fill="#94a3b8", text="=")
+                x += EQ_W + GAP
+                canvas.create_rectangle(x, cy, x + p_box_w, cy + 26,
                                          outline="#2563eb", width=1.5, fill="#dbeafe")
-                canvas.create_text(right_x + 96, row_y + 13, fill="#1d4ed8",
+                canvas.create_text(x + p_box_w / 2, cy + 13, fill="#1d4ed8",
                                     font=("TkDefaultFont", 10, "bold"), text=str(p))
-                canvas.create_text(right_x + 128, row_y + 13, fill="#94a3b8", text="+")
+                x += p_box_w + GAP
+                canvas.create_text(x + PLUS_W / 2, cy + 13, fill="#94a3b8", text="+")
+                x += PLUS_W + GAP
                 q_fill, q_outline = (
                     ("#fef3c7", "#d97706") if row["q_is_new"] else ("#dbeafe", "#2563eb"))
-                canvas.create_rectangle(right_x + 142, row_y, right_x + 186, row_y + 26,
+                canvas.create_rectangle(x, cy, x + q_box_w, cy + 26,
                                          outline=q_outline, width=1.5, fill=q_fill)
-                canvas.create_text(right_x + 164, row_y + 13, fill=q_outline,
+                canvas.create_text(x + q_box_w / 2, cy + 13, fill=q_outline,
                                     font=("TkDefaultFont", 10, "bold"), text=str(q))
-                if row["q_is_new"]:
-                    canvas.create_text(
-                        right_x + 198, row_y + 13, anchor="w", font=("TkDefaultFont", 8),
-                        fill="#d97706", text=T("research_goldbach.viz_q_new_note"))
-                row_y += 36
+            grid_bottom_y = grid_top_y + rows_per_col_actual * 36
             if result["rows_truncated"]:
                 canvas.create_text(
-                    right_x, row_y + 2, anchor="nw", font=("TkDefaultFont", 8), fill="#64748b",
+                    right_x, grid_bottom_y + 2, anchor="nw", font=("TkDefaultFont", 8),
+                    fill="#64748b",
                     text=T("research_goldbach.viz_rows_truncated",
                            shown=len(rows), total=result["segment_size"]))
 
@@ -6167,6 +6224,11 @@ def _build_gui():
                 footer_color = "#991b1b"
             canvas.create_text(16, footer_y, anchor="nw", font=("TkDefaultFont", 10, "bold"),
                                 fill=footer_color, width=canvas_w - 32, text=footer_text)
+
+            # Reset any size the user (or a previous, differently-sized diagram) left
+            # the Toplevel at, so it re-fits itself to THIS canvas's actual content
+            # instead of staying stretched -- see _goldbach_ensure_viz_window's note.
+            win.geometry("")
 
         def _build_research_gaps_tab(self):
             """Prime gap explorer (raw gaps + Andrica/Firoozbakht/Cramer overlays) --

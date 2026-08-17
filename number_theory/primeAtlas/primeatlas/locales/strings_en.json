@@ -57,6 +57,7 @@
   "research_goldbach.viz_more_primes": "+ {count} more",
   "research_goldbach.viz_segment_title": "Even numbers in window [4, {window_max}]",
   "research_goldbach.viz_q_new_note": "q > Pmax -- not needed for p",
+  "research_goldbach.viz_legend_new_q": "amber box for q = q > Pmax (outside the old base, not needed either way -- only p counts)",
   "research_goldbach.viz_rows_truncated": "(showing {shown} of {total} window rows)",
   "research_goldbach.viz_summary_covered": "Segment covered -- all {segment_size} new even numbers built from the old base alone.",
   "research_goldbach.viz_summary_void": "WARNING: no old-base decomposition for: {counterexamples}.",

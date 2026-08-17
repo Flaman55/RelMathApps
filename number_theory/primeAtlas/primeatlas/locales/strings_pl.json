@@ -57,6 +57,7 @@
   "research_goldbach.viz_more_primes": "+ {count} więcej",
   "research_goldbach.viz_segment_title": "Parzyste w oknie [4, {window_max}]",
   "research_goldbach.viz_q_new_note": "q > Pmax -- niepotrzebna dla p",
+  "research_goldbach.viz_legend_new_q": "bursztynowa ramka q = q > Pmax (spoza starej bazy, i tak niepotrzebna -- liczy się tylko p)",
   "research_goldbach.viz_rows_truncated": "(pokazano {shown} z {total} wierszy okna)",
   "research_goldbach.viz_summary_covered": "Segment pokryty -- wszystkie {segment_size} nowych parzystych zbudowane wyłącznie ze starej bazy.",
   "research_goldbach.viz_summary_void": "UWAGA: brak rozkładu ze starej bazy dla: {counterexamples}.",
