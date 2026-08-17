@@ -1,8 +1,13 @@
 """
 settings_tab.py -- SettingsTab, the tkinter widgets for the Settings tab: language
 switch, storage-path configuration, backup create/list, restore (diff-against-disk ->
-confirm -> checkpointed, pausable/resumable/cancellable regeneration job), and the
-full-database delete button.
+confirm -> checkpointed, pausable/resumable/cancellable regeneration job), the
+full-database delete button, and two narrower per-floor delete actions (one floor's
+prime+constellation data, or just that floor's constellations -- see FloorWiper in
+delete_manager.py). Laid out as a 3-tab Notebook -- Ogolne (language + path), Backup
+(backup/restore/delete, everything storage-affecting), Aktualizacje (currently just the
+optional-library installer; PrimeAtlas's own self-update is a stated future addition,
+not built yet) -- see _build_widgets' own docstring for why.
 
 This is the ONLY file in primeatlas/ that imports tkinter -- every other module in this
 package is pure logic, unit-tested without a display (see __init__.py's docstring).
@@ -58,7 +63,7 @@ from .restore_job import (
     RestoreJob, restore_checkpoint_path, delete_extra_files,
     STATUS_RUNNING, STATUS_PAUSED,
 )
-from .delete_manager import PortalWiper
+from .delete_manager import PortalWiper, FloorWiper
 from .i18n import Translator, SUPPORTED_LANGUAGES
 
 
@@ -111,6 +116,7 @@ class SettingsTab(ttk.Frame):
         self._refresh_backup_list()
         self._scan_incomplete_restores()
         self._refresh_libs_status()
+        self._refresh_floor_delete_list()
 
     # ---- language -----------------------------------------------------------------------
 
@@ -819,6 +825,112 @@ class SettingsTab(ttk.Frame):
         self.wsl["reload_primes_tree"]()
         self.wsl["reload_constellations_tree"]()
 
+    # ---- delete: single floor / that floor's constellations only -------------------------
+
+    def _current_floor_wiper(self):
+        # Same "rebuild on every call, don't cache" reasoning as
+        # _current_backup_store() -- always reflects whatever storage path is CURRENT.
+        return FloorWiper(self.wsl["get_portal_folder"]())
+
+    def _refresh_floor_delete_list(self):
+        """Repopulates the floor-picker combobox shared by both per-floor delete
+        buttons below -- called at tab-construction time and after every delete (a
+        just-emptied floor should disappear from the list, and one added by a
+        Generation run in the meantime should appear)."""
+        floors = self._current_floor_wiper().list_floors()
+        values = [f"10p{f}" for f in floors]
+        self.floor_delete_combo.configure(values=values)
+        current = self.floor_delete_var.get()
+        if current not in values:
+            self.floor_delete_var.set(values[0] if values else "")
+
+    def _selected_delete_floor(self):
+        """Parses the combobox's "10p{N}" label back into the int base_exponent, or
+        None if nothing valid is selected -- shared by both delete buttons below so
+        the "nothing selected" / "bad value" error is worded identically either way."""
+        label = self.floor_delete_var.get().strip()
+        if not label.startswith("10p") or not label[3:].isdigit():
+            return None
+        return int(label[3:])
+
+    def _on_delete_floor_clicked(self):
+        """Deletes ONE floor entirely (10p{N}/source_primes/ AND
+        10p{N}/constellations/ together, since they share that one directory) plus
+        that floor's own benchmark_log.csv rows -- see FloorWiper.execute_delete_floor's
+        own docstring. Distinct from the whole-database delete above: this clears a
+        SINGLE floor someone wants to force-regenerate, without touching any other
+        floor's data."""
+        base_exponent = self._selected_delete_floor()
+        if base_exponent is None:
+            messagebox.showinfo(self.T("settings.delete_title"),
+                                 self.T("settings.delete_floor_select_first"))
+            return
+        wiper = self._current_floor_wiper()
+        window_count, hit_count = wiper.plan_floor(base_exponent)
+        if window_count == 0 and hit_count == 0:
+            messagebox.showinfo(self.T("settings.delete_title"),
+                                 self.T("settings.delete_already_empty"))
+            return
+        if not messagebox.askyesno(
+                self.T("settings.delete_floor_dialog_title"),
+                self.T("settings.delete_floor_confirm", base_exponent=base_exponent,
+                        windows=window_count, hits=hit_count)):
+            return
+        ok, error = wiper.execute_delete_floor(base_exponent)
+        self._report_floor_delete_result(base_exponent, ok, error, constellations_only=False)
+
+    def _on_delete_floor_constellations_clicked(self):
+        """Deletes ONLY the selected floor's constellations/ subfolder -- its
+        source_primes/ (and that floor's own benchmark_log.csv rows, which describe
+        prime generation, not constellation-finding) are left untouched. Useful to
+        force a clean re-run of constellation_finder_v1.py -- e.g. after the pattern
+        catalog changes -- without regenerating that floor's (often much more
+        expensive to produce) prime data."""
+        base_exponent = self._selected_delete_floor()
+        if base_exponent is None:
+            messagebox.showinfo(self.T("settings.delete_title"),
+                                 self.T("settings.delete_floor_select_first"))
+            return
+        wiper = self._current_floor_wiper()
+        hit_count = wiper.plan_constellations(base_exponent)
+        if hit_count == 0:
+            messagebox.showinfo(self.T("settings.delete_title"),
+                                 self.T("settings.delete_constellations_already_empty",
+                                         base_exponent=base_exponent))
+            return
+        if not messagebox.askyesno(
+                self.T("settings.delete_floor_dialog_title"),
+                self.T("settings.delete_constellations_confirm",
+                        base_exponent=base_exponent, hits=hit_count)):
+            return
+        ok, error = wiper.execute_delete_constellations(base_exponent)
+        self._report_floor_delete_result(base_exponent, ok, error, constellations_only=True)
+
+    def _report_floor_delete_result(self, base_exponent, ok, error, constellations_only):
+        if error is not None:
+            text = self.T("settings.delete_floor_error", base_exponent=base_exponent, error=error)
+            self._restore_log(text + "\n")
+            messagebox.showwarning(self.T("settings.delete_title"), text)
+        elif ok:
+            key = ("settings.delete_constellations_done" if constellations_only
+                   else "settings.delete_floor_done")
+            text = self.T(key, base_exponent=base_exponent)
+            self._restore_log(text + "\n")
+            messagebox.showinfo(self.T("settings.delete_title"), text)
+        # ok=False, error=None means "nothing there" -- already handled by the
+        # plan_floor/plan_constellations==0 early-return in the callers above, so
+        # there's nothing further to report here (execute_* only returns this
+        # combination if the folder vanished between the plan and the click, an
+        # acceptable, silent no-op rather than a spurious error).
+        self._refresh_floor_delete_list()
+        self._refresh_backup_list()
+        self._scan_incomplete_restores()
+        # Same reasoning as _report_delete_result's own call to these two -- the
+        # Prime numbers / Constellations tabs have no way to notice a floor's files
+        # disappearing on their own.
+        self.wsl["reload_primes_tree"]()
+        self.wsl["reload_constellations_tree"]()
+
     # ---- optional libraries (sympy installer, Faza 2b) -----------------------------------
 
     def _refresh_libs_status(self):
@@ -886,7 +998,36 @@ class SettingsTab(ttk.Frame):
     # ---- widget construction ---------------------------------------------------------------
 
     def _build_widgets(self):
+        """Artur, 2026-08-17: everything used to be one long column of Labelframes in
+        a single scroll-less tab -- fine while there were only 3-4 sections, but by
+        the time backup/restore/delete grew alongside language+path+libs, the bottom
+        sections (the whole-database delete button in particular) ran off the bottom
+        of the window with no way to reach them ("nie wszystko sie miesci"). Split
+        into a Notebook with three sub-tabs instead of trying to shrink anything:
+        Ogolne (language + storage path -- the two settings someone touches once and
+        rarely again), Backup (backup/restore/delete, all storage-destructive or
+        storage-preserving operations grouped together), Aktualizacje (currently just
+        the optional-library installer; PrimeAtlas's own self-update is a stated
+        FUTURE addition, not built yet -- see _build_updates_tab's own note)."""
         outer = ttk.Frame(self)
+        outer.pack(fill="both", expand=True, padx=6, pady=6)
+
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill="both", expand=True)
+
+        general_tab = ttk.Frame(notebook)
+        backup_tab = ttk.Frame(notebook)
+        updates_tab = ttk.Frame(notebook)
+        notebook.add(general_tab, text=self.T("settings.tab_general"))
+        notebook.add(backup_tab, text=self.T("settings.tab_backup"))
+        notebook.add(updates_tab, text=self.T("settings.tab_updates"))
+
+        self._build_general_tab(general_tab)
+        self._build_backup_tab(backup_tab)
+        self._build_updates_tab(updates_tab)
+
+    def _build_general_tab(self, parent):
+        outer = ttk.Frame(parent)
         outer.pack(fill="both", expand=True, padx=6, pady=6)
 
         lang_frame = ttk.Labelframe(outer, text=self.T("settings.language_frame"))
@@ -922,6 +1063,10 @@ class SettingsTab(ttk.Frame):
         self.path_status_var = tk.StringVar(value=self._path_status_text())
         ttk.Label(path_frame, textvariable=self.path_status_var, foreground="#555555").grid(
             row=1, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
+
+    def _build_backup_tab(self, parent):
+        outer = ttk.Frame(parent)
+        outer.pack(fill="both", expand=True, padx=6, pady=6)
 
         backup_frame = ttk.Labelframe(outer, text=self.T("settings.backup_frame"))
         backup_frame.pack(fill="x", pady=(0, 8))
@@ -992,6 +1137,47 @@ class SettingsTab(ttk.Frame):
             background="#111318", foreground="#d8d8d8")
         self.restore_output.pack(fill="both", expand=True, padx=6, pady=(4, 6))
 
+        # Per-floor delete -- narrower than the whole-database delete below: clears
+        # ONE floor (source_primes + constellations together) to force a clean
+        # regeneration, or ONLY that floor's constellations (keeping its prime data)
+        # to force a clean constellation_finder_v1.py re-run. Shares ONE floor picker
+        # between both buttons -- see _selected_delete_floor()'s own docstring.
+        floor_delete_frame = ttk.Labelframe(outer, text=self.T("settings.delete_floor_frame"))
+        floor_delete_frame.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            floor_delete_frame, text=self.T("settings.delete_floor_hint"),
+            foreground="#555", wraplength=760, justify="left").pack(
+            anchor="w", padx=6, pady=(6, 4))
+        floor_pick_row = ttk.Frame(floor_delete_frame)
+        floor_pick_row.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Label(floor_pick_row, text=self.T("settings.delete_floor_label")).pack(side="left")
+        self.floor_delete_var = tk.StringVar(value="")
+        self.floor_delete_combo = ttk.Combobox(
+            floor_pick_row, textvariable=self.floor_delete_var, state="readonly", width=12)
+        self.floor_delete_combo.pack(side="left", padx=(6, 6))
+        ttk.Button(floor_pick_row, text=self.T("common.refresh"),
+                   command=self._refresh_floor_delete_list).pack(side="left")
+        floor_delete_btn_row = ttk.Frame(floor_delete_frame)
+        floor_delete_btn_row.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(floor_delete_btn_row, text=self.T("settings.delete_floor_button"),
+                   command=self._on_delete_floor_clicked).pack(side="left")
+        ttk.Button(floor_delete_btn_row, text=self.T("settings.delete_constellations_button"),
+                   command=self._on_delete_floor_constellations_clicked).pack(
+            side="left", padx=(6, 0))
+
+        delete_frame = ttk.Labelframe(outer, text=self.T("settings.delete_frame"))
+        delete_frame.pack(fill="x")
+        ttk.Label(
+            delete_frame, text=self.T("settings.delete_warning"),
+            foreground="#a33", wraplength=760, justify="left").pack(
+            anchor="w", padx=6, pady=(6, 4))
+        ttk.Button(delete_frame, text=self.T("settings.delete_button"),
+                   command=self._on_delete_clicked).pack(anchor="w", padx=6, pady=(0, 6))
+
+    def _build_updates_tab(self, parent):
+        outer = ttk.Frame(parent)
+        outer.pack(fill="both", expand=True, padx=6, pady=6)
+
         libs_frame = ttk.Labelframe(outer, text=self.T("settings.libs_frame"))
         libs_frame.pack(fill="x", pady=(0, 8))
         ttk.Label(libs_frame, text=self.T("settings.libs_hint"),
@@ -1012,11 +1198,12 @@ class SettingsTab(ttk.Frame):
             background="#111318", foreground="#d8d8d8")
         self.libs_output.pack(fill="x", padx=6, pady=(0, 6))
 
-        delete_frame = ttk.Labelframe(outer, text=self.T("settings.delete_frame"))
-        delete_frame.pack(fill="x")
-        ttk.Label(
-            delete_frame, text=self.T("settings.delete_warning"),
-            foreground="#a33", wraplength=760, justify="left").pack(
-            anchor="w", padx=6, pady=(6, 4))
-        ttk.Button(delete_frame, text=self.T("settings.delete_button"),
-                   command=self._on_delete_clicked).pack(anchor="w", padx=6, pady=(0, 6))
+        # PrimeAtlas's own self-update (checking/downloading a newer app version) is
+        # a stated FUTURE addition, not built yet -- Artur, 2026-08-17: "w przyszlosci
+        # aktualizacja atlasu ale nie teraz". This tab is named for where that will
+        # live once it exists; for now it just holds the optional-library installer
+        # above, plus this note so the empty space below isn't mistaken for "nothing
+        # planned here".
+        ttk.Label(outer, text=self.T("settings.updates_future_note"),
+                  foreground="#777", wraplength=760, justify="left").pack(
+            anchor="w", pady=(4, 0))
