@@ -6106,13 +6106,16 @@ def _build_gui():
 
         def _goldbach_show_decomposition_detail(self, result):
             """Renders one goldbach_all_decompositions() result into the detail
-            Toplevel: every (p, q) pair for the requested n ON THIS PAGE, tagged where
-            q lies outside the old base (q > pmax) the same amber-ish framing as the
-            diagram's "new" chips, plus a headline verdict on whether an old-base-only
-            pair (both p, q <= pmax) exists ANYWHERE in the FULL list -- computed over
-            the whole scan regardless of which page is showing, answering Artur's
-            actual question directly instead of leaving him to eyeball the rows. Page
-            nav (Prev/Next/goto) mirrors the sums-grid row nav in the main diagram."""
+            Toplevel: every (p, q) pair for the requested n ON THIS PAGE, plus a
+            headline verdict on buildableFromBase(Pmax, n) [Constructive.lean] --
+            computed over the whole scan regardless of which page is showing. Per
+            Artur's correction ("popraw tak by było zgodne z leanem"): Lean's own
+            buildableFromBase only ever bounds p, never q (see goldbach_window.py's
+            module docstring) -- so the per-row "Skad q" column is PURELY
+            INFORMATIONAL (which prime was already known before this window vs first
+            appears inside it), never a pass/fail signal. The verdict is about p_in_base
+            across the whole list, not about any individual q. Page nav (Prev/Next/
+            goto) mirrors the sums-grid row nav in the main diagram."""
             win = self._goldbach_ensure_decompose_window()
             win.title(T("research_goldbach.decompose_window_title", n=result["n"]))
             win.deiconify()
@@ -6121,25 +6124,27 @@ def _build_gui():
             self._goldbach_decompose_last_result = result
 
             pmax = result["pmax"]
-            if result["old_base_sufficient"]:
+            if result["buildable_from_base"]:
                 self.goldbach_decompose_verdict_var.set(
-                    T("research_goldbach.decompose_verdict_yes", pmax=pmax))
+                    T("research_goldbach.decompose_verdict_yes",
+                      pmax=pmax, count=result["count"]))
             else:
                 self.goldbach_decompose_verdict_var.set(
-                    T("research_goldbach.decompose_verdict_no", pmax=pmax))
+                    T("research_goldbach.decompose_verdict_no",
+                      pmax=pmax, count=result["count"]))
             self.goldbach_decompose_count_var.set(
                 T("research_goldbach.decompose_count", count=result["count"]))
 
             tree = self.goldbach_decompose_tree
             tree.delete(*tree.get_children())
-            yes_label = T("research_goldbach.decompose_base_yes")
-            no_label = T("research_goldbach.decompose_base_no")
+            old_label = T("research_goldbach.decompose_q_old")
+            new_label = T("research_goldbach.decompose_q_new")
             for pair in result["decompositions"]:
-                is_old = pair["both_old_base"]
+                q_old = pair["q_in_base"]
                 tree.insert(
                     "", "end", values=(pair["p"], pair["q"],
-                                        yes_label if is_old else no_label),
-                    tags=() if is_old else ("new",))
+                                        old_label if q_old else new_label),
+                    tags=() if q_old else ("new",))
 
             page = result.get("page", 0)
             total_pages = max(1, -(-result["count"] // GOLDBACH_DECOMPOSE_ROW_CAP))

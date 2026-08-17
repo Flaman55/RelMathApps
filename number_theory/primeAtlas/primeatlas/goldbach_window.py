@@ -46,6 +46,20 @@ not just of the unbounded hasGoldbachRep -- the two framings coincide exactly on
 window, which is itself a small confirmation that the translation below is faithful to
 the source.
 
+IMPORTANT, learned the hard way (see git history on this file): buildableFromBase in
+Constructive.lean only bounds p, the SMALLER summand -- `def buildableFromBase (B n) :=
+exists p q, p <= B and p.Prime and q.Prime and p + q = n`. It says NOTHING about q. So
+buildableFromBase(Pmax, n) holds for EVERY prime pair p <= q summing to any n in this
+window, not just ones where q ALSO happens to be <= Pmax -- that "both <= Pmax" idea
+(and the "prefer a fully-old-base witness" search, and "old base insufficient" framing
+that briefly lived in this file) was never what the theorem says; it was an invented,
+stricter, unproven condition that crept in from reading too much into the "STARA BAZA"
+visualization. Whether q happens to be <= Pmax or not is purely INFORMATIONAL (which
+primes were already known before this window vs first appear inside it) -- it is never
+a pass/fail condition. Every function below reflects this: only p is ever checked
+against Pmax for buildableFromBase purposes; q's relationship to Pmax is reported
+separately and is never treated as a requirement.
+
 The GUI's number field is labeled "n" (an arbitrary integer), not "Pmax" -- Pmax is
 DERIVED as the largest prime <= n (see largest_prime_le()), matching the paper's own
 convention that Pmax must itself be a genuine prime, without requiring the person to
@@ -91,71 +105,29 @@ def largest_prime_le(is_prime, n):
 def _smallest_witness(is_prime, n):
     """Smallest prime p with p <= n//2 and n-p also prime, or (None, None) if no such p
     exists. The single witness-search primitive shared by check_window()'s "touch_once"
-    branch and window_rows()'s counterexample/coverage check below, so both really do
-    run "the exact same algorithm", not just similarly-shaped code. window_rows()'s
-    DISPLAYED witness now prefers _old_base_witness (below) over this one -- this stays
-    the ground truth for "does n have ANY Goldbach representation at all" (unbounded p),
-    which is exactly windowCovered's own claim, not restricted to the old base."""
+    branch and window_rows() below, so both really do run "the exact same algorithm",
+    not just similarly-shaped code. For any n <= 2*Pmax this p is AUTOMATICALLY <= Pmax
+    (see module docstring) -- so this smallest witness is, unconditionally, a live
+    witness of buildableFromBase(Pmax, n) too. No preference or special-casing needed;
+    an earlier version of this file searched for a witness where q ALSO stayed <= Pmax,
+    which was solving a condition Lean's buildableFromBase never asked for."""
     for p in range(2, n // 2 + 1):
         if is_prime[p] and is_prime[n - p]:
             return p, n - p
     return None, None
 
 
-def _old_base_witness(is_prime, n, pmax):
-    """Prefers a witness pair (p, q) that stays ENTIRELY inside the old base (both
-    p <= pmax and q <= pmax), per Artur's own follow-up after the decompose checker
-    confirmed that the plain smallest-p search (_smallest_witness) can land on a pair
-    where q > pmax even when a fully-old-base pair exists elsewhere in the combination
-    list (n=1012 against Pmax=997: smallest witness is 3+1009, but 29+983 also works
-    and stays inside the base) -- that was a search-order artifact, not evidence the
-    old base was actually insufficient. Since this is always called with n <= 2*Pmax
-    (window_rows' own invariant), a fully-old-base pair needs p in the NARROW,
-    directly-computable range [max(2, n - pmax), n // 2] (q = n - p <= pmax rearranges
-    to p >= n - pmax; p <= q rearranges to p <= n // 2) -- searching exactly that range
-    instead of scanning from p=2 is both correct AND avoids doing needless extra work
-    testing p's that could only ever produce a q > pmax anyway.
-
-    Falls back to _smallest_witness (the unrestricted search) only when no such pair
-    exists in that range -- when the fallback finds something, its q is GUARANTEED
-    > pmax (its p, by construction, is below the range's lower bound n - pmax, so
-    q = n - p > pmax), so "the fallback pair actually needs a new prime" is no longer
-    a search-order artifact but a real fact about n. Returns (p, q, used_fallback);
-    (None, None, True) if n has no Goldbach representation at all (mirrors
-    _smallest_witness's own (None, None))."""
-    lo = max(2, n - pmax)
-    hi = n // 2
-    for p in range(lo, hi + 1):
-        if is_prime[p] and is_prime[n - p]:
-            return p, n - p, False
-    p, q = _smallest_witness(is_prime, n)
-    return p, q, True
-
-
 def window_rows(is_prime, Pmax, row_cap=None, row_offset=0):
     """Computes windowCovered(Pmax) (Structural.lean) -- every even n in [4, 2*Pmax] --
     using an EXTERNALLY supplied is_prime array (e.g. sourced from on-disk storage, see
-    prime_atlas_v1.read_is_prime_from_storage) instead of building a fresh sieve. The
-    "covered"/"counterexamples" verdict runs the exact same touch_once witness search
-    as check_window()'s touch_once branch (_smallest_witness, unbounded p) against a
-    caller-supplied is_prime instead of one built internally -- that's exactly
-    windowCovered's own claim, existence of ANY representation, not restricted to the
-    old base. This is the Goldbach tab's Wizualizacja feature, per Artur's instruction
-    that "wizualizacja zawsze siedzi w oknie 4-2Pmax" (the visualization always lives
-    inside the [4, 2*Pmax] window -- the SAME window "Sprawdz okno" checks, not a
-    separate cascade step). `is_prime` must be long enough to index up to 2*Pmax.
-
-    The DISPLAYED witness per row, though, comes from _old_base_witness (not
-    _smallest_witness directly) -- per Artur's follow-up once the decompose checker
-    showed the plain smallest-p search can land on a q > Pmax pair even when a fully
-    old-base pair (both p, q <= Pmax) exists elsewhere: "skoro jednak granica 2Pmax
-    jest wystarczajaca to w wizualizacji pokazujmy sumy z bazy, a nie z najmniejszych
-    czynnikow". So the diagram now shows the old-base pair whenever one exists, and
-    only falls back to (and flags as "new") a q > Pmax pair when NO fully-old-base
-    pair exists at all -- see _old_base_witness's own docstring for why that fallback
-    case is then a real fact about n, not a search-order artifact. This does NOT
-    change "covered"/"counterexamples" at all -- those still come from the unbounded
-    _smallest_witness search that _old_base_witness itself falls back to.
+    prime_atlas_v1.read_is_prime_from_storage) instead of building a fresh sieve. Runs
+    the exact same touch_once witness search as check_window()'s touch_once branch
+    (_smallest_witness), just against a caller-supplied is_prime instead of one built
+    internally -- this is the Goldbach tab's Wizualizacja feature, per Artur's
+    instruction that "wizualizacja zawsze siedzi w oknie 4-2Pmax" (the visualization
+    always lives inside the [4, 2*Pmax] window -- the SAME window "Sprawdz okno"
+    checks, not a separate cascade step). `is_prime` must be long enough to index up to
+    2*Pmax.
 
     `row_cap` limits how many per-n rows are returned (for GUI display); `row_offset`
     skips that many n's (in window order) before collection starts -- together these
@@ -169,10 +141,13 @@ def window_rows(is_prime, Pmax, row_cap=None, row_offset=0):
     Returns {"pmax":, "window_max":, "old_base_primes": [...], "covered":,
     "counterexamples": [...], "segment_size": int, "row_offset": int,
     "rows": [{"n":,"p":,"q":,"q_is_new": bool}, ...], "rows_truncated": bool} --
-    "old_base_primes" is every prime <= Pmax; "q_is_new" now means "no fully-old-base
-    pair exists for this n at all" (see above), not just "the smallest-p search
-    happened to land outside the base"; "rows_truncated" means there are more rows
-    AFTER this page (row_offset + len(rows) < segment_size), i.e. whether a "next
+    "old_base_primes" is every prime <= Pmax (the frozen base every p is drawn from,
+    automatically -- see the module docstring's note on p <= Pmax, a PROVEN fact for
+    every n in this window, not merely observed); "q_is_new" flags q > Pmax --
+    PURELY INFORMATIONAL (which prime first appears inside this window vs. was already
+    known before it), never a pass/fail signal: buildableFromBase(Pmax, n) holds
+    regardless, via p, for every single row here; "rows_truncated" means there are more
+    rows AFTER this page (row_offset + len(rows) < segment_size), i.e. whether a "next
     page" would return anything."""
     if Pmax < 2:
         raise ValueError("Pmax must be >= 2")
@@ -184,13 +159,13 @@ def window_rows(is_prime, Pmax, row_cap=None, row_offset=0):
     for n in range(4, window_max + 1, 2):
         idx = segment_size  # 0-based position of n within the window, before increment
         segment_size += 1
-        p_found, q_found, used_fallback = _old_base_witness(is_prime, n, Pmax)
+        p_found, q_found = _smallest_witness(is_prime, n)
         if p_found is None:
             counterexamples.append(n)
         if idx >= row_offset and (row_cap is None or len(rows) < row_cap):
             rows.append({
                 "n": n, "p": p_found, "q": q_found,
-                "q_is_new": (used_fallback and q_found is not None),
+                "q_is_new": (q_found is not None and q_found > Pmax),
             })
     return {
         "pmax": Pmax, "window_max": window_max, "old_base_primes": old_base_primes,
@@ -202,54 +177,63 @@ def window_rows(is_prime, Pmax, row_cap=None, row_offset=0):
 
 def all_decompositions(is_prime, n, pmax=None, cap=None, offset=0):
     """Exhaustively lists EVERY prime pair (p, q) with p <= q and p + q = n -- unlike
-    _smallest_witness/_old_base_witness (which stop at the first hit), this is the
-    "sliding window" scan Artur asked for: slide p from 2 up to n//2 and record every
-    hit, so it's possible to see whether a SINGLE witness happening to use a "new"
-    prime (q > Pmax) was actually forced, or whether an old-base-only (p <= pmax AND
-    q <= pmax) decomposition exists elsewhere in the list.
+    _smallest_witness (which stops at the first hit), this is the "sliding window"
+    scan Artur asked for: slide p from 2 up to n//2 and record every hit.
 
     `is_prime` must be long enough to index up to n (i.e. len(is_prime) > n). `pmax`
-    is optional context (the anchor to flag pairs against, typically the currently
-    displayed window's Pmax) -- when given, each pair is flagged "both_old_base":
-    p <= pmax and q <= pmax; when omitted, both_old_base is None for every pair (no
-    base to compare against, and the sort below becomes a no-op since every pair then
-    shares the same key).
+    is optional context (typically the currently displayed window's Pmax) -- when
+    given, each pair is flagged with TWO SEPARATE, independent facts:
 
-    The full pair list is sorted old-base pairs FIRST (both_old_base=True before
-    False), each group kept in its original p-increasing order (Python's sort is
-    stable) -- per Artur, after checking n = window_max = 2*Pmax by hand: that n has
-    EXACTLY ONE old-base pair, (Pmax, Pmax), which without this sort was the very
-    last of 53364 entries (page 178 of 178) -- putting it last in a p-ordered list is
-    correct but useless for actually finding it. `cap`/`offset` then page over this
-    REORDERED list (mirrors window_rows' row_cap/row_offset -- same "GUI needs
-    Prev/Next/goto over a potentially huge list" need). The verdict
-    (old_base_sufficient) and total count are still computed over the FULL scan
-    regardless of cap/offset, same "verdict always full, display can be partial"
-    split as window_rows().
+      "p_in_base": p <= pmax -- this is EXACTLY Lean's buildableFromBase(pmax, n)
+        criterion (Constructive.lean: `exists p q, p <= B and ... and p + q = n`,
+        which bounds ONLY p). For any n <= 2*pmax this is a PROVEN fact (p <= n/2 <=
+        pmax, pure arithmetic -- see module docstring), so it will be True for every
+        single pair whenever n is inside the window pmax itself defines. It can
+        genuinely be False when probing an n OUTSIDE that window (n > 2*pmax), which
+        is allowed here since the decompose feature lets Artur type any n.
+
+      "q_in_base": q <= pmax -- PURELY INFORMATIONAL (whether this particular prime
+        was already known before this window or first appears inside it). NOT part
+        of buildableFromBase, never a requirement -- Lean's theorem says nothing
+        about q. An earlier version of this file collapsed both facts into one
+        "both_old_base" flag and required BOTH to hold, which was never what
+        buildableFromBase actually says (see module docstring's own note on this).
+
+    `cap`/`offset` page over the pair list, in its natural p-increasing order (mirrors
+    window_rows' row_cap/row_offset -- same "GUI needs Prev/Next/goto over a
+    potentially huge list" need, since a large n can have tens of thousands of pairs).
+    The verdict ("buildable_from_base") and total count are still computed over the
+    FULL scan regardless of cap/offset, same "verdict always full, display can be
+    partial" split as window_rows().
 
     Returns {"n":, "pmax":, "count": int (total pairs found), "offset": int,
-    "decompositions": [{"p":, "q":, "both_old_base": bool|None}, ...],
-    "old_base_sufficient": bool|None, "truncated": bool (more pairs exist after this
-    page, i.e. whether a "next page" would return anything)}."""
+    "decompositions": [{"p":, "q":, "p_in_base": bool|None, "q_in_base": bool|None},
+    ...], "buildable_from_base": bool|None (True iff ANY pair has p_in_base=True --
+    for n <= 2*pmax this is equivalent to count > 0, i.e. to windowCovered's own
+    verdict for that n), "truncated": bool (more pairs exist after this page)}."""
     if n < 4 or n % 2 != 0:
         raise ValueError("n must be even and >= 4")
     if len(is_prime) <= n:
         raise ValueError("is_prime array too short for n")
-    pairs = []
-    old_base_sufficient = False if pmax is not None else None
+    decompositions = []
+    count = 0
+    buildable_from_base = False if pmax is not None else None
     for p in range(2, n // 2 + 1):
         if is_prime[p] and is_prime[n - p]:
             q = n - p
-            both_old_base = (p <= pmax and q <= pmax) if pmax is not None else None
-            if both_old_base:
-                old_base_sufficient = True
-            pairs.append({"p": p, "q": q, "both_old_base": both_old_base})
-    count = len(pairs)
-    pairs.sort(key=lambda pair: 0 if pair["both_old_base"] else 1)
-    decompositions = pairs[offset:offset + cap] if cap is not None else pairs[offset:]
+            idx = count  # 0-based position of this pair, before increment
+            count += 1
+            p_in_base = (p <= pmax) if pmax is not None else None
+            q_in_base = (q <= pmax) if pmax is not None else None
+            if p_in_base:
+                buildable_from_base = True
+            if idx >= offset and (cap is None or len(decompositions) < cap):
+                decompositions.append({
+                    "p": p, "q": q, "p_in_base": p_in_base, "q_in_base": q_in_base,
+                })
     return {
         "n": n, "pmax": pmax, "count": count, "offset": offset,
-        "decompositions": decompositions, "old_base_sufficient": old_base_sufficient,
+        "decompositions": decompositions, "buildable_from_base": buildable_from_base,
         "truncated": (offset + len(decompositions) < count),
     }
 
