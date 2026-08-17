@@ -199,9 +199,18 @@ def all_decompositions(is_prime, n, pmax=None, cap=None, offset=0):
         "both_old_base" flag and required BOTH to hold, which was never what
         buildableFromBase actually says (see module docstring's own note on this).
 
-    `cap`/`offset` page over the pair list, in its natural p-increasing order (mirrors
-    window_rows' row_cap/row_offset -- same "GUI needs Prev/Next/goto over a
-    potentially huge list" need, since a large n can have tens of thousands of pairs).
+    `cap`/`offset` page over the pair list. Pairs are grouped q_in_base=True first,
+    then q_in_base=False, ascending p within each group (mirrors window_rows'
+    row_cap/row_offset -- same "GUI needs Prev/Next/goto over a potentially huge
+    list" need, since a large n can have tens of thousands of pairs). Artur,
+    2026-08-17: since p_in_base is trivially True for EVERY pair whenever n sits
+    inside the window pmax defines (see the "p_in_base" paragraph above -- p is
+    only ever enumerated up to n/2, and n <= 2*pmax means n/2 <= pmax always), a
+    sort on p_in_base would be completely vacuous -- nothing to distinguish, every
+    row already qualifies. q_in_base is the one property that genuinely varies
+    pair to pair, so that is what groups the list -- purely a display convenience,
+    carrying no bearing on the buildable_from_base verdict below (which is already
+    decided by p alone, identically regardless of how the list is ordered).
     The verdict ("buildable_from_base") and total count are still computed over the
     FULL scan regardless of cap/offset, same "verdict always full, display can be
     partial" split as window_rows().
@@ -215,22 +224,27 @@ def all_decompositions(is_prime, n, pmax=None, cap=None, offset=0):
         raise ValueError("n must be even and >= 4")
     if len(is_prime) <= n:
         raise ValueError("is_prime array too short for n")
-    decompositions = []
-    count = 0
-    buildable_from_base = False if pmax is not None else None
+    all_pairs = []
     for p in range(2, n // 2 + 1):
         if is_prime[p] and is_prime[n - p]:
             q = n - p
-            idx = count  # 0-based position of this pair, before increment
-            count += 1
             p_in_base = (p <= pmax) if pmax is not None else None
             q_in_base = (q <= pmax) if pmax is not None else None
-            if p_in_base:
-                buildable_from_base = True
-            if idx >= offset and (cap is None or len(decompositions) < cap):
-                decompositions.append({
-                    "p": p, "q": q, "p_in_base": p_in_base, "q_in_base": q_in_base,
-                })
+            all_pairs.append((p, q, p_in_base, q_in_base))
+    count = len(all_pairs)
+    buildable_from_base = (
+        any(pair[2] for pair in all_pairs) if pmax is not None else None
+    )
+    # Group on q_in_base (True group first), ascending p within each group -- see
+    # the docstring paragraph above for why p_in_base itself is never a useful sort
+    # key here. When pmax is None, q_in_base is None for every pair, so this key
+    # collapses to a no-op and ordered == all_pairs' natural p-ascending order.
+    ordered = sorted(all_pairs, key=lambda pair: (0 if pair[3] else 1, pair[0]))
+    page = ordered[offset:offset + cap] if cap is not None else ordered[offset:]
+    decompositions = [
+        {"p": p, "q": q, "p_in_base": p_in_base, "q_in_base": q_in_base}
+        for (p, q, p_in_base, q_in_base) in page
+    ]
     return {
         "n": n, "pmax": pmax, "count": count, "offset": offset,
         "decompositions": decompositions, "buildable_from_base": buildable_from_base,
