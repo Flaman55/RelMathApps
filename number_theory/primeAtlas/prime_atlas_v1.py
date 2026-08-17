@@ -7901,8 +7901,6 @@ def _build_gui():
                 iterations = _eval_quick_number(self.quick_iterations_var.get()) or 1
                 width_mult = _eval_quick_number(self.quick_explore_width_var.get()) or 1
                 window_count_per_run = width_mult
-                iteration_width = width_mult * QUICK_GEN_MAX_WINDOW_WIDTH
-                iterations_total = iterations * iteration_width
                 existing_count = find_continuation_target_idx(
                     PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
                 if floor_value < LOW_FLOOR_CUTOFF:
@@ -7938,10 +7936,57 @@ def _build_gui():
                             existing_count=0, added_count=1))
                         self._apply_loop_params_and_run(floor_value, 1, 1)
                         return
+                # Floor >= LOW_FLOOR_CUTOFF (arrived here directly, or just rolled forward
+                # from a completed low-floor batch above): roll forward through however
+                # many CONSECUTIVE floors are already full -- the low-floor block above
+                # only ever resolves the 0-6 -> 7 jump once, so without this loop, typing
+                # (or Auto-detecting) any floor >= 7 that happens to already be complete
+                # hit the exact bug reported: Exploration fell straight through to
+                # _apply_loop_params_and_run below with no completion check at all (unlike
+                # Floor mode's remaining<=0 guard a few branches up), so it kept writing
+                # more windows into an ALREADY-COMPLETE floor's folder -- silently filing
+                # data that numerically belongs to the NEXT floor under this one's name.
+                # Bounded at 1000 advances purely as a runaway-loop guard; floor capacity
+                # grows fast enough (see _floor_window_count) that a real run should never
+                # get remotely close to that.
+                floor_window_count = _floor_window_count(floor_value)
+                remaining = floor_window_count - existing_count
+                advances = 0
+                while remaining <= 0 and advances < 1000:
+                    floor_value += 1
+                    self.quick_explore_floor_var.set(str(floor_value))
+                    existing_count = find_continuation_target_idx(
+                        PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                    floor_window_count = _floor_window_count(floor_value)
+                    remaining = floor_window_count - existing_count
+                    advances += 1
+                if remaining <= 0:
+                    self.quick_status_var.set(T(
+                        "quick.status_floor_full", floor=floor_value,
+                        existing_count=existing_count, floor_window_count=floor_window_count))
+                    return
+                # Same reasoning as Floor mode's capped_width just above: base_exponent is
+                # FIXED for an entire orchestrator run (see _apply_loop_params_and_run's own
+                # docstring), so a single launch can never itself cross from this floor into
+                # the next one -- cap the requested iterations*window_count_per_run down to
+                # whatever this floor actually has left, rather than letting it overshoot.
+                requested_total = iterations * window_count_per_run
+                truncated = requested_total > remaining
+                if truncated:
+                    if window_count_per_run <= remaining:
+                        iterations = max(1, remaining // window_count_per_run)
+                    else:
+                        window_count_per_run = remaining
+                        iterations = 1
+                iteration_width = window_count_per_run * QUICK_GEN_MAX_WINDOW_WIDTH
+                iterations_total = iterations * iteration_width
                 self.quick_status_var.set(T(
                     "quick.summary_explore", floor=floor_value, iterations=iterations,
-                    width_mult=width_mult, iterations_total=f"{iterations_total:,}",
-                    existing_count=existing_count, added_count=iterations * window_count_per_run))
+                    width_mult=window_count_per_run, iterations_total=f"{iterations_total:,}",
+                    existing_count=existing_count, added_count=iterations * window_count_per_run)
+                    + (T("quick.note_truncated_floor_boundary",
+                          boundary=f"{10 ** (floor_value + 1):,}")
+                       if truncated else ""))
                 self._apply_loop_params_and_run(floor_value, iterations, window_count_per_run)
             else:
                 # mode == "primesieve": From + Width (NOT From/To -- see
