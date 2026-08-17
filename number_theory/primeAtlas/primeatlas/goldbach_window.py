@@ -261,18 +261,33 @@ chunked sweep -- fully covered, zero gaps. A true 10-digit Pmax (~10^10) was not
 reached (would need a segmented/bit-packed sieve well beyond what a plain
 in-memory sieve can do in a few GB of RAM), so both_base_window_rows() below
 refuses anything above this ceiling rather than silently extrapolating past what
-was actually checked."""
+was actually checked.
 
-BOTH_BASE_PMIN = 3
-"""The smallest ODD prime. For even n > 4, ANY Goldbach representation has both
-summands odd (p=2 only ever works at n=4 itself -- otherwise n-2 would be an even
-number > 2, hence composite) -- so p, q >= BOTH_BASE_PMIN always holds for n > 4.
-This is what lets both_base_window_rows narrow the window to [4, Pmax+Pmin] and
-still prove (not just observe) that both p and q stay <= Pmax whenever ANY
-representation exists: q = n - p <= n - Pmin <= (Pmax+Pmin) - Pmin = Pmax, and
-symmetrically for p. See the module docstring's own note on the analogous,
-weaker p <= Pmax fact for the [4, 2*Pmax] window -- this is the same shape of
-proof, just covering both summands on a narrower window."""
+Note on BOTH_BASE_PMIN's value: the sweeps above were originally run with
+BOTH_BASE_PMIN=3 (window [4, Pmax+3]). BOTH_BASE_PMIN is now 2 (window
+[4, Pmax+2]), which is a strict SUBSET of [4, Pmax+3] for every Pmax -- every n
+checked under Pmin=2 was already checked, and found covered, under the wider
+Pmin=3 sweep. The witness search itself never restricted p away from 2 (Pmin
+only ever set the upper bound of n to check), so the "zero gaps to 10^9" result
+carries over to Pmin=2 without needing to re-run anything."""
+
+BOTH_BASE_PMIN = 2
+"""The smallest prime. Matches Lean's `additiveSelfContained_of_hasGoldbachRep`
+(Hipoteza Goldbacha/lean/StructuralGoldbach/SelfContainment.lean) exactly: every
+prime satisfies p, q >= 2, so for any Goldbach representation p+q=n with
+n <= Pmax+Pmin, q = n - p <= n - Pmin <= (Pmax+Pmin) - Pmin = Pmax, and
+symmetrically p <= Pmax. That Lean theorem is unconditional -- no
+`native_decide`, no `sorry`, proved directly from `Nat.Prime.two_le` plus
+`omega` -- so [4, Pmax+2] is not just empirically verified here but the exact
+window a machine-checked proof already covers. (An earlier version of this file
+used BOTH_BASE_PMIN=3, the smallest ODD prime, reasoning that p=2 only ever
+works at n=4 itself. That is also true and gives a WIDER window [4, Pmax+3], but
+it was Artur's own not-yet-formalized refinement of the Lean theorem rather than
+what the Lean theorem itself states -- 2026-08-17: narrowed back to 2 so this
+matches the actual proven statement one-to-one, not a stronger claim built on
+top of it.) See the module docstring's own note on the analogous, weaker
+p <= Pmax fact for the [4, 2*Pmax] window -- this is the same shape of proof,
+just covering both summands on a narrower window."""
 
 
 def check_both_base_coverage(is_prime, Pmax, Pmin=BOTH_BASE_PMIN):
@@ -342,9 +357,12 @@ def both_base_window_rows(is_prime, Pmax, Pmin=BOTH_BASE_PMIN, row_cap=None,
                            row_offset=0):
     """GUI-facing counterpart of check_both_base_coverage, shaped to match
     window_rows()'s own contract (row_cap/row_offset paging, same key names where
-    the concept overlaps) so prime_atlas_v1.py's Wizualizacja can render either
-    mode through mostly the same code path -- Artur, 2026-08-17: a NEW, separate
-    mode alongside the existing Lean-faithful one, not a replacement for it.
+    the concept overlaps) -- prime_atlas_v1.py's Wizualizacja now renders
+    exclusively through this path. (Briefly lived alongside window_rows() as a
+    second, opt-in mode; Artur, 2026-08-17: with BOTH_BASE_PMIN narrowed to 2 this
+    IS exactly the window Lean's additiveSelfContained_of_hasGoldbachRep proves
+    unconditionally, so the older buildableFromBase-only [4, 2*Pmax] mode was
+    dropped rather than kept as a separate, weaker option.)
 
     Refuses (ValueError) any Pmax above BOTH_BASE_PMAX_CEILING -- see that
     constant's own docstring for exactly what scale has actually been checked

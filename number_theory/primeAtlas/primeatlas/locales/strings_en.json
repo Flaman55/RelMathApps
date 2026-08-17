@@ -52,13 +52,13 @@
   "research_goldbach.viz_status_shown": "Showing window for n={n} (Pmax={pmax}). Change n above and check again.",
   "research_goldbach.viz_window_title": "Window: n = {n}, Pmax = {pmax}",
   "research_goldbach.viz_header": "n={n}  Pmax={pmax} (largest prime <= n)  window=[4, {window_max}]",
-  "research_goldbach.viz_subheader": "The old base (blue, primes <= Pmax) supplies the smaller summand p for EVERY even number shown below -- buildableFromBase confirmed in every row, regardless of where q happens to fall.",
+  "research_goldbach.viz_subheader": "The old base (blue, primes <= Pmax) supplies BOTH summands (p and q) for EVERY even number shown below -- window narrowed to [4, Pmax+2], because that's exactly the range where Lean (additiveSelfContained_of_hasGoldbachRep, SelfContainment.lean) proves unconditionally: if any representation of n exists at all, both summands are <= Pmax.",
   "research_goldbach.viz_old_base_title": "OLD BASE",
   "research_goldbach.viz_old_base_subtitle": "primes <= {pmax}",
   "research_goldbach.viz_more_primes": "+ {count} more",
   "research_goldbach.viz_segment_title": "Even numbers in window [4, {window_max}]",
   "research_goldbach.viz_q_new_note": "q > Pmax -- not needed for p",
-  "research_goldbach.viz_legend_new_q": "both summands (p and q) share the same blue -- buildableFromBase depends ONLY on p <= Pmax, so where q falls makes no difference",
+  "research_goldbach.viz_legend_new_q": "both summands (p and q) share the same blue -- here BOTH must be <= Pmax, that's a proven requirement (Lean), not just information",
   "research_goldbach.viz_rows_truncated": "(showing {shown} of {total} window rows)",
   "research_goldbach.viz_summary_covered": "Segment covered -- all {segment_size} new even numbers built from the old base alone.",
   "research_goldbach.viz_summary_void": "WARNING: no old-base decomposition for: {counterexamples}.",
@@ -429,10 +429,5 @@
   "settings.delete_backed_up_as": "Backup saved as: {name}",
   "settings.delete_result": "Deleted {count} floor(s): {names}",
   "settings.delete_errors_header": "Errors:",
-  "research_goldbach.viz_mode_label": "Window mode:",
-  "research_goldbach.viz_mode_lean": "buildableFromBase (Lean), window [4, 2*Pmax]",
-  "research_goldbach.viz_mode_both_base": "both p and q from base, window [4, Pmax+3] (Pmax <= 10^9)",
-  "research_goldbach.viz_subheader_both_base": "'Both from base' mode: EVERY summand (p and q) must be a prime <= Pmax -- a stricter criterion than buildableFromBase. Window narrowed to [4, Pmax+3] (3 = the smallest odd prime), because for n>4 both summands are always odd, so n <= Pmax+3 guarantees both <= Pmax, as long as any representation exists at all. Verified without exception up to Pmax=10^9.",
-  "research_goldbach.viz_legend_both_base": "both summands (p and q) share the same blue -- here BOTH must be <= Pmax, that's a requirement, not just information",
-  "research_goldbach.error_both_base_pmax_too_large": "'Both from base' mode is only verified up to Pmax={ceiling} -- this n gives Pmax={pmax}, too large for this mode. Pick a smaller n, or switch to the buildableFromBase (Lean) mode."
+  "research_goldbach.error_both_base_pmax_too_large": "This window is only verified up to Pmax={ceiling} -- this n gives Pmax={pmax}, too large. Pick a smaller n."
 }
