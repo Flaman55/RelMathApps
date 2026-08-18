@@ -67,6 +67,21 @@ class AppSettings:
         self.save()
 
     @property
+    def full_backup_destination(self):
+        """Last-used destination folder for the full-data (compressed) backup feature
+        (primeatlas/full_backup.py) -- remembered purely as a UI convenience (so the
+        Settings tab's folder picker doesn't reset to nothing every restart), NOT
+        trusted as-is: settings_tab.py still re-runs validate_destination_path() against
+        the CURRENT storage_path before every backup/restore/list action, since the
+        storage path itself may have changed since this was last saved. Returns None if
+        never set."""
+        return self._data.get("full_backup_destination") or None
+
+    def set_full_backup_destination(self, path):
+        self._data["full_backup_destination"] = path or None
+        self.save()
+
+    @property
     def language(self):
         """Read once at startup (see prime_atlas_v1.py's TRANSLATOR construction) to
         build the Translator that every T(...) call in this app's GUI uses. Falls back
