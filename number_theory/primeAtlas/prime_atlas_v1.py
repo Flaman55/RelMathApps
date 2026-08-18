@@ -6725,10 +6725,10 @@ def _build_gui():
             by the worker loop's own except MissingStorageRangeError blocks --
             see _goldbach_worker_loop's docstring). Mirrors
             _offer_generate_missing_prime_window()'s askyesno pattern, but launches
-            through _quick_gen_plan_literal_range()/_apply_loop_params_and_run() --
-            the SAME path Quick-gen's own Range mode button uses -- instead of the
-            primesieve single-window engine that helper uses: a Goldbach gap can
-            span many windows (the whole floor up to needed_upto), not just the one
+            through _quick_gen_plan_literal_range()/_launch_direct_window_range() --
+            the SAME path Quick-gen's own Range mode button uses -- instead of always
+            forcing the primesieve engine directly the way that helper does: a Goldbach
+            gap can span many windows (the whole floor up to needed_upto), not just the one
             window a single prime search needs, so the continuation-based
             orchestrator engine (fills from wherever the floor's storage already
             ends, up to the requested count) is the right fit here, not
@@ -6769,7 +6769,8 @@ def _build_gui():
                 return
             self._pending_goldbach_retry_op = op
             self.status.set(T("research_goldbach.status_generating_range", floor=floor))
-            self._apply_loop_params_and_run(plan["floor"], 1, plan["window_count_per_run"])
+            self._launch_direct_window_range(
+                plan["floor"], plan["target_idx_start"], plan["window_count_per_run"])
 
         def _goldbach_viz_progress_set(self, indeterminate=False, value=None):
             """Mirrors totals_progress's own state onto the Wizualizacja Toplevel's
@@ -7947,6 +7948,26 @@ def _build_gui():
                 panel["generate_btn"].configure(text=T("common.stop"))
             self._show_loop_terminal()
 
+        def _launch_direct_window_range(self, floor, target_idx_start, window_count):
+            """Shared dispatch for every caller that already knows its own literal
+            [target_idx_start, target_idx_start + window_count) target (Range mode, Floor
+            mode with a starting point, Goldbach's 'generate missing range' offer -- see
+            _quick_gen_plan_literal_range()'s own docstring for how that target_idx_start
+            is computed) -- writes starting EXACTLY there, never backfilling anything
+            before it, unlike orchestrator_loop_v2.py's own continuation-only wrapper
+            (build_loop_argv()), which has no notion of an arbitrary start position at
+            all. Picks whichever engine can actually reach that magnitude: primesieve
+            mode if the whole requested range still fits under libprimesieve's own uint64
+            ceiling (PRIMESIEVE_MAX_STOP), else orchestrator_v3.py launched directly (see
+            build_orchestrator_direct_argv()'s own docstring) -- the exact same
+            ceiling-aware choice _offer_generate_missing_prime_window() already makes for
+            the search flow's own missing-fragment offer."""
+            range_end_abs = 10 ** floor + (target_idx_start + window_count) * QUICK_GEN_MAX_WINDOW_WIDTH
+            if range_end_abs - 1 > PRIMESIEVE_MAX_STOP:
+                self._apply_orchestrator_direct_params_and_run(floor, target_idx_start, window_count)
+            else:
+                self._apply_primesieve_params_and_run(floor, target_idx_start, window_count)
+
         def _quick_gen_plan_literal_range(self, start, end):
             """Shared by Range mode and Floor mode WITH a starting point set (see
             _on_quick_generate_clicked): given a literal [start, end) target, rounds it
@@ -7998,7 +8019,24 @@ def _build_gui():
             "truncated" is True whenever the requested end got clamped back to the
             floor's own boundary -- callers should mention that in their status message
             so a shortened run isn't mistaken for the full request having been honored.
-            """
+
+            LAUNCH START (added 2026-08-18, at Artur's request): "target_idx_start" in
+            the launch-case dict is max(the request's OWN literal target_idx, existing_
+            count) -- never less than the literal request (so a starting point picked
+            deep into an otherwise-empty floor no longer silently balloons into
+            backfilling everything from index 0 up to it, which used to both misrepresent
+            what was asked for AND crash prime_sieve_v4_1.py outright for a big enough gap
+            -- MemoryError building a target_idx Python list hundreds of quadrillions of
+            entries long, a real run on floor 25 hit exactly this), and never less than
+            existing_count either (so the ordinary case -- filling from at/near the front
+            of an already-partially-generated floor -- is untouched: this reduces to
+            exactly today's existing_count-based start when the request doesn't reach
+            past it). window_count_per_run is sized to this SAME start, so it only ever
+            covers what's actually still missing from [target_idx_start, target_idx_end)
+            -- never more. Callers should launch via a target_idx_start-CAPABLE engine
+            (see _launch_direct_window_range()), not orchestrator_loop_v2.py's own
+            continuation-only wrapper, which has no way to honor a start past wherever
+            storage currently ends."""
             rounded_start, rounded_end = _round_range_to_window(start, end)
             floor_lo = digit_count_floor(rounded_start)
             floor_boundary = 10 ** (floor_lo + 1)
@@ -8009,6 +8047,7 @@ def _build_gui():
             if ((rounded_start - base) % QUICK_GEN_MAX_WINDOW_WIDTH
                     or (rounded_end - base) % QUICK_GEN_MAX_WINDOW_WIDTH):
                 return {"error": (T("quick.dialog_title"), T("quick.error_range_misaligned"))}
+            literal_target_idx_start = (rounded_start - base) // QUICK_GEN_MAX_WINDOW_WIDTH
             target_idx_end = (rounded_end - base) // QUICK_GEN_MAX_WINDOW_WIDTH
             existing_count = find_continuation_target_idx(
                 PORTAL_FOLDER, floor_lo, QUICK_GEN_MAX_WINDOW_WIDTH)
@@ -8016,8 +8055,10 @@ def _build_gui():
                 return {"already": True, "rounded_start": rounded_start,
                         "rounded_end": rounded_end, "existing_count": existing_count,
                         "truncated": truncated}
+            launch_target_idx_start = max(literal_target_idx_start, existing_count)
             return {"floor": floor_lo, "existing_count": existing_count,
-                     "window_count_per_run": target_idx_end - existing_count,
+                     "target_idx_start": launch_target_idx_start,
+                     "window_count_per_run": target_idx_end - launch_target_idx_start,
                      "rounded_start": rounded_start, "rounded_end": rounded_end,
                      "truncated": truncated}
 
@@ -8073,8 +8114,8 @@ def _build_gui():
                         + (T("quick.note_truncated_floor_boundary",
                               boundary=f"{plan['rounded_end']:,}")
                            if plan.get("truncated") else ""))
-                    self._apply_loop_params_and_run(
-                        plan["floor"], 1, plan["window_count_per_run"])
+                    self._launch_direct_window_range(
+                        plan["floor"], plan["target_idx_start"], plan["window_count_per_run"])
                     return
                 existing_count = find_continuation_target_idx(
                     PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
@@ -8161,7 +8202,8 @@ def _build_gui():
                     + (T("quick.note_truncated_floor_boundary",
                           boundary=f"{plan['rounded_end']:,}")
                        if plan.get("truncated") else ""))
-                self._apply_loop_params_and_run(plan["floor"], 1, plan["window_count_per_run"])
+                self._launch_direct_window_range(
+                    plan["floor"], plan["target_idx_start"], plan["window_count_per_run"])
             elif mode == "explore":
                 raw_floor = self.quick_explore_floor_var.get().strip()
                 if raw_floor:
@@ -8374,7 +8416,7 @@ def _build_gui():
                           max_stop=f"{PRIMESIEVE_MAX_STOP:,}")
                        if ceiling_truncated else ""))
                 self._apply_primesieve_params_and_run(
-                    plan["floor"], plan["existing_count"], plan["window_count_per_run"])
+                    plan["floor"], plan["target_idx_start"], plan["window_count_per_run"])
 
         def _collect_loop_settings_from_form(self):
             """Reads + validates every orchestrator_loop_v2 form field. Returns a dict of
