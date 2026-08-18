@@ -34,7 +34,12 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     tuple, and a search that reports whether a given number participates in any
     recorded constellation. Only lists floors where the constellation finder has
     actually recorded at least one hit, not every floor that happens to have prime
-    data.
+    data. The finder also checks for patterns straddling a floor boundary (base on
+    one floor, tail past `10^(N+1)` into the next) -- not just patterns spanning a
+    window boundary within the same floor -- recording any such hit under the
+    lower floor. A floor whose neighbor has no data yet at scan time is left
+    unresolved (with an informational note, not silent skipping) and self-heals the
+    next time it's scanned once that neighbor exists.
   - **Constellation calculator** -- pick a k-tuple pattern from the catalog (k, then
     variant), enter a floor and an offset, and instantly compute every number the
     pattern implies -- pure arithmetic, no file I/O, so it is instant even for a huge
@@ -66,7 +71,24 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     floor currently holds the deepest generated data (leave it blank, or use its
     dedicated Auto button) instead of requiring a manually-typed floor every time, and
     rolls forward into floor 7+ once the fixed floors-0-6 batch is complete, rather
-    than reporting "already in storage" and getting stuck there.
+    than reporting "already in storage" and getting stuck there. Its shared progress
+    bar reflects the WHOLE multi-iteration run (iterations x windows), not just
+    whichever single iteration currently happens to be in flight. "Windows in
+    storage" figures shown throughout Quick generation are the real, on-disk file
+    count, not a continuation-position number -- the two only coincide on a
+    gap-free floor, and can diverge once a floor has interior gaps (see below).
+    Floor mode also accepts an explicit starting point, dispatched directly
+    (ceiling-aware: primesieve mode when the requested range fits under
+    libprimesieve's own uint64 limit, the orchestrator otherwise) rather than always
+    continuing from the end of what already exists -- Width acts as a hard cap on
+    how many windows that single launch can cover, never rounded upward past it. An
+    off-by-default "Wypelnij luki najpierw" checkbox, shared by Floor and
+    Exploration mode, fills a floor's first interior gap (if one exists) instead of
+    continuing from its highest file -- checked on every floor Exploration mode
+    rolls forward past, not just the one it starts on, so a floor nobody has
+    personally visited yet (e.g. one a search or the Goldbach tab's "generate
+    missing range" offer wrote into directly) doesn't get silently skipped over
+    while still holding a real gap.
   - **Low-level form** -- exposes every CLI parameter of the orchestrator and
     constellation finder directly (workers, batch size, window count, window width,
     write-files toggle, sieving-prime count diagnostic) for full manual control.
@@ -109,7 +131,9 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     (clears one chosen floor's primes and constellations together, or only that
     floor's constellations while leaving its primes untouched -- for a clean
     constellation-finder re-run without regenerating prime data), and the existing
-    whole-database delete.
+    whole-database delete. Two further sections cover moving real data (not just a
+    manifest) between locations -- see "Full-data backup" and "Integrating an
+    external storage" below.
   - **Aktualizacje** -- an optional-library installer (currently `sympy`, used by the
     Primality tests sub-tab's factorization when present) that runs natively on
     Windows via `pip`, not through WSL -- checks whether it is already importable and
@@ -124,8 +148,10 @@ Constellations), or from the Constellation calculator -- distinguishes three out
 instead of one generic "not found":
 
 - The window the number would fall in genuinely is not on disk yet -- offers to
-  generate just that one window (via primesieve mode's targeted single-window path,
-  not a from-scratch backfill from window 0), then automatically re-runs the same
+  generate just that one window (via a direct, ceiling-aware dispatch -- primesieve
+  mode's targeted single-window path when the window falls under libprimesieve's own
+  uint64 limit, the orchestrator launched directly at that exact window otherwise --
+  never a from-scratch backfill from window 0), then automatically re-runs the same
   search once generation finishes.
 - The number is a confirmed prime, but its floor has no recorded constellation hits at
   all -- offers to run the constellation finder for that floor, then re-checks
@@ -271,7 +297,64 @@ scans a floor's file headers the first time it is visited in the Prime numbers t
 every floor's `floor_meta.json` on each visit and imports any rows not already present in
 the local `benchmark_log.csv`, so a moved-in floor's Benchmark tab entry appears exactly as
 if it had been generated in that storage -- nothing is lost, and this needs no explicit
-action from the user.
+action from the user. A floor's own `CHECKPOINT.txt`/`BOUNDARY_CHECKED.txt`
+(constellation-scan progress markers) have no merge logic of their own -- if a floor is
+merged in from a storage that had independently scanned some of the same windows, or a
+checkpoint simply names a window no longer present, some windows may get rescanned. That's
+harmless: rescanning a window whose hits are already recorded used to crash on the
+duplicate append (a strict-increase assertion in the on-disk hit format); it now silently
+skips the already-known values instead.
+
+Physically copying a WHOLE external storage's root (not just one floor's directory) this
+way, however, is NOT recommended -- see "Integrating an external storage" below for why,
+and for the dedicated feature that does this correctly.
+
+### Full-data backup
+
+The metadata-only backup above never copies actual bytes -- restoring it always means
+regenerating (re-sieving) whatever is missing. Settings tab -> Backup also offers a
+second, independent backup mode: a real, gzip-compressed, per-file copy of a chosen
+floor's data (window and constellation-hit files) at a location OUTSIDE the storage,
+picked per floor (Backup lists every floor currently in storage, pre-selecting/marking
+whichever ones' MEASURED total generation time -- summed from `benchmark_log.csv`, real
+runs only -- exceeds one hour, since regeneration cost depends on how much of a floor
+is actually populated, not just its floor number). Restoring from this copies bytes
+back directly instead of re-sieving -- far faster for a floor that was genuinely
+expensive to generate the first time, at the cost of needing that much extra disk space
+somewhere else.
+
+Each floor gets ONE persistent entry at the destination (not a growing pile of
+timestamped snapshots): re-running the backup for a floor that has grown since only
+copies what's new. Updating a backup only ever ADDS files, never removes any -- even if
+something disappeared from the live side (e.g. an accidental floor delete) -- since a
+backup that silently followed a live mistake would defeat its own purpose. The one
+exception is the constellation-scan progress markers (`CHECKPOINT.txt`/
+`BOUNDARY_CHECKED.txt`), which are always re-synced to whatever the live floor
+currently says (they're scalar "how far did we get" pointers, not data); restoring them
+back never regresses a live floor's own, possibly further-along, progress. The
+destination is validated to be neither inside the storage nor wrapping it -- a backup
+living inside the very thing it protects isn't a backup.
+
+### Integrating an external storage
+
+Growing a local storage by folding in someone else's -- data downloaded from GitHub, or
+copied from another machine -- the way GIMPS grows from many contributors' partial
+results. Copying a whole external storage's root with a generic file-copy tool forces
+resolving conflicts on files that were never meant to be merged that way: blindly
+overwriting `benchmark_log.csv` silently discards whichever side's rows aren't picked
+(there's no way to file-level "merge" two CSVs), and `.portal_totals_cache.json`/
+`.portal_generation_settings.json` are just self-healing/local-install convenience
+files with no real merge semantics either way.
+
+Settings tab -> Backup -> "Integruj zewnetrzny magazyn" does this correctly: point it at
+an external storage folder, click Podglad (preview) to see, PER FLOOR, whether it's a
+brand-new floor or one that merely gains some missing files, plus a total size estimate
+-- nothing is copied until Integruj is confirmed. Only floor directories are ever
+touched; the three root-level files above are never read or written by this feature at
+all. A floor's generation history (`floor_meta.json`) is imported additively, and then
+flows into the local `benchmark_log.csv` automatically the next time that floor is
+visited in the app (see "Moving floor data between storages" above) -- so the person
+never has to resolve those conflicts themselves.
 
 ## Restore
 
@@ -315,6 +398,13 @@ primeatlas/                 backend package used by the GUI, no tkinter dependen
   floor_meta.py               per-floor floor_meta.json (benchmark-row history that
                               travels with a 10p{N} directory) -- see "Moving floor
                               data between storages"
+  full_backup.py              second, data-carrying backup mode (real gzip-compressed
+                              file copies, one persistent entry per floor) -- see
+                              "Full-data backup"
+  storage_integrate.py        folds a whole external PrimeAtlas storage's floors into
+                              the current one, deliberately never touching
+                              benchmark_log.csv or the root caches -- see "Integrating
+                              an external storage"
   delete_manager.py          whole-database delete (PortalWiper) and per-floor /
                               per-floor-constellations-only delete (FloorWiper)
   settings_tab.py            Settings tab controller (Ogolne/Backup/Aktualizacje
