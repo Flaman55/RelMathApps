@@ -91,7 +91,14 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     while still holding a real gap.
   - **Low-level form** -- exposes every CLI parameter of the orchestrator and
     constellation finder directly (workers, batch size, window count, window width,
-    write-files toggle, sieving-prime count diagnostic) for full manual control.
+    write-files toggle, sieving-prime count diagnostic) for full manual control. The
+    "workers" field has its own Auto button, the CPU-count counterpart to Quick
+    generation's RAM-based Auto button above: it probes the CPU count INSIDE WSL
+    (`nproc`, not the native Windows host's own count, since WSL2 can be configured
+    with fewer visible CPUs than the host) and fills the field with that count --
+    requesting more workers than available CPUs adds scheduling overhead without any
+    real parallelism gain. The field stays freely editable afterward, same as every
+    other field in this form.
 - **Benchmark** -- a throughput chart (numbers generated per second vs. floor depth),
   plus a second chart (sieve speed and write speed per floor) whenever the active
   engine reports that level of phase timing (see `prime_sieve_v4_1.py` under
