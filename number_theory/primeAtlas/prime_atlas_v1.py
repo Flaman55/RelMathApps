@@ -480,6 +480,62 @@ def find_continuation_target_idx(portal_folder, base_exponent, window_m):
     return highest + 1
 
 
+def find_first_gap_target_idx(portal_folder, base_exponent, window_m):
+    """Returns the target_idx of the FIRST missing window on this floor (0 if nothing
+    exists yet) -- where a 'fill gaps first' continuation strategy should start next, as
+    opposed to find_continuation_target_idx()'s own 'extend past the highest existing
+    file' strategy (added 2026-08-18, at Artur's request, once direct-start generation --
+    see _launch_direct_window_range() -- made genuine gaps possible for the first time;
+    before that, every floor was always contiguous from index 0, so the two strategies
+    always agreed). Returns the exact same value as find_continuation_target_idx() when
+    the floor genuinely has no gaps (still the common case) -- only differs once one
+    exists. list_source_filenames() is already sorted ascending by offset, so this is a
+    single linear pass comparing each file's target_idx against the NEXT expected one,
+    stopping the instant they disagree -- safe even for a floor whose highest target_idx
+    is astronomically large (e.g. one created by a direct-start write deep into an
+    otherwise-empty floor), since this never iterates the numeric RANGE, only the actual
+    file COUNT."""
+    expected = 0
+    for name, _path in list_source_filenames(portal_folder, base_exponent):
+        offset = _offset_from_filename(name)
+        if offset is None:
+            continue
+        target_idx = offset // window_m
+        if target_idx != expected:
+            return expected
+        expected += 1
+    return expected
+
+
+def _trim_existing_from_target_idx_range(portal_folder, base_exponent, target_idx_start,
+                                          window_count, window_m):
+    """Shrinks [target_idx_start, target_idx_start + window_count) to skip whatever
+    ALREADY exists at its own front and back edges -- write_prime_window() (every engine
+    in prime_sieve/) always overwrites unconditionally, with no existence check of its
+    own, so without this a request that happens to overlap already-generated windows
+    would harmlessly but needlessly re-sieve and rewrite them (added 2026-08-18, at
+    Artur's request). Only trims contiguous existing runs at the two EDGES of the
+    request, not scattered gaps in its interior -- detecting/skipping an interior gap
+    would need one launch per gap instead of one per request; an interior already-existing
+    window still gets safely, harmlessly rewritten with identical content, same as before
+    this function existed.
+
+    Returns (trimmed_start, trimmed_count) -- trimmed_count is 0 (trimmed_start
+    meaningless) if the ENTIRE requested range turns out to already exist."""
+    existing = set()
+    for name, _path in list_source_filenames(portal_folder, base_exponent):
+        offset = _offset_from_filename(name)
+        if offset is not None:
+            existing.add(offset // window_m)
+    start = target_idx_start
+    end = target_idx_start + window_count  # exclusive
+    while start < end and start in existing:
+        start += 1
+    while end > start and (end - 1) in existing:
+        end -= 1
+    return start, max(0, end - start)
+
+
 def find_highest_populated_floor(portal_folder):
     """Highest base_exponent among every 10p{N} folder that actually has at least one
     PRIME_WINDOW_*.bin file on disk -- an empty/leftover 10p{N} directory with no
@@ -7383,6 +7439,16 @@ def _build_gui():
             self.quick_floor_width_var = tk.StringVar(value="1")
             self.quick_floor_start_var = tk.StringVar(value="")
             self.quick_floor_start_var.trace_add("write", self._on_quick_floor_start_changed)
+            # Only consulted by the BLANK-starting-point path (a typed starting point
+            # already means "start exactly there", see _quick_gen_plan_literal_range's
+            # own docstring) -- default False (continue past the highest existing file,
+            # today's historical behavior, unchanged) rather than True, so enabling gap-
+            # filling is an explicit, conscious choice rather than a surprising default
+            # for a person who has never left a gap and doesn't need to think about this
+            # at all. Not persisted across restarts, same as every other Quick-gen field
+            # (Width, punkt startowy) -- see _apply_loop_params_and_run's own docstring
+            # for why only the low-level orchestrator form persists.
+            self.quick_floor_fill_gaps_var = tk.BooleanVar(value=False)
             self.quick_from_var = tk.StringVar(value="")
             self.quick_to_var = tk.StringVar(value="")
             self.quick_explore_floor_var = tk.StringVar(value="")
@@ -7501,8 +7567,25 @@ def _build_gui():
             (added once, in _init_quick_generation_state).
 
             Returns the Floor Entry widget so the caller can track it per-panel-instance
-            (see _on_quick_floor_start_changed)."""
-            frame = ttk.Frame(container)
+            (see _on_quick_floor_start_changed).
+
+            Second row: a "fill gaps first" checkbox, relevant ONLY to the blank-starting-
+            point path (a typed starting point already means "start exactly there" --
+            see _quick_gen_plan_literal_range's own docstring, unaffected by this toggle)
+            -- see quick_floor_fill_gaps_var's own comment in _init_quick_generation_state
+            for why this defaults off. Deliberately not disabled/greyed out when a
+            starting point IS typed -- it's simply ignored by that path, no need for the
+            extra state-tracking a live enable/disable would cost."""
+            # Outer wraps BOTH rows (field row + gap-toggle row) so mode_frames tracks
+            # a single widget for the whole "floor" mode UI -- _sync_quick_panel only
+            # grid()/grid_remove()s whatever is registered in mode_frames, so if the
+            # toggle row were a sibling of outer in container (its own row=1) instead of
+            # nested inside outer, it would never be hidden when switching to another
+            # Quick-gen mode. Nesting it here is what keeps the two rows shown/hidden
+            # together.
+            outer = ttk.Frame(container)
+            outer.grid(row=0, column=0, sticky="w")
+            frame = ttk.Frame(outer)
             frame.grid(row=0, column=0, sticky="w")
             ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
             floor_entry = ttk.Entry(frame, textvariable=self.quick_floor_var, width=10)
@@ -7518,7 +7601,11 @@ def _build_gui():
             ttk.Label(frame, text=T("quick.field_start")).pack(side="left")
             ttk.Entry(frame, textvariable=self.quick_floor_start_var, width=20).pack(
                 side="left", padx=(6, 0))
-            mode_frames["floor"] = frame
+            gap_row = ttk.Frame(outer)
+            gap_row.grid(row=1, column=0, sticky="w", pady=(4, 0))
+            ttk.Checkbutton(gap_row, text=T("quick.field_fill_gaps_first"),
+                             variable=self.quick_floor_fill_gaps_var).pack(side="left")
+            mode_frames["floor"] = outer
             return floor_entry
 
         def _validate_quick_width_spinbox(self, proposed):
@@ -7961,12 +8048,23 @@ def _build_gui():
             ceiling (PRIMESIEVE_MAX_STOP), else orchestrator_v3.py launched directly (see
             build_orchestrator_direct_argv()'s own docstring) -- the exact same
             ceiling-aware choice _offer_generate_missing_prime_window() already makes for
-            the search flow's own missing-fragment offer."""
-            range_end_abs = 10 ** floor + (target_idx_start + window_count) * QUICK_GEN_MAX_WINDOW_WIDTH
+            the search flow's own missing-fragment offer.
+
+            Trims against what's ALREADY on disk first (see
+            _trim_existing_from_target_idx_range()'s own docstring) -- every engine this
+            app can launch overwrites unconditionally with no existence check of its own,
+            so this is the one place that avoids redundantly re-sieving/rewriting windows
+            the caller's own request happens to overlap."""
+            trimmed_start, trimmed_count = _trim_existing_from_target_idx_range(
+                PORTAL_FOLDER, floor, target_idx_start, window_count, QUICK_GEN_MAX_WINDOW_WIDTH)
+            if trimmed_count <= 0:
+                self.quick_status_var.set(T("quick.status_range_fully_covered"))
+                return
+            range_end_abs = 10 ** floor + (trimmed_start + trimmed_count) * QUICK_GEN_MAX_WINDOW_WIDTH
             if range_end_abs - 1 > PRIMESIEVE_MAX_STOP:
-                self._apply_orchestrator_direct_params_and_run(floor, target_idx_start, window_count)
+                self._apply_orchestrator_direct_params_and_run(floor, trimmed_start, trimmed_count)
             else:
-                self._apply_primesieve_params_and_run(floor, target_idx_start, window_count)
+                self._apply_primesieve_params_and_run(floor, trimmed_start, trimmed_count)
 
         def _quick_gen_plan_literal_range(self, start, end):
             """Shared by Range mode and Floor mode WITH a starting point set (see
@@ -8152,6 +8250,34 @@ def _build_gui():
                 # up with 130-million-range numbers filed under its folder because nothing
                 # here checked where floor 7 actually ends).
                 floor_window_count = _floor_window_count(floor_value)
+                if self.quick_floor_fill_gaps_var.get():
+                    # "Fill gaps first" toggle (see quick_floor_fill_gaps_var's own comment
+                    # in _init_quick_generation_state) -- only changes anything when this
+                    # floor genuinely HAS a gap; find_first_gap_target_idx() returns the
+                    # exact same value as existing_count (find_continuation_target_idx())
+                    # otherwise, so the "no gap" case falls straight through to the normal
+                    # continue-from-highest code below, unchanged.
+                    gap_target_idx = find_first_gap_target_idx(
+                        PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                    if gap_target_idx < existing_count:
+                        gap_remaining = floor_window_count - gap_target_idx
+                        capped_width = min(width_mult, gap_remaining)
+                        reaches_existing = gap_target_idx + capped_width >= existing_count
+                        gap_start = 10 ** floor_value + gap_target_idx * QUICK_GEN_MAX_WINDOW_WIDTH
+                        self.quick_status_var.set(T(
+                            "quick.summary_floor_fill_gap", floor=floor_value,
+                            width_mult=capped_width,
+                            width_total=f"{capped_width * QUICK_GEN_MAX_WINDOW_WIDTH:,}",
+                            gap_start=f"{gap_start:,}",
+                            existing_count=existing_count, added_count=capped_width)
+                            + (T("quick.note_gap_partial") if not reaches_existing else ""))
+                        # _launch_direct_window_range() (not _apply_loop_params_and_run())
+                        # since this is a literal target_idx, exactly like the typed-
+                        # starting-point path above -- it also trims any edge overlap with
+                        # what's already on disk, though none is expected here since
+                        # gap_target_idx is by definition the first MISSING window.
+                        self._launch_direct_window_range(floor_value, gap_target_idx, capped_width)
+                        return
                 remaining = floor_window_count - existing_count
                 if remaining <= 0:
                     self.quick_status_var.set(T(
