@@ -8066,7 +8066,7 @@ def _build_gui():
             else:
                 self._apply_primesieve_params_and_run(floor, trimmed_start, trimmed_count)
 
-        def _quick_gen_plan_literal_range(self, start, end):
+        def _quick_gen_plan_literal_range(self, start, end, max_window_count=None):
             """Shared by Range mode and Floor mode WITH a starting point set (see
             _on_quick_generate_clicked): given a literal [start, end) target, rounds it
             out to whole QUICK_GEN_MAX_WINDOW_WIDTH windows, CLAMPS it to the starting
@@ -8134,7 +8134,33 @@ def _build_gui():
             -- never more. Callers should launch via a target_idx_start-CAPABLE engine
             (see _launch_direct_window_range()), not orchestrator_loop_v2.py's own
             continuation-only wrapper, which has no way to honor a start past wherever
-            storage currently ends."""
+            storage currently ends.
+
+            max_window_count (added 2026-08-18, at Artur's request, after a real floor-25
+            run logged "target_idx X..X+1000 (1001 windows)" for a Width=1000 request):
+            _round_range_to_window() rounds the START down AND the END up to the nearest
+            window boundary -- deliberate for Range mode's own from/to contract ("never
+            fall short of what was literally asked for", see that function's docstring),
+            but wrong for a caller like Floor mode's Starting-point path, where Width is
+            an explicit WINDOW-COUNT BUDGET, not a literal end number: whenever the typed
+            starting point isn't itself a multiple of QUICK_GEN_MAX_WINDOW_WIDTH (the
+            common case for a search-driven starting point), rounding BOTH ends outward
+            silently adds exactly one extra window beyond the requested count -- a
+            correctness bug on its own (the launched run no longer matches what the
+            summary message told the person it would do), and specifically the wrong
+            direction for a RAM-budgeted launch, where the safer failure mode is covering
+            slightly less than asked (at most one window's width short at the tail) rather
+            than more. Callers that pass a window-count budget here (Floor mode's
+            Starting-point path; NOT Range mode, which has no count concept, only the
+            literal from/to numbers themselves) should pass their own width_mult as
+            max_window_count -- this clamps target_idx_end (and, consequently,
+            window_count_per_run) to never exceed literal_target_idx_start +
+            max_window_count, on top of whatever the floor-boundary clamp above already
+            did (whichever constraint is tighter wins; if the floor boundary already cut
+            target_idx_end down at or below the budget, this is a no-op). Sets
+            "width_capped" in the returned dict so callers can surface a distinct note --
+            deliberately NOT folded into "truncated" (that flag/note is specifically about
+            the floor-boundary reason and would misdescribe this one)."""
             rounded_start, rounded_end = _round_range_to_window(start, end)
             floor_lo = digit_count_floor(rounded_start)
             floor_boundary = 10 ** (floor_lo + 1)
@@ -8147,18 +8173,25 @@ def _build_gui():
                 return {"error": (T("quick.dialog_title"), T("quick.error_range_misaligned"))}
             literal_target_idx_start = (rounded_start - base) // QUICK_GEN_MAX_WINDOW_WIDTH
             target_idx_end = (rounded_end - base) // QUICK_GEN_MAX_WINDOW_WIDTH
+            width_capped = False
+            if max_window_count is not None:
+                budget_target_idx_end = literal_target_idx_start + max_window_count
+                if budget_target_idx_end < target_idx_end:
+                    target_idx_end = budget_target_idx_end
+                    rounded_end = base + target_idx_end * QUICK_GEN_MAX_WINDOW_WIDTH
+                    width_capped = True
             existing_count = find_continuation_target_idx(
                 PORTAL_FOLDER, floor_lo, QUICK_GEN_MAX_WINDOW_WIDTH)
             if target_idx_end <= existing_count:
                 return {"already": True, "rounded_start": rounded_start,
                         "rounded_end": rounded_end, "existing_count": existing_count,
-                        "truncated": truncated}
+                        "truncated": truncated, "width_capped": width_capped}
             launch_target_idx_start = max(literal_target_idx_start, existing_count)
             return {"floor": floor_lo, "existing_count": existing_count,
                      "target_idx_start": launch_target_idx_start,
                      "window_count_per_run": target_idx_end - launch_target_idx_start,
                      "rounded_start": rounded_start, "rounded_end": rounded_end,
-                     "truncated": truncated}
+                     "truncated": truncated, "width_capped": width_capped}
 
         def _on_quick_generate_clicked(self):
             """Real launch path: computes base_exponent/run_count/
@@ -8191,7 +8224,16 @@ def _build_gui():
                 raw_start = self.quick_floor_start_var.get().strip()
                 start_value = _eval_quick_number(raw_start)
                 if start_value is not None:
-                    plan = self._quick_gen_plan_literal_range(start_value, start_value + width_total)
+                    # max_window_count=width_mult -- Width here is an explicit window-COUNT
+                    # budget (unlike Range mode's raw from/to, which has no count concept
+                    # and is left uncapped, see _quick_gen_plan_literal_range's own
+                    # docstring) -- without this, a starting point that isn't itself a
+                    # multiple of QUICK_GEN_MAX_WINDOW_WIDTH (the common case for a
+                    # search-driven starting point) silently launches ONE MORE window than
+                    # Width says, exactly the "1001 windows for a Width=1000 request" bug a
+                    # real floor-25 run hit.
+                    plan = self._quick_gen_plan_literal_range(
+                        start_value, start_value + width_total, max_window_count=width_mult)
                     if plan.get("error"):
                         messagebox.showerror(*plan["error"])
                         return
@@ -8211,7 +8253,9 @@ def _build_gui():
                         added_count=plan["window_count_per_run"])
                         + (T("quick.note_truncated_floor_boundary",
                               boundary=f"{plan['rounded_end']:,}")
-                           if plan.get("truncated") else ""))
+                           if plan.get("truncated") else "")
+                        + (T("quick.note_width_capped_alignment")
+                           if plan.get("width_capped") else ""))
                     self._launch_direct_window_range(
                         plan["floor"], plan["target_idx_start"], plan["window_count_per_run"])
                     return

@@ -321,6 +321,7 @@
   "quick.status_floor_full": "Floor {floor} is already fully complete ({existing_count} / {floor_window_count} windows) -- nothing to generate on this floor.",
   "quick.note_truncated_floor_boundary": "\n\nNOTE: the requested range extended past this floor's boundary -- generation was capped at {boundary} (the floor's end). The rest was skipped; generate it separately on the next floor.",
   "quick.note_gap_partial": "\n\nNOTE: this gap is wider than the selected Width -- only its start was generated. Click Generate again (with \"Fill gaps first\" still checked) to fill the rest.",
+  "quick.note_width_capped_alignment": "\n\nNOTE: the given starting point doesn't sit on a window boundary (10M) -- to avoid exceeding the set Width by even one window, the end of the range was trimmed slightly (by less than one window) instead of rounded up. Generate the missing remainder separately if you need it.",
   "quick.auto_button": "Auto",
   "quick.error_ram_probe_failed": "Couldn't read available RAM from WSL -- make sure WSL is installed and running, then try again.",
   "quick.auto_ram_result": "Available RAM in WSL: {available_gb} GB.\nRecommended maximum window count for one run: {recommended} (= {numbers_total} numbers).\n\nThis is a conservative estimate based only on the shared sieve output buffer -- the per-process overhead (which grows with floor depth) isn't accounted for. Check the peak RAM column in the benchmark log after a first run and adjust if needed.",

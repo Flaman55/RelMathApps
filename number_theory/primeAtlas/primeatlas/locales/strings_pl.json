@@ -329,6 +329,7 @@
   "quick.status_floor_full": "Piętro {floor} jest już wypełnione w całości ({existing_count} / {floor_window_count} okien) -- nic do wygenerowania na tym piętrze.",
   "quick.note_truncated_floor_boundary": "\n\nUWAGA: żądany zakres wykraczał poza granicę tego piętra -- ograniczono generowanie do {boundary} (koniec piętra). Reszta pominięta; wygeneruj ją osobno na kolejnym piętrze.",
   "quick.note_gap_partial": "\n\nUWAGA: ta luka jest szersza niż wybrana Szerokość -- wygenerowano tylko jej początek. Kliknij Generuj ponownie (z zaznaczonym \"Najpierw wypełnij luki\"), żeby wypełnić resztę.",
+  "quick.note_width_capped_alignment": "\n\nUWAGA: podany punkt startowy nie leży na granicy okna (10 mln) -- żeby nie przekroczyć ustawionej Szerokości ani o jedno okno, koniec zakresu został lekko skrócony (o mniej niż jedno okno) zamiast zaokrąglony w górę. Wygeneruj brakującą resztę osobno, jeśli jest potrzebna.",
   "quick.auto_button": "Auto",
   "quick.error_ram_probe_failed": "Nie udało się odczytać dostępnej pamięci RAM z WSL -- upewnij się, że WSL jest zainstalowany i działa, i spróbuj ponownie.",
   "quick.auto_ram_result": "Dostępny RAM w WSL: {available_gb} GB.\nZalecana maksymalna liczba okien na jedno uruchomienie: {recommended} (= {numbers_total} liczb).\n\nTo ostrożny szacunek oparty tylko o wspólny bufor wyjściowy sita -- narzut per-proces (rosnący z głębokością piętra) nie jest w nim uwzględniony. Sprawdź szczyt zużycia RAM w logu benchmarku po pierwszym uruchomieniu i dostosuj w razie potrzeby.",
