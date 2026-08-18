@@ -1937,6 +1937,8 @@ def windows_path_to_wsl(path):
 
 ORCHESTRATOR_LOOP_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "prime_sieve", "orchestrator_loop_v2.py"))
+ORCHESTRATOR_DIRECT_SCRIPT = os.path.abspath(
+    os.path.join(_SCRIPT_DIR, "prime_sieve", "orchestrator_v3.py"))
 CONSTELLATION_FINDER_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "constellation", "constellation_finder_v1.py"))
 PRIMESIEVE_SCRIPT = os.path.abspath(
@@ -2033,6 +2035,38 @@ def build_primesieve_argv(base_exponent, target_idx_start, window_count_per_run,
         "python3", "-u", script_wsl,
         str(base_exponent), str(target_idx_start), str(window_count_per_run), str(window_m),
         "1" if write_files else "0",
+    ]
+
+
+def build_orchestrator_direct_argv(base_exponent, target_idx_start, window_count_per_run,
+                                    window_m, write_files, compute_sieving_primes_count,
+                                    workers, batches_per_worker, script_path=None):
+    """Returns the LINUX-side argv for launching orchestrator_v3.py DIRECTLY -- bypassing
+    orchestrator_loop_v2.py's own wrapper CLI (build_loop_argv()), which only ever
+    auto-continues from wherever a floor's storage currently ends (see that function's own
+    docstring) and has no way to target an arbitrary target_idx.
+
+    This is the fallback engine for _offer_generate_missing_prime_window() when the
+    requested window falls beyond libprimesieve's own uint64 ceiling (PRIMESIEVE_MAX_STOP)
+    -- primesieve mode (build_primesieve_argv(), this app's usual single-arbitrary-window
+    engine for that call site) simply cannot reach floors that high (e.g. 10^30 is roughly
+    eleven orders of magnitude past 2**64-1). orchestrator_v3.py has no such ceiling and,
+    unlike its own loop wrapper, DOES accept an explicit start_window on its own __main__
+    CLI (see that script's argument parsing) -- so calling it directly, with start_auto
+    forced off, gets the exact same 'write just the one window asked for, gaps before it
+    and all' behavior primesieve mode provides at the low end, just through the slower
+    engine at any magnitude. Argument order matches orchestrator_v3.py's own CLI exactly:
+    <base_exponent> <window_count> <start_auto 0/1> <start_window> <write_files 0/1>
+    <compute_sieving_primes_count 0/1> <workers> <batches_per_worker> <window_m>."""
+    script = script_path if script_path is not None else ORCHESTRATOR_DIRECT_SCRIPT
+    script_wsl = windows_path_to_wsl(script)
+    return [
+        "python3", "-u", script_wsl,
+        str(base_exponent), str(window_count_per_run),
+        "0", str(target_idx_start),
+        "1" if write_files else "0",
+        "1" if compute_sieving_primes_count else "0",
+        str(workers), str(batches_per_worker), str(window_m),
     ]
 
 
@@ -4195,7 +4229,18 @@ def _build_gui():
             build_primesieve_argv()'s script (prime_sieve_primesieve.py) takes
             target_idx_start explicitly and has no continuation requirement -- it writes
             just the ONE window asked for, gaps before it and all, which is exactly what a
-            single-number check needs (see that function's own docstring)."""
+            single-number check needs (see that function's own docstring).
+
+            CEILING FALLBACK: primesieve mode can't reach every floor -- libprimesieve's
+            own uint64 domain tops out at PRIMESIEVE_MAX_STOP (2**64-1 =~ 1.8e19), while a
+            search can land on any floor at all (a floor-30 constellation search real-world
+            hit this: 10^30 is about eleven orders of magnitude past that ceiling, so
+            primesieve mode silently truncated the run to nothing rather than writing the
+            window). Once `plan['rounded_start']` is past that ceiling, primesieve mode
+            cannot write ANY part of the requested window, so this falls back to
+            orchestrator_v3.py run directly (see build_orchestrator_direct_argv()'s own
+            docstring for why that engine -- not its loop wrapper -- is the one capable of
+            an arbitrary single-window write at any magnitude)."""
             plan = self._quick_gen_plan_literal_range(number, number + 1)
             if plan.get("error"):
                 return "skipped"
@@ -4215,7 +4260,10 @@ def _build_gui():
                 "kind": kind, "base_exponent": base_exponent, "number": number}
             self.status.set(T("search.status_generating_prime_window", number=f"{number:,}"))
             target_idx = (plan["rounded_start"] - 10 ** plan["floor"]) // QUICK_GEN_MAX_WINDOW_WIDTH
-            self._apply_primesieve_params_and_run(plan["floor"], target_idx, 1)
+            if plan["rounded_start"] > PRIMESIEVE_MAX_STOP:
+                self._apply_orchestrator_direct_params_and_run(plan["floor"], target_idx, 1)
+            else:
+                self._apply_primesieve_params_and_run(plan["floor"], target_idx, 1)
             return "launched"
 
         def _offer_generate_missing_constellation(self, base_exponent, number):
@@ -7838,6 +7886,59 @@ def _build_gui():
             self._loop_runner = WslLoggedRunner(
                 cmd, log_path, exit_path, self._loop_output_queue,
                 kill_pattern="prime_sieve_primesieve.py")
+            self._loop_runner.start()
+            self.loop_run_btn.configure(state="disabled")
+            self.loop_stop_btn.configure(state="normal")
+            self.loop_status_label.set(T("common.running"))
+            for panel in self._quick_panels:
+                panel["generate_btn"].configure(text=T("common.stop"))
+            self._show_loop_terminal()
+
+        def _apply_orchestrator_direct_params_and_run(self, base_exponent, target_idx_start,
+                                                        window_count_per_run):
+            """Fallback counterpart to _apply_primesieve_params_and_run() for
+            _offer_generate_missing_prime_window(), used only when the requested window
+            falls beyond libprimesieve's own uint64 ceiling (PRIMESIEVE_MAX_STOP) -- see
+            build_orchestrator_direct_argv()'s own docstring for why orchestrator_v3.py
+            itself (not its loop wrapper) is the right engine there. Reads
+            write_files/compute_sieving_primes_count from the same low-level form fields
+            primesieve mode and the main 'Uruchom' button already use
+            (self._loop_write_files_var/self._loop_count_sieving_var), and
+            workers/batches_per_worker from self._loop_vars with a safe fallback of 1 each
+            if that form hasn't been touched/validated yet -- unlike _on_run_loop()'s own
+            validation, this call site must never block a search-triggered generation on
+            an unrelated low-level field being blank or malformed."""
+            self._on_run_orchestrator_direct(base_exponent, target_idx_start, window_count_per_run)
+
+        def _on_run_orchestrator_direct(self, base_exponent, target_idx_start, window_count_per_run):
+            """Launch path for orchestrator_v3.py run DIRECTLY (see
+            build_orchestrator_direct_argv()) -- reuses the exact same
+            self._loop_runner/self._loop_output_queue/self.loop_console/... plumbing
+            _on_run_loop()/_on_run_primesieve() both already use, for the same
+            one-runner-at-a-time reasoning _on_run_primesieve()'s own docstring gives."""
+            if self._loop_runner is not None and self._loop_runner.is_running():
+                return
+            write_files = self._loop_write_files_var.get()
+            compute_sieving = self._loop_count_sieving_var.get()
+
+            def _positive_int_or(key, default):
+                raw = self._loop_vars[key].get().strip()
+                return int(raw) if raw.isdigit() and int(raw) > 0 else default
+
+            workers = _positive_int_or("workers", 1)
+            batches_per_worker = _positive_int_or("batches_per_worker", 1)
+            argv = build_orchestrator_direct_argv(
+                base_exponent, target_idx_start, window_count_per_run,
+                QUICK_GEN_MAX_WINDOW_WIDTH, write_files, compute_sieving,
+                workers, batches_per_worker)
+            log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "orchdirect")
+            cmd = build_wsl_logged_command(argv, log_path, exit_path)
+
+            self.loop_console.append(self._new_run_separator())
+            self._loop_output_queue = queue.Queue()
+            self._loop_runner = WslLoggedRunner(
+                cmd, log_path, exit_path, self._loop_output_queue,
+                kill_pattern="orchestrator_v3.py")
             self._loop_runner.start()
             self.loop_run_btn.configure(state="disabled")
             self.loop_stop_btn.configure(state="normal")
