@@ -263,6 +263,8 @@
   "gen.field_n_instances": "Instancje równoległe (n_instances):",
   "gen.field_window_count": "Okien / iterację (window_count_per_run):",
   "gen.field_workers": "Workery / instancję (workers):",
+  "gen.error_cpu_probe_failed": "Nie udało się odczytać dostępnej liczby wątków CPU z WSL -- upewnij się, że WSL jest zainstalowany i działa, i spróbuj ponownie.",
+  "gen.auto_cpu_result": "Dostępne wątki CPU w WSL: {available}.\nZalecana liczba workerów: {recommended}.\n\nWięcej workerów niż dostępnych wątków CPU nie zwiększa realnej równoległości -- dodaje tylko narzut na przełączanie procesów. Wartość w polu możesz nadal zmienić ręcznie na dowolną, od 1 wzwyż.",
   "gen.field_batches": "Batche / workera (batches_per_worker):",
   "gen.field_window_m": "Szerokość okna (window_m):",
   "gen.advanced_show": "[+] Ustawienia zaawansowane",

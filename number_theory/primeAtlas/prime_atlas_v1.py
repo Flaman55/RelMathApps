@@ -2325,6 +2325,51 @@ def recommended_max_windows(available_ram_bytes, window_m=QUICK_GEN_MAX_WINDOW_W
     return max(1, min(1000, windows))
 
 
+def estimate_wsl_available_cpu_count(timeout=10):
+    """Best-effort read of the CPU count INSIDE WSL (via `nproc`) -- same reasoning as
+    estimate_wsl_available_ram_bytes() above: the sieve itself runs as a WSL subprocess
+    (see build_wsl_logged_command above), and WSL2 can be configured (`.wslconfig`'s own
+    `processors` setting) with fewer virtual CPUs than the host actually has, so reading
+    Windows-side CPU count (e.g. `os.cpu_count()` in this native process) would silently
+    overstate what a run launched INTO WSL can actually use in parallel. Returns None on
+    any failure (WSL not installed/reachable, parse failure, timeout) -- callers must
+    treat that as "couldn't determine, don't guess", never fall back to a made-up
+    number, same as the RAM probe."""
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        result = subprocess.run(
+            ["wsl.exe", "-e", "bash", "-c", "nproc"],
+            capture_output=True, text=True, timeout=timeout, **kwargs)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    if not output.isdigit():
+        return None
+    count = int(output)
+    return count if count > 0 else None
+
+
+def recommended_worker_count(available_cpu_count):
+    """The "workers" CLI parameter (orchestrator_loop_v2.py/orchestrator_v3.py) spawns
+    that many OS-level parallel processes, each pinned to sieving its own batch of the
+    combined range -- unlike window count (which trades RAM for throughput with no
+    natural ceiling other than memory), there is no benefit to requesting more workers
+    than there are CPUs to actually run them concurrently; anything beyond that just
+    adds process-scheduling overhead without adding real parallelism. The
+    recommendation is therefore simply the detected CPU count itself, clamped to a
+    sane [1, 256] display range (defensive only -- guards against a corrupt/absurd
+    `nproc` read, not a real architectural limit). Returns None if
+    available_cpu_count is None/non-positive, same "couldn't determine" contract as
+    recommended_max_windows()."""
+    if not available_cpu_count or available_cpu_count <= 0:
+        return None
+    return max(1, min(256, int(available_cpu_count)))
+
+
 # Parsed out of a generation run's live console output by _drain_output_queue() to drive the
 # SHARED bottom status/progress bar (self.status/self.totals_progress -- the same one the
 # floor-totals scan and the Primes/Constellations search box already use) while a run is in
@@ -7347,7 +7392,17 @@ def _build_gui():
             add_loop_field(1, 0, "n_instances", T("gen.field_n_instances"))
             add_loop_field(1, 1, "window_count_per_run", T("gen.field_window_count"))
             add_loop_field(2, 0, "workers", T("gen.field_workers"))
-            add_loop_field(2, 1, "batches_per_worker", T("gen.field_batches"))
+            # Auto button for "workers", same idea as Quick generation's own RAM-based
+            # Auto button for window count (_on_quick_auto_width_clicked) -- probes
+            # WSL's available CPU count and fills the field with it (see
+            # _on_workers_auto_clicked's own docstring). Occupies the grid slot
+            # batches_per_worker used to sit in (raw column 2); batches_per_worker
+            # itself moves one field-slot to the right (col=2 -> raw columns 4/5) to
+            # make room, rather than crowding a fourth thing onto this row.
+            ttk.Button(loop_form, text=T("quick.auto_button"), width=6,
+                       command=self._on_workers_auto_clicked).grid(
+                row=2, column=2, sticky="w", padx=(0, 8), pady=2)
+            add_loop_field(2, 2, "batches_per_worker", T("gen.field_batches"))
             # window_m: was hardcoded to 10,000,000 in three separate scanner/orchestrator
             # files -- now a real CLI-overridable parameter, threaded all the way down to
             # prime_sieve_v3.py (see build_loop_argv()'s docstring for the full chain and
@@ -7928,6 +7983,31 @@ def _build_gui():
             messagebox.showinfo(T("quick.dialog_title"), T(
                 "quick.auto_ram_result", available_gb=f"{available / 1e9:.1f}",
                 recommended=f"{recommended:,}", numbers_total=f"{numbers_total:,}"))
+
+        def _on_workers_auto_clicked(self):
+            """Auto button handler for the "workers" field in the loop pipeline's
+            advanced form (see _build_generation_tab's own comment above the button)
+            -- the CPU-count counterpart to _on_quick_auto_width_clicked's RAM-based
+            window-count suggestion above. Queries the CPU count INSIDE WSL
+            (estimate_wsl_available_cpu_count -- the sieve's worker processes run
+            there, not in this native Windows process) and fills the "workers" field
+            with the recommendation (recommended_worker_count -- simply the detected
+            count itself, since requesting more workers than available CPUs adds
+            scheduling overhead without adding real parallelism).
+
+            This only ever SUGGESTS a value into the field -- like every other field
+            in this advanced form, "workers" stays a plain, freely-editable Entry
+            afterward (the person can still type anything from 1 up to, or beyond,
+            the detected count; nothing here enforces a hard ceiling on typing, same
+            as window_count_per_run's own field right above it)."""
+            available = estimate_wsl_available_cpu_count()
+            if available is None:
+                messagebox.showerror(T("quick.dialog_title"), T("gen.error_cpu_probe_failed"))
+                return
+            recommended = recommended_worker_count(available)
+            self._loop_vars["workers"].set(str(recommended))
+            messagebox.showinfo(T("quick.dialog_title"), T(
+                "gen.auto_cpu_result", available=available, recommended=recommended))
 
         def _sync_quick_panel(self, panel):
             """tkraise() only reorders stacking within the shared grid cell -- it does
