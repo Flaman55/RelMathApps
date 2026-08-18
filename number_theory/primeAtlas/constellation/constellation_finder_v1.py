@@ -59,6 +59,20 @@ import numpy as np
 # per-window CHECKPOINT.txt above at all: a separate, tiny BOUNDARY_CHECKED.txt marker per
 # floor, and a clear informational print when the check can't be completed yet because the
 # next floor has no data.
+#
+# CHECKPOINT.txt regression safety (added 2026-08-19, at Artur's request): CHECKPOINT.txt
+# and BOUNDARY_CHECKED.txt are both plain files with no merge logic of their own -- if a
+# floor's constellations/ folder is physically copied in from another storage (magazyn)
+# that had independently scanned some of the same windows, or CHECKPOINT.txt simply names
+# a window no longer present among the current ones (the existing "ignoring checkpoint,
+# processing from the start" fallback below), some already-processed windows get
+# RE-scanned. Re-scanning is normally harmless on its own, but re-appending the SAME hit
+# values a second time used to crash (append_prime_window()'s own strict-increase
+# assertion) the instant a re-scanned window turned up a real hit. See
+# _append_hits_deduped()'s own docstring and [[primeatlas_storage_merge_federation]] for
+# the full story -- every append_hits() call in this file now goes through that wrapper,
+# which silently drops already-known values instead of crashing, making re-scanning an
+# already-covered window safe and effectively idempotent.
 # ==========================================================================================
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -188,6 +202,70 @@ def append_hits(base_exponent, k, variant_id, new_sorted_starts, known_last_valu
     prime_sieve_v1.append_prime_window(path, new_sorted_starts, known_last_value=known_last_value)
 
 
+def _append_hits_deduped(base_exponent, k, variant_id, new_sorted_starts, last_value_cache=None):
+    """Wraps append_hits() with a pre-filter against whatever this pattern's hit file's
+    CURRENT last stored value actually is, dropping any of `new_sorted_starts` that are
+    <= that value instead of handing them to append_prime_window() (which raises
+    ValueError on exactly that condition -- see its own docstring: "must be strictly
+    greater than the file's current last value").
+
+    Why this exists (added 2026-08-18, at Artur's request, closing the gap noted in
+    [[primeatlas_storage_merge_federation]]): CHECKPOINT.txt is a single plain file with
+    no merge logic of its own -- if a floor's constellations/ folder gets physically
+    copied in from another storage (magazyn) that had independently scanned some of the
+    SAME windows, or if CHECKPOINT.txt simply names a window no longer present among the
+    CURRENT windows (process_floor()'s own existing fallback: "ignoring checkpoint,
+    processing from the start"), some already-processed windows get RE-scanned. Those
+    windows produce the exact same hit values as before (matching is deterministic), and
+    without this filter, re-appending them would hit append_prime_window()'s own
+    ValueError the instant a re-scanned window turns up a real hit -- a hard crash, not a
+    silent problem, but still one that stops constellation scanning for that floor dead
+    until someone notices and manually intervenes.
+
+    This makes re-scanning an already-covered window SAFE and effectively idempotent
+    instead: already-known values are silently dropped (logged by the caller, not here,
+    since only the caller knows whether this is worth mentioning at the per-window
+    volume process_floor()'s own loop runs at), genuinely NEW values (there can be none
+    for an exact re-scan, but this stays correct even if some future change makes that
+    possible) still get appended normally. Deliberately implemented here, not as a
+    change to append_prime_window() itself -- that function's own strict assertion stays
+    intact as a genuine invariant check for any other, non-reprocessing caller; this
+    wrapper is specific to the one scenario constellation_finder_v1.py's own checkpoint
+    can legitimately regress in.
+
+    `last_value_cache`, if given, is a dict CALLERS own and mutate across a whole run
+    (see process_floor()'s own last_value_cache) -- same performance rationale as
+    append_hits()'s own known_last_value parameter (avoids re-decoding the whole hit
+    file on every single call). Falls back to reading the file's real last value from
+    disk when no cache is given or this (k, variant_id) hasn't been seen yet this run.
+
+    Returns (appended_count, skipped_count)."""
+    if not new_sorted_starts:
+        return 0, 0
+    key = (k, variant_id)
+    if last_value_cache is not None and key in last_value_cache:
+        known_last_value = last_value_cache[key]
+    else:
+        hpath = hit_file_path(base_exponent, k, variant_id)
+        existing = prime_sieve_v1.read_prime_window(hpath) if os.path.exists(hpath) else []
+        known_last_value = existing[-1] if existing else None
+
+    if known_last_value is None:
+        to_append = new_sorted_starts
+    else:
+        to_append = [v for v in new_sorted_starts if v > known_last_value]
+    skipped = len(new_sorted_starts) - len(to_append)
+
+    if to_append:
+        append_hits(base_exponent, k, variant_id, to_append, known_last_value=known_last_value)
+        if last_value_cache is not None:
+            last_value_cache[key] = to_append[-1]
+    elif last_value_cache is not None:
+        last_value_cache[key] = known_last_value
+
+    return len(to_append), skipped
+
+
 def match_patterns_vectorized(candidates, local_set, active_patterns):
     """Computes a presence MASK (numpy, vectorized) once per UNIQUE offset used by ANY
     tracked pattern, instead of once per (pattern, candidate, offset) triple. Matching a
@@ -313,14 +391,21 @@ def check_floor_boundary(base_exponent, windows, active_patterns, max_span):
     local_set.update(head)
     results = match_patterns_vectorized(last_candidates, local_set, active_patterns)
     new_hits_count = 0
+    skipped_count = 0
     for (k, vid), matches in results.items():
         starts = sorted(m[0] for m in matches)
         # A one-off call, not part of process_floor()'s own hot per-window loop -- letting
-        # append_hits() re-discover known_last_value from disk itself here is fine; the
-        # O(current hit-file size) cost that incurs only matters when it's paid on nearly
-        # every window of a run, which this isn't.
-        append_hits(base_exponent, k, vid, starts)
-        new_hits_count += len(starts)
+        # _append_hits_deduped() re-discover the hit file's real last value from disk
+        # here is fine; the O(current hit-file size) cost that incurs only matters when
+        # it's paid on nearly every window of a run, which this isn't. Deduped (not a
+        # plain append_hits() call) for the same reason as process_floor()'s own loop --
+        # see _append_hits_deduped()'s own docstring.
+        appended, skipped = _append_hits_deduped(base_exponent, k, vid, starts)
+        new_hits_count += appended
+        skipped_count += skipped
+    if skipped_count:
+        print(f"[CONSTELLATIONS v1] Boundary check: {skipped_count} hit(s) already present "
+              f"(skipped as duplicates, not appended again).")
     write_boundary_checked(
         base_exponent,
         f"checked against 10^{base_exponent + 1}'s first window ({next_name}) -- "
@@ -371,14 +456,15 @@ def process_floor(base_exponent):
 
     total_hits_this_run = {}
     # (k, variant_id) -> last stored value in that pattern's cumulative hit file, tracked
-    # IN MEMORY across this whole run so append_hits() never has to re-decode the
-    # already-accumulated hit file just to find where to resume gap-encoding from.
+    # IN MEMORY across this whole run so _append_hits_deduped() never has to re-decode
+    # the already-accumulated hit file just to find where to resume gap-encoding from.
     # Without this, every append re-read the WHOLE growing file (see
     # append_prime_window()'s docstring in prime_sieve_v1.py) -- for common patterns like
     # k=2..5, which pick up new hits on nearly every window, that makes the total append
     # cost quadratic in the hit file's size over a floor's lifetime. Bootstrapped lazily
     # (at most once per pattern per run, from disk) the first time a pattern actually gets
-    # a hit in this run.
+    # a hit in this run. Also what makes duplicate-detection cheap across the whole run
+    # (see _append_hits_deduped()'s own docstring) -- not just a performance cache.
     last_value_cache = {}
 
     for i, (name, path, _base_prime) in enumerate(to_process):
@@ -396,26 +482,31 @@ def process_floor(base_exponent):
 
         results = match_patterns_vectorized(candidates, local_set, active_patterns)
         new_hits_count = 0
+        skipped_hits_count = 0
         for (k, vid), matches in results.items():
             starts = sorted(m[0] for m in matches)
             key = (k, vid)
-            if key not in last_value_cache:
-                hpath = hit_file_path(base_exponent, k, vid)
-                if os.path.exists(hpath):
-                    existing = prime_sieve_v1.read_prime_window(hpath)
-                    last_value_cache[key] = existing[-1] if existing else None
-                else:
-                    last_value_cache[key] = None
-            append_hits(base_exponent, k, vid, starts, known_last_value=last_value_cache[key])
-            last_value_cache[key] = starts[-1]
-            total_hits_this_run[key] = total_hits_this_run.get(key, 0) + len(starts)
-            new_hits_count += len(starts)
+            # Deduped, not a plain append_hits() call -- CHECKPOINT.txt has no merge
+            # logic of its own (see _append_hits_deduped()'s own docstring): if this
+            # window is being RE-scanned (checkpoint regressed, e.g. a floor's
+            # constellations/ folder was physically copied in from another storage that
+            # had independently scanned some of the same windows, or the checkpoint's
+            # named file just isn't among the current windows -- see the "ignoring
+            # checkpoint, processing from the start" fallback above), the same values
+            # would already be stored, and a plain append_hits() call would crash on
+            # append_prime_window()'s own strict-increase assertion the instant that
+            # happens. This makes re-scanning an already-covered window safe instead.
+            appended, skipped = _append_hits_deduped(base_exponent, k, vid, starts, last_value_cache)
+            total_hits_this_run[key] = total_hits_this_run.get(key, 0) + appended
+            new_hits_count += appended
+            skipped_hits_count += skipped
 
         write_checkpoint(base_exponent, name)
 
+        extra = f" skipped_duplicates={skipped_hits_count}" if skipped_hits_count else ""
         print(f"[CONSTELLATIONS v1] {i+1}/{len(to_process)}: {name} -- "
               f"primes={len(candidates):,} peeked_head={len(head)} "
-              f"new_hits={new_hits_count} ({time.time()-t0:.2f}s)")
+              f"new_hits={new_hits_count}{extra} ({time.time()-t0:.2f}s)")
 
     check_floor_boundary(base_exponent, windows, active_patterns, max_span)
 
