@@ -456,6 +456,25 @@ def read_is_prime_from_storage(portal_folder, limit):
     return is_prime
 
 
+def count_existing_windows(portal_folder, base_exponent):
+    """Real count of window FILES actually on disk for this floor -- len(list_source_
+    filenames(...)), nothing more. Added 2026-08-18 at Artur's request after a real-world
+    screenshot showed a nonsensical "windows in storage" figure
+    (234,567,890,123,458,790) in the Exploration-mode Quick-gen summary: that number was
+    find_continuation_target_idx()'s CONTINUATION POINT (highest existing target_idx +
+    1), which only equals the real file count on a floor with zero gaps -- once direct-
+    start writes made genuine interior gaps possible (see find_first_gap_target_idx()'s
+    own docstring), the two numbers can diverge arbitrarily, and the continuation point
+    alone is meaningless as a "how much do I actually have" figure for a person to read.
+    This function is for DISPLAY ONLY -- every launch/continuation decision must keep
+    using find_continuation_target_idx() (or find_first_gap_target_idx() for the gap-
+    fill strategy), since those need the highest-existing-POSITION semantics, not a
+    plain count, to know where generation can safely resume. Proportional to the real
+    file count via list_source_filenames()'s own os.listdir() (cheap even at thousands
+    of files per floor), never to the numeric magnitude of the floor itself."""
+    return len(list_source_filenames(portal_folder, base_exponent))
+
+
 def find_continuation_target_idx(portal_folder, base_exponent, window_m):
     """Pure-Python, WSL/ctypes-free reimplementation of orchestrator_v2_debug.
     find_auto_start()'s logic, built on list_source_filenames() (already parses each
@@ -7845,9 +7864,14 @@ def _build_gui():
                 return
             continuation_point = 10 ** floor_value + existing_count * QUICK_GEN_MAX_WINDOW_WIDTH
             self.quick_primesieve_from_var.set(str(continuation_point))
+            # existing_count above is a CONTINUATION POSITION (see
+            # find_continuation_target_idx()'s own docstring), not necessarily the real
+            # file count once a floor has interior gaps -- the message shows the real
+            # count instead (see count_existing_windows()'s own docstring for why).
+            real_window_count = count_existing_windows(PORTAL_FOLDER, floor_value)
             messagebox.showinfo(T("quick.dialog_title"), T(
                 "quick.primesieve_auto_from_result", floor=floor_value,
-                existing_count=existing_count, continuation_point=f"{continuation_point:,}"))
+                existing_count=real_window_count, continuation_point=f"{continuation_point:,}"))
 
         def _on_explore_auto_floor_clicked(self):
             """Exploration mode's OWN Floor-Auto button -- fills quick_explore_floor_var
@@ -8129,7 +8153,8 @@ def _build_gui():
                 width_mult=capped_width,
                 width_total=f"{capped_width * QUICK_GEN_MAX_WINDOW_WIDTH:,}",
                 gap_start=f"{gap_start:,}",
-                existing_count=existing_count, added_count=capped_width)
+                existing_count=count_existing_windows(PORTAL_FOLDER, floor_value),
+                added_count=capped_width)
                 + (T("quick.note_gap_partial") if not reaches_existing else ""))
             # _launch_direct_window_range() (not _apply_loop_params_and_run()) since this
             # is a literal target_idx -- it also trims any edge overlap with what's
@@ -8285,12 +8310,19 @@ def _build_gui():
                     width_capped = True
             existing_count = find_continuation_target_idx(
                 PORTAL_FOLDER, floor_lo, QUICK_GEN_MAX_WINDOW_WIDTH)
+            # existing_count above is a CONTINUATION POSITION, not necessarily the real
+            # file count on a floor with interior gaps -- real_existing_count is for
+            # DISPLAY only (see count_existing_windows()'s own docstring); every caller's
+            # own arithmetic must keep using existing_count/target_idx_start.
+            real_existing_count = count_existing_windows(PORTAL_FOLDER, floor_lo)
             if target_idx_end <= existing_count:
                 return {"already": True, "rounded_start": rounded_start,
                         "rounded_end": rounded_end, "existing_count": existing_count,
+                        "real_existing_count": real_existing_count,
                         "truncated": truncated, "width_capped": width_capped}
             launch_target_idx_start = max(literal_target_idx_start, existing_count)
             return {"floor": floor_lo, "existing_count": existing_count,
+                     "real_existing_count": real_existing_count,
                      "target_idx_start": launch_target_idx_start,
                      "window_count_per_run": target_idx_end - launch_target_idx_start,
                      "rounded_start": rounded_start, "rounded_end": rounded_end,
@@ -8345,14 +8377,14 @@ def _build_gui():
                             "quick.status_already_in_storage",
                             rounded_start=f"{plan['rounded_start']:,}",
                             rounded_end=f"{plan['rounded_end']:,}",
-                            existing_count=plan["existing_count"]))
+                            existing_count=plan["real_existing_count"]))
                         return
                     self.quick_status_var.set(T(
                         "quick.summary_range", start=f"{start_value:,}",
                         end=f"{start_value + width_total:,}",
                         rounded_start=f"{plan['rounded_start']:,}",
                         rounded_end=f"{plan['rounded_end']:,}", floor=plan["floor"],
-                        existing_count=plan["existing_count"],
+                        existing_count=plan["real_existing_count"],
                         added_count=plan["window_count_per_run"])
                         + (T("quick.note_truncated_floor_boundary",
                               boundary=f"{plan['rounded_end']:,}")
@@ -8403,14 +8435,16 @@ def _build_gui():
                 if remaining <= 0:
                     self.quick_status_var.set(T(
                         "quick.status_floor_full", floor=floor_value,
-                        existing_count=existing_count, floor_window_count=floor_window_count))
+                        existing_count=count_existing_windows(PORTAL_FOLDER, floor_value),
+                        floor_window_count=floor_window_count))
                     return
                 capped_width = min(width_mult, remaining)
                 self.quick_status_var.set(T(
                     "quick.summary_floor", floor=floor_value, width_mult=capped_width,
                     width_total=f"{capped_width * QUICK_GEN_MAX_WINDOW_WIDTH:,}",
                     start=T("quick.start_continue_last"),
-                    existing_count=existing_count, added_count=capped_width)
+                    existing_count=count_existing_windows(PORTAL_FOLDER, floor_value),
+                    added_count=capped_width)
                     + (T("quick.note_truncated_floor_boundary",
                           boundary=f"{10 ** (floor_value + 1):,}")
                        if capped_width < width_mult else ""))
@@ -8438,13 +8472,13 @@ def _build_gui():
                         "quick.status_already_in_storage",
                         rounded_start=f"{plan['rounded_start']:,}",
                         rounded_end=f"{plan['rounded_end']:,}",
-                        existing_count=plan["existing_count"]))
+                        existing_count=plan["real_existing_count"]))
                     return
                 self.quick_status_var.set(T(
                     "quick.summary_range", start=f"{start:,}", end=f"{end:,}",
                     rounded_start=f"{plan['rounded_start']:,}",
                     rounded_end=f"{plan['rounded_end']:,}", floor=plan["floor"],
-                    existing_count=plan["existing_count"],
+                    existing_count=plan["real_existing_count"],
                     added_count=plan["window_count_per_run"])
                     + (T("quick.note_truncated_floor_boundary",
                           boundary=f"{plan['rounded_end']:,}")
@@ -8553,7 +8587,8 @@ def _build_gui():
                 if remaining <= 0:
                     self.quick_status_var.set(T(
                         "quick.status_floor_full", floor=floor_value,
-                        existing_count=existing_count, floor_window_count=floor_window_count))
+                        existing_count=count_existing_windows(PORTAL_FOLDER, floor_value),
+                        floor_window_count=floor_window_count))
                     return
                 # Same reasoning as Floor mode's capped_width just above: base_exponent is
                 # FIXED for an entire orchestrator run (see _apply_loop_params_and_run's own
@@ -8573,7 +8608,8 @@ def _build_gui():
                 self.quick_status_var.set(T(
                     "quick.summary_explore", floor=floor_value, iterations=iterations,
                     width_mult=window_count_per_run, iterations_total=f"{iterations_total:,}",
-                    existing_count=existing_count, added_count=iterations * window_count_per_run)
+                    existing_count=count_existing_windows(PORTAL_FOLDER, floor_value),
+                    added_count=iterations * window_count_per_run)
                     + (T("quick.note_truncated_floor_boundary",
                           boundary=f"{10 ** (floor_value + 1):,}")
                        if truncated else ""))
@@ -8660,14 +8696,14 @@ def _build_gui():
                         "quick.status_already_in_storage",
                         rounded_start=f"{plan['rounded_start']:,}",
                         rounded_end=f"{plan['rounded_end']:,}",
-                        existing_count=plan["existing_count"]))
+                        existing_count=plan["real_existing_count"]))
                     return
                 ceiling_truncated = (plan["rounded_end"] - 1) > PRIMESIEVE_MAX_STOP
                 self.quick_status_var.set(T(
                     "quick.summary_range", start=f"{start:,}", end=f"{end:,}",
                     rounded_start=f"{plan['rounded_start']:,}",
                     rounded_end=f"{plan['rounded_end']:,}", floor=plan["floor"],
-                    existing_count=plan["existing_count"],
+                    existing_count=plan["real_existing_count"],
                     added_count=plan["window_count_per_run"])
                     + (T("quick.note_truncated_floor_boundary",
                           boundary=f"{plan['rounded_end']:,}")
