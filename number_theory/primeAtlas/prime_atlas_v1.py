@@ -7439,15 +7439,20 @@ def _build_gui():
             self.quick_floor_width_var = tk.StringVar(value="1")
             self.quick_floor_start_var = tk.StringVar(value="")
             self.quick_floor_start_var.trace_add("write", self._on_quick_floor_start_changed)
-            # Only consulted by the BLANK-starting-point path (a typed starting point
-            # already means "start exactly there", see _quick_gen_plan_literal_range's
-            # own docstring) -- default False (continue past the highest existing file,
-            # today's historical behavior, unchanged) rather than True, so enabling gap-
-            # filling is an explicit, conscious choice rather than a surprising default
-            # for a person who has never left a gap and doesn't need to think about this
-            # at all. Not persisted across restarts, same as every other Quick-gen field
-            # (Width, punkt startowy) -- see _apply_loop_params_and_run's own docstring
-            # for why only the low-level orchestrator form persists.
+            # Shared by TWO modes' own continuation paths: Floor mode's own BLANK-
+            # starting-point path (a typed starting point already means "start exactly
+            # there", see _quick_gen_plan_literal_range's own docstring, unaffected by
+            # this toggle either way) and Exploration mode's own Floor field (blank OR
+            # typed -- both of Exploration's own starting points can land on a floor
+            # with a gap, see _try_fill_quick_gen_gap()'s own docstring, added there
+            # 2026-08-18 at Artur's request to match Floor mode exactly). Default False
+            # (continue past the highest existing file, today's historical behavior,
+            # unchanged) rather than True, so enabling gap-filling is an explicit,
+            # conscious choice rather than a surprising default for a person who has
+            # never left a gap and doesn't need to think about this at all. Not
+            # persisted across restarts, same as every other Quick-gen field (Width,
+            # punkt startowy) -- see _apply_loop_params_and_run's own docstring for why
+            # only the low-level orchestrator form persists.
             self.quick_floor_fill_gaps_var = tk.BooleanVar(value=False)
             self.quick_from_var = tk.StringVar(value="")
             self.quick_to_var = tk.StringVar(value="")
@@ -7688,8 +7693,20 @@ def _build_gui():
             [1, 1000]), so the per-iteration memory footprint is exactly as
             user-controllable here as it is there, instead of being pinned to a fixed
             1000-window (10 billion) iteration size regardless of how much RAM the machine
-            running the WSL sieve actually has."""
-            frame = ttk.Frame(container)
+            running the WSL sieve actually has.
+
+            Second row: the SAME "fill gaps first" checkbox/variable Floor mode's own
+            blank-starting-point path uses (quick_floor_fill_gaps_var -- added here
+            2026-08-18, at Artur's request, to match Floor mode's behavior exactly: "tak
+            jak tylko piętro"). Relevant to BOTH of this mode's own starting points --
+            blank Floor (auto-detects the highest populated floor) and a typed Floor --
+            since either one can land on a floor that has a gap (see
+            _try_fill_quick_gen_gap()'s own docstring for why a floor Exploration hasn't
+            personally visited yet can still have one, e.g. from a search or Goldbach
+            direct-range write)."""
+            outer = ttk.Frame(container)
+            outer.grid(row=0, column=0, sticky="w")
+            frame = ttk.Frame(outer)
             frame.grid(row=0, column=0, sticky="w")
             ttk.Label(frame, text=T("quick.field_floor")).pack(side="left")
             ttk.Entry(frame, textvariable=self.quick_explore_floor_var, width=10).pack(
@@ -7710,7 +7727,11 @@ def _build_gui():
             ttk.Button(frame, text=T("quick.auto_button"),
                        command=lambda: self._on_quick_auto_width_clicked(
                            self.quick_explore_width_var)).pack(side="left")
-            mode_frames["explore"] = frame
+            gap_row = ttk.Frame(outer)
+            gap_row.grid(row=1, column=0, sticky="w", pady=(4, 0))
+            ttk.Checkbutton(gap_row, text=T("quick.field_fill_gaps_first"),
+                             variable=self.quick_floor_fill_gaps_var).pack(side="left")
+            mode_frames["explore"] = outer
 
         def _build_quick_mode_primesieve(self, container, mode_frames):
             """Floor + From + Width -- NOT the From/To pair the first version of this mode
@@ -8035,6 +8056,62 @@ def _build_gui():
                 panel["generate_btn"].configure(text=T("common.stop"))
             self._show_loop_terminal()
 
+        def _try_fill_quick_gen_gap(self, floor_value, existing_count, width_mult):
+            """Shared "fill gaps first" check for Floor mode's blank-starting-point path
+            AND Exploration mode (see quick_floor_fill_gaps_var's own comment in
+            _init_quick_generation_state -- the SAME toggle/variable drives both; added to
+            Exploration 2026-08-18, at Artur's request, to match Floor mode's own
+            behavior exactly ("tak jak tylko piętro")). Only changes anything when
+            floor_value genuinely HAS a gap: find_first_gap_target_idx() returns the exact
+            same value as existing_count (find_continuation_target_idx()) otherwise, so
+            the "no gap" case returns False and callers fall straight through to their own
+            normal continue-from-highest logic, unchanged. Returns True (and has ALREADY
+            launched something + set quick_status_var) if a gap was found and filled;
+            False otherwise -- callers should `return` immediately on True, exactly like
+            any other terminal branch in _on_quick_generate_clicked.
+
+            Deliberately launches at most width_mult windows into the gap -- ONE
+            iteration's worth, never more, even from Exploration mode's own multi-
+            iteration call site (which has no equivalent single-shot cap otherwise).
+            Exploration's normal (non-gap) launches go through orchestrator_loop_v2.py
+            specifically so each subprocess's own batch gets a bounded window_count_per_run
+            -- orchestrator_v3.py's own batch_size is simply set equal to whatever
+            window_count it receives (see that file's main(), batch_size = window_count),
+            with NO internal chunking of its own. Collapsing gap-filling into one direct
+            _launch_direct_window_range() call sized at iterations*width_mult instead of
+            just width_mult would silently hand a single subprocess a batch far larger
+            than Exploration's own Iterations field was ever meant to allow through in one
+            step, reintroducing exactly the per-batch RAM risk multi-iteration launches
+            exist to avoid (see [[feedback_ram_budget_round_down]]-style reasoning: prefer
+            under-filling a wide gap over one oversized launch). A gap wider than
+            width_mult is filled incrementally instead -- click by click, or automatically
+            over repeated blank-Floor auto-detect passes -- using the same
+            quick.note_gap_partial the caller already surfaces for this."""
+            if not self.quick_floor_fill_gaps_var.get():
+                return False
+            gap_target_idx = find_first_gap_target_idx(
+                PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+            if gap_target_idx >= existing_count:
+                return False
+            floor_window_count = _floor_window_count(floor_value)
+            gap_remaining = floor_window_count - gap_target_idx
+            capped_width = min(width_mult, gap_remaining)
+            reaches_existing = gap_target_idx + capped_width >= existing_count
+            gap_start = 10 ** floor_value + gap_target_idx * QUICK_GEN_MAX_WINDOW_WIDTH
+            self.quick_status_var.set(T(
+                "quick.summary_floor_fill_gap", floor=floor_value,
+                width_mult=capped_width,
+                width_total=f"{capped_width * QUICK_GEN_MAX_WINDOW_WIDTH:,}",
+                gap_start=f"{gap_start:,}",
+                existing_count=existing_count, added_count=capped_width)
+                + (T("quick.note_gap_partial") if not reaches_existing else ""))
+            # _launch_direct_window_range() (not _apply_loop_params_and_run()) since this
+            # is a literal target_idx -- it also trims any edge overlap with what's
+            # already on disk, though none is expected here since gap_target_idx is by
+            # definition the first MISSING window.
+            self._launch_direct_window_range(floor_value, gap_target_idx, capped_width)
+            return True
+
         def _launch_direct_window_range(self, floor, target_idx_start, window_count):
             """Shared dispatch for every caller that already knows its own literal
             [target_idx_start, target_idx_start + window_count) target (Range mode, Floor
@@ -8294,34 +8371,8 @@ def _build_gui():
                 # up with 130-million-range numbers filed under its folder because nothing
                 # here checked where floor 7 actually ends).
                 floor_window_count = _floor_window_count(floor_value)
-                if self.quick_floor_fill_gaps_var.get():
-                    # "Fill gaps first" toggle (see quick_floor_fill_gaps_var's own comment
-                    # in _init_quick_generation_state) -- only changes anything when this
-                    # floor genuinely HAS a gap; find_first_gap_target_idx() returns the
-                    # exact same value as existing_count (find_continuation_target_idx())
-                    # otherwise, so the "no gap" case falls straight through to the normal
-                    # continue-from-highest code below, unchanged.
-                    gap_target_idx = find_first_gap_target_idx(
-                        PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
-                    if gap_target_idx < existing_count:
-                        gap_remaining = floor_window_count - gap_target_idx
-                        capped_width = min(width_mult, gap_remaining)
-                        reaches_existing = gap_target_idx + capped_width >= existing_count
-                        gap_start = 10 ** floor_value + gap_target_idx * QUICK_GEN_MAX_WINDOW_WIDTH
-                        self.quick_status_var.set(T(
-                            "quick.summary_floor_fill_gap", floor=floor_value,
-                            width_mult=capped_width,
-                            width_total=f"{capped_width * QUICK_GEN_MAX_WINDOW_WIDTH:,}",
-                            gap_start=f"{gap_start:,}",
-                            existing_count=existing_count, added_count=capped_width)
-                            + (T("quick.note_gap_partial") if not reaches_existing else ""))
-                        # _launch_direct_window_range() (not _apply_loop_params_and_run())
-                        # since this is a literal target_idx, exactly like the typed-
-                        # starting-point path above -- it also trims any edge overlap with
-                        # what's already on disk, though none is expected here since
-                        # gap_target_idx is by definition the first MISSING window.
-                        self._launch_direct_window_range(floor_value, gap_target_idx, capped_width)
-                        return
+                if self._try_fill_quick_gen_gap(floor_value, existing_count, width_mult):
+                    return
                 remaining = floor_window_count - existing_count
                 if remaining <= 0:
                     self.quick_status_var.set(T(
@@ -8449,6 +8500,17 @@ def _build_gui():
                 # Bounded at 1000 advances purely as a runaway-loop guard; floor capacity
                 # grows fast enough (see _floor_window_count) that a real run should never
                 # get remotely close to that.
+                # "Fill gaps first" check BEFORE the roll-forward loop below -- checked
+                # again inside the loop too, for every floor it advances THROUGH: a floor
+                # Exploration has never personally visited can still have a gap (e.g. a
+                # search or Goldbach "generate missing range" offer wrote directly into
+                # it), and the roll-forward loop's own "remaining<=0" fullness check
+                # only looks at the highest existing file, not interior gaps -- so
+                # without this, such a floor would be silently skipped past as "already
+                # full" instead of having its gap filled first. See
+                # _try_fill_quick_gen_gap()'s own docstring.
+                if self._try_fill_quick_gen_gap(floor_value, existing_count, width_mult):
+                    return
                 floor_window_count = _floor_window_count(floor_value)
                 remaining = floor_window_count - existing_count
                 advances = 0
@@ -8457,6 +8519,8 @@ def _build_gui():
                     self.quick_explore_floor_var.set(str(floor_value))
                     existing_count = find_continuation_target_idx(
                         PORTAL_FOLDER, floor_value, QUICK_GEN_MAX_WINDOW_WIDTH)
+                    if self._try_fill_quick_gen_gap(floor_value, existing_count, width_mult):
+                        return
                     floor_window_count = _floor_window_count(floor_value)
                     remaining = floor_window_count - existing_count
                     advances += 1
