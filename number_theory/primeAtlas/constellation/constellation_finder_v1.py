@@ -48,6 +48,17 @@ import numpy as np
 # nominal boundary independently of its content. The two differ by at most the gap from
 # a window's nominal start to its first actual prime -- a handful of units, well within
 # MAX_SPAN's margin (84 at the widest catalog entry, k=21) -- so this is safe and simpler.
+#
+# FLOOR-BOUNDARY crossings (added 2026-08-18, at Artur's request): the peek-ahead above
+# only ever looks at the next window WITHIN THE SAME FLOOR -- the floor's own LAST window
+# has no such next window to peek into, so a pattern whose base sits near the very top of
+# one floor with its tail spilling into the next floor's numbers was never checked at all.
+# Every catalog pattern's offsets are non-negative, so a boundary-straddling
+# constellation's base is always on the LOWER of the two floors -- see
+# check_floor_boundary()'s own docstring for how this is closed, without touching the
+# per-window CHECKPOINT.txt above at all: a separate, tiny BOUNDARY_CHECKED.txt marker per
+# floor, and a clear informational print when the check can't be completed yet because the
+# next floor has no data.
 # ==========================================================================================
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -127,6 +138,33 @@ def write_checkpoint(base_exponent, filename):
         f.write(f"updated_at={datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
 
 
+BOUNDARY_MARKER_FILENAME = "BOUNDARY_CHECKED.txt"
+
+
+def _boundary_marker_path(base_exponent):
+    folder = os.path.join(PORTAL_FOLDER, f"10p{base_exponent}", "constellations")
+    return os.path.join(folder, BOUNDARY_MARKER_FILENAME)
+
+
+def is_boundary_checked(base_exponent):
+    """True once this floor's own upper boundary (against 10p{base_exponent+1}) has been
+    fully resolved -- see check_floor_boundary()'s own docstring for what "resolved"
+    covers. Deliberately a SEPARATE marker from CHECKPOINT.txt (read_checkpoint() above),
+    not a field folded into it -- the two track genuinely different things (which WINDOWS
+    have been streamed vs. whether the one cross-floor edge case has been closed off) and
+    keeping them apart means neither file's own read/write logic has to change to
+    accommodate the other."""
+    return os.path.exists(_boundary_marker_path(base_exponent))
+
+
+def write_boundary_checked(base_exponent, note):
+    path = _boundary_marker_path(base_exponent)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"{note}\n")
+        f.write(f"checked_at={datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+
+
 def hit_file_path(base_exponent, k, variant_id):
     return os.path.join(
         PORTAL_FOLDER, f"10p{base_exponent}", "constellations", f"k{k}", f"variant{variant_id}",
@@ -197,9 +235,105 @@ def match_patterns_vectorized(candidates, local_set, active_patterns):
     return results
 
 
+def check_floor_boundary(base_exponent, windows, active_patterns, max_span):
+    """Checks whether a k-tuple pattern's base could sit near the very TOP of this
+    floor's own numeric range with its tail spilling into 10p{base_exponent+1} -- the one
+    case process_floor()'s own per-window streaming loop can never catch on its own,
+    since its own peek-ahead only ever looks at the next window WITHIN THE SAME FLOOR (see
+    that function's docstring), and the floor's own last window has no such next window.
+    Every catalog pattern's offsets are non-negative (base p is always the SMALLEST
+    element: p, p+d2, ..., p+dk), so a boundary-straddling constellation's base is ALWAYS
+    on the LOWER of the two floors involved -- meaning this only ever needs to look
+    FORWARD, from this floor's own last window into the next floor's own first window,
+    never backward. Any hit found here is recorded under THIS floor (base_exponent), same
+    as process_floor()'s own hits -- exactly matching how a person would expect a
+    constellation to show up under whichever floor its base (its smallest, defining
+    element) actually belongs to (added 2026-08-18, at Artur's explicit request: "jeśli
+    choć jeden element jest z piętra niżej a reszta wyżej, to wciąż powinna być widoczna
+    jak aktualne piętro").
+
+    Idempotent via a small per-floor marker file (is_boundary_checked() /
+    write_boundary_checked(), BOUNDARY_CHECKED.txt) instead of re-running this on every
+    single process_floor() call forever: once resolved, this returns immediately without
+    touching disk again. "Resolved" means either (a) a real peek against
+    10p{base_exponent+1}'s own first window already ran and any hits it found were
+    recorded, or (b) the floor's own last window doesn't reach close enough to the
+    boundary for ANY catalog offset to possibly cross it, so there was never anything to
+    check in the first place.
+
+    While UNRESOLVED -- the last window DOES reach close enough, but
+    10p{base_exponent+1} has no source data on disk yet -- prints an informational note
+    EVERY run instead of silently doing nothing, so a person scanning a leading-edge
+    floor finds out they need to generate at least the first window of the next floor to
+    fully close off this floor's own constellation search (Artur's own answer to how this
+    case should be handled, in preference to a heavier automatic-retry mechanism).
+    Automatically re-checked (and closed) the next time constellation_finder runs on this
+    floor, once that next-floor data exists -- no separate action needed beyond
+    generating it."""
+    if is_boundary_checked(base_exponent):
+        return
+    if not windows:
+        return
+    last_name, last_path, _last_base = windows[-1]
+    last_candidates = prime_sieve_v1.read_prime_window(last_path)
+    if not last_candidates:
+        write_boundary_checked(base_exponent, "empty last window -- nothing to check")
+        return
+    floor_boundary = 10 ** (base_exponent + 1)
+    max_candidate = last_candidates[-1]
+    if max_candidate + max_span < floor_boundary:
+        # Comfortably short of the boundary -- no catalog offset (at most max_span) could
+        # ever reach past it from here, so no cross-floor pattern is even POSSIBLE from
+        # this floor's own last window. Nothing to check, ever, for this floor -- close it
+        # out immediately rather than leaving it to be silently re-evaluated (and
+        # re-confirmed pointless) on every future run.
+        write_boundary_checked(
+            base_exponent,
+            f"last window's highest prime ({max_candidate}) is more than MAX_SPAN "
+            f"({max_span}) below the floor boundary ({floor_boundary}) -- no cross-floor "
+            f"pattern is possible")
+        return
+    next_windows = list_source_windows(base_exponent + 1)
+    if not next_windows:
+        print(f"[CONSTELLATIONS v1] NOTE: 10^{base_exponent}'s last window ({last_name}) "
+              f"reaches within MAX_SPAN={max_span} of the floor boundary "
+              f"({floor_boundary}) -- 10^{base_exponent + 1} has no source data yet, so a "
+              f"pattern spanning the boundary can't be checked. Generate at least the "
+              f"first window of 10^{base_exponent + 1} to close this off (re-checked "
+              f"automatically on every future run of this floor until then).")
+        return
+    next_name, next_path, next_base = next_windows[0]
+    if next_base is None:
+        print(f"[CONSTELLATIONS v1] NOTE: 10^{base_exponent + 1}'s first window "
+              f"({next_name}) has no usable header (base_prime missing) -- boundary check "
+              f"against 10^{base_exponent} skipped until this is resolved.")
+        return
+    head = prime_sieve_v1.read_prime_window_head(next_path, next_base + max_span)
+    local_set = set(last_candidates)
+    local_set.update(head)
+    results = match_patterns_vectorized(last_candidates, local_set, active_patterns)
+    new_hits_count = 0
+    for (k, vid), matches in results.items():
+        starts = sorted(m[0] for m in matches)
+        # A one-off call, not part of process_floor()'s own hot per-window loop -- letting
+        # append_hits() re-discover known_last_value from disk itself here is fine; the
+        # O(current hit-file size) cost that incurs only matters when it's paid on nearly
+        # every window of a run, which this isn't.
+        append_hits(base_exponent, k, vid, starts)
+        new_hits_count += len(starts)
+    write_boundary_checked(
+        base_exponent,
+        f"checked against 10^{base_exponent + 1}'s first window ({next_name}) -- "
+        f"{new_hits_count} boundary-spanning hit(s) found")
+    print(f"[CONSTELLATIONS v1] Boundary check 10^{base_exponent} -> 10^{base_exponent + 1}: "
+          f"{new_hits_count} new hit(s) spanning the floor boundary.")
+
+
 def process_floor(base_exponent):
     """Main entry point: streams through every not-yet-processed PGS2 window for this
-    floor, in order, matching every catalog pattern (k>=2) and appending new hits."""
+    floor, in order, matching every catalog pattern (k>=2) and appending new hits. Also
+    checks (once, then never again -- see check_floor_boundary()'s own docstring) whether
+    a pattern spans this floor's own upper boundary into 10p{base_exponent+1}."""
     windows = list_source_windows(base_exponent)
     if not windows:
         print(f"[!] No source_primes windows found for 10^{base_exponent} "
@@ -226,6 +360,13 @@ def process_floor(base_exponent):
 
     if not to_process:
         print("[CONSTELLATIONS v1] Nothing new -- checkpoint is up to date.")
+        # Still check the floor's own upper boundary even though there's no NEW window to
+        # stream -- a floor fully checkpointed in a PAST run (hence to_process is empty
+        # NOW) may only just have gotten its boundary resolvable THIS run, e.g. because
+        # 10p{base_exponent + 1} was generated since the last time this floor was
+        # processed. Skipping this here would mean a floor that's otherwise "done" never
+        # gets its boundary checked at all once its own windows stop changing.
+        check_floor_boundary(base_exponent, windows, active_patterns, max_span)
         return
 
     total_hits_this_run = {}
@@ -275,6 +416,8 @@ def process_floor(base_exponent):
         print(f"[CONSTELLATIONS v1] {i+1}/{len(to_process)}: {name} -- "
               f"primes={len(candidates):,} peeked_head={len(head)} "
               f"new_hits={new_hits_count} ({time.time()-t0:.2f}s)")
+
+    check_floor_boundary(base_exponent, windows, active_patterns, max_span)
 
     print(f"\n[CONSTELLATIONS v1] Done. New hits this run, by pattern:")
     if not total_hits_this_run:
