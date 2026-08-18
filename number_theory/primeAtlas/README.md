@@ -104,7 +104,8 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
   - **Backup** -- backup create/list/delete, restore (manifest-based drift detection
     against what is actually on disk, then a checkpointed, pausable/resumable/
     cancellable regeneration job -- see "Restore" below for ordering and engine
-    choice), an incomplete-restores list with its own resume/delete, per-floor delete
+    choice; manifests also cover the totals/sieving caches, see "Backup manifest
+    contents"), an incomplete-restores list with its own resume/delete, per-floor delete
     (clears one chosen floor's primes and constellations together, or only that
     floor's constellations while leaving its primes untouched -- for a clean
     constellation-finder re-run without regenerating prime data), and the existing
@@ -243,11 +244,41 @@ an out-of-memory failure rather than a graceful slowdown.
 In short: within whatever RAM is available, a larger window count is close to strictly
 better for throughput; RAM is the only reason not to simply set it as high as possible.
 
+## Backup manifest contents
+
+A backup is a lightweight JSON snapshot ("what SHOULD exist"), not a copy of the actual
+prime/constellation data -- a single floor can be hundreds of GB. Per floor it records:
+which `PRIME_WINDOW_*.bin` filenames exist, which constellation `k{K}/variant{V}` hit
+files exist plus that floor's `CHECKPOINT.txt` text, a copy of `benchmark_log.csv`, and
+(added 2026-08-18) each floor's `.portal_totals_cache.json` entry and
+`sieving_primes_count_cache.json` -- the two on-disk caches that exist purely to speed up
+prime-count display, not to hold data. Restoring these two costs nothing to skip (they
+just get recomputed the next time that floor is visited), but restoring them from the
+backup avoids that recompute -- for a heavily-populated floor, rescanning every window
+header from scratch has been measured at roughly 78 seconds for one 15,101-file floor.
+
+### Moving floor data between storages (magazyny)
+
+A floor's `10p{N}/` directory is self-contained enough to be physically copied from one
+storage location into another (e.g. building a fresh, empty storage but bringing some
+already-generated floors along from an older one) -- no backup/restore cycle is required
+for this to work correctly. Each floor also carries its own `floor_meta.json`, a full copy
+of that floor's `benchmark_log.csv` rows, updated every time a generation run logs a new
+one. Since `benchmark_log.csv` itself lives at the storage root (shared across all floors,
+not per-floor), a raw directory copy would otherwise leave that floor's generation history
+behind in the old location. The app's totals-cache background worker (the same one that
+scans a floor's file headers the first time it is visited in the Prime numbers tab) checks
+every floor's `floor_meta.json` on each visit and imports any rows not already present in
+the local `benchmark_log.csv`, so a moved-in floor's Benchmark tab entry appears exactly as
+if it had been generated in that storage -- nothing is lost, and this needs no explicit
+action from the user.
+
 ## Restore
 
 Restoring from a backup (Settings tab) regenerates whatever a saved manifest says should
 exist but currently does not, as a checkpointed job that can be paused, resumed, or
-cancelled and resumed again in a later session.
+cancelled and resumed again in a later session. The cheap caches described above (totals,
+sieving, `floor_meta.json`) are restored first, before any window regeneration begins.
 
 A restore run is ordered in two strict phases across every floor named in the diff, rather
 than finishing one floor end-to-end before starting the next: every floor's missing prime
@@ -277,9 +308,13 @@ prime_atlas_v1.py           GUI entry point (tkinter); six top-level tabs, three
                               "Features" above
 primeatlas/                 backend package used by the GUI, no tkinter dependency
   app_settings.py           storage path configuration
-  manifest.py                backup manifest / snapshot model
-  backup_store.py            backup creation
+  manifest.py                backup manifest / snapshot model, incl. per-floor
+                              totals/sieving caches -- see "Backup manifest contents"
+  backup_store.py            backup creation, restore write-back (CSV + floor metadata)
   restore_job.py             restore from backup
+  floor_meta.py               per-floor floor_meta.json (benchmark-row history that
+                              travels with a 10p{N} directory) -- see "Moving floor
+                              data between storages"
   delete_manager.py          whole-database delete (PortalWiper) and per-floor /
                               per-floor-constellations-only delete (FloorWiper)
   settings_tab.py            Settings tab controller (Ogolne/Backup/Aktualizacje

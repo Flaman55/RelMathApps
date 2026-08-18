@@ -103,3 +103,12 @@ class BackupStore:
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(manifest.benchmark_csv_text)
         os.replace(tmp_path, csv_path)
+
+    def restore_floor_metadata(self, manifest):
+        """Thin wrapper around BackupManifest.restore_floor_metadata() -- see that
+        method's own docstring for what it actually restores (floor_meta.json rows,
+        totals-cache entries, sieving-prime-count caches) and why it's safe to run before
+        window regeneration. Kept as its own BackupStore method, called right alongside
+        restore_csv() (see settings_tab.py's _on_start_restore()), so both cache-scope
+        restores read the same way at the call site."""
+        return manifest.restore_floor_metadata(self.storage_path)

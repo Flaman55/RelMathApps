@@ -238,6 +238,44 @@ def peak_child_rss_mb():
     return ru.ru_maxrss / 1024
 
 
+def _append_floor_meta_row(portal_folder, base_exponent, row):
+    """Small self-contained duplicate of primeatlas/floor_meta.py's
+    append_benchmark_row_to_floor_meta() -- deliberately NOT imported from there: this
+    engine runs standalone (possibly under WSL, a different sys.path than the Windows-side
+    GUI package), same reasoning every other cross-folder duplication in this project
+    already follows (see e.g. _ensure_benchmark_log_schema()'s own docstring). Writes
+    10p{base_exponent}/floor_meta.json so this floor's generation history travels with its
+    own directory if it's ever copied into a different storage (magazyn) -- see
+    floor_meta.py's module docstring for the full rationale. Best-effort/non-fatal: any
+    failure here must never break benchmark logging itself, which already succeeded by the
+    time this is called."""
+    key_fields = ("run_timestamp_utc", "base_exponent", "target_idx_start", "target_idx_end")
+
+    def _key(r):
+        return tuple(str(r.get(k, "")) for k in key_fields)
+
+    floor_dir = os.path.join(portal_folder, f"10p{base_exponent}")
+    path = os.path.join(floor_dir, "floor_meta.json")
+    try:
+        rows = []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                rows = list(data.get("benchmark_rows", []))
+        if _key(row) in {_key(r) for r in rows}:
+            return
+        rows.append(dict(row))
+        os.makedirs(floor_dir, exist_ok=True)
+        tmp_path = f"{path}.tmp{os.getpid()}"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump({"base_exponent": base_exponent, "benchmark_rows": rows}, f,
+                      indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        pass
+
+
 def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, portal_folder,
                              l_final=None, sieving_primes_count=None, max_child_rss_mb=None,
                              write_files=True, total_primes_found=None, windows_processed=None,
@@ -314,7 +352,7 @@ def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, po
             writer = csv.DictWriter(f, fieldnames=BENCHMARK_FIELDNAMES)
             if is_new:
                 writer.writeheader()
-            writer.writerow({
+            row = {
                 "run_timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "base_exponent": base_exponent,
                 "target_idx_start": start_idx,
@@ -333,8 +371,10 @@ def print_benchmark_summary(base_exponent, start_idx, end_idx, total_seconds, po
                 "sieve_seconds": f"{sieve_seconds:.3f}" if sieve_seconds is not None else "",
                 "write_seconds": f"{write_seconds:.3f}" if write_seconds is not None else "",
                 "bytes_written": bytes_written if bytes_written is not None else "",
-            })
+            }
+            writer.writerow(row)
         print(f"[BENCHMARK] logged to {log_path} (for cross-floor growth analysis)")
+        _append_floor_meta_row(portal_folder, base_exponent, row)
     except OSError as e:
         print(f"[BENCHMARK] WARNING: could not write benchmark log ({e})")
 

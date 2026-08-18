@@ -288,6 +288,11 @@ class SettingsTab(ttk.Frame):
         manifest = store.load(self._selected_backup_name)
         store.restore_csv(manifest)
         self._restore_log(self.T("settings.restore_csv_restored", name=self._selected_backup_name))
+        # Cheap, non-destructive caches (floor_meta.json rows, totals-cache entries,
+        # sieving-prime-count caches) -- see BackupManifest.restore_floor_metadata()'s own
+        # docstring for why this is safe to run now, before any window regeneration below.
+        store.restore_floor_metadata(manifest)
+        self._restore_log(self.T("settings.restore_metadata_restored", name=self._selected_backup_name))
         portal_folder = self.wsl["get_portal_folder"]()
         checkpoint_path = restore_checkpoint_path(portal_folder, self._selected_backup_name)
         job = RestoreJob.from_diff(self._selected_backup_name, self._diff_cache, checkpoint_path)

@@ -108,6 +108,7 @@ from primeatlas import (  # noqa: E402
     GOLDBACH_BOTH_BASE_PMIN,
     goldbach_largest_prime_le, goldbach_sieve_is_prime,
 )
+from primeatlas import floor_meta  # noqa: E402
 
 # AppSettings persists the chosen storage path OUTSIDE the portal folder itself (see
 # app_settings.py's docstring for the chicken-and-egg reason). Loaded once here, at module
@@ -2995,6 +2996,16 @@ def _build_gui():
                         PORTAL_FOLDER, base_exponent, self._totals_cache)
                     if new_read:
                         save_totals_cache(PORTAL_FOLDER, self._totals_cache)
+                    # A floor physically copied in from another storage (magazyn) brings
+                    # its own floor_meta.json along -- see floor_meta.py's module
+                    # docstring. This imports any rows from it that aren't already in the
+                    # LOCAL benchmark_log.csv, so the Benchmark tab shows that floor's
+                    # real generation history instead of nothing, exactly as if it had
+                    # been generated here. No-ops (cheap) on the ordinary case where
+                    # there's nothing new to import, so it's safe to call on every floor
+                    # visit rather than trying to detect "is this floor newly-copied-in"
+                    # some other way.
+                    floor_meta.merge_floor_meta_into_benchmark_log(PORTAL_FOLDER, base_exponent)
                     self._totals_result_queue.put(
                         ("done", base_exponent, total, file_count, new_read, None, total_bytes))
                 except Exception as e:  # noqa: BLE001 -- must never kill this thread
