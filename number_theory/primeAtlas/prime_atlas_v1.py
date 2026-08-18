@@ -2331,11 +2331,27 @@ def recommended_max_windows(available_ram_bytes, window_m=QUICK_GEN_MAX_WINDOW_W
 #     "[CONSTELLATIONS v1] 12/48: PRIME_WINDOW_10p11_off_50M.bin -- ..."
 #   constellation_finder_v1.py (process_floor, run-finished line):
 #     "[CONSTELLATIONS v1] Done. New hits this run, by pattern:"
+#   orchestrator_loop_v2.py (multi-iteration Exploration-mode launches ONLY -- see
+#   _LOOP_SESSION_START_RE/_LOOP_ITERATION_START_RE/_LOOP_SESSION_DONE_RE's own comment
+#   below for why these three matter: without them, _GEN_SIEVE_DONE_RE above fires once
+#   PER ITERATION -- each iteration is its own separate orchestrator_v3.py subprocess --
+#   snapping the bar to "done" after iteration 1 of N, and _GEN_SIEVE_PROGRESS_RE's own
+#   batch count resets every iteration too, so the bar only ever showed progress through
+#   THAT one iteration's own windows, never the whole multi-iteration request):
+#     "[LOOP] orchestrator_loop_v2 v2 (parallel instances): 10 iteration(s), 1 instance(s)
+#     /iteration, 1000 windows/iteration, ..."
+#     "[LOOP] iteration 3/10: launching 1 instance(s) concurrently -- target_idx ..."
+#     "[LOOP] All iterations complete in 123.4s total." / "[LOOP] Stopped early in ...s total."
 _GEN_PREP_DONE_RE = re.compile(r"\[\*\] Active sieving primes (?:used|count) \(pi\(L_final\)\)")
 _GEN_SIEVE_PROGRESS_RE = re.compile(r"\[\+\] Progress: ([\d.]+)% \((\d+)/(\d+) batches\)")
 _GEN_SIEVE_DONE_RE = re.compile(r"\[\*\] TOTAL PRIMES FOUND this run:")
 _GEN_CONST_PROGRESS_RE = re.compile(r"\[CONSTELLATIONS v1\] (\d+)/(\d+): ")
 _GEN_CONST_DONE_RE = re.compile(r"\[CONSTELLATIONS v1\] Done\. New hits this run")
+_LOOP_SESSION_START_RE = re.compile(
+    r"\[LOOP\] orchestrator_loop_v2 \S+ \(parallel instances\): (\d+) iteration\(s\)")
+_LOOP_ITERATION_START_RE = re.compile(r"\[LOOP\] iteration (\d+)/(\d+): launching")
+_LOOP_SESSION_DONE_RE = re.compile(
+    r"\[LOOP\] (?:All iterations complete|Stopped early) in [\d.]+s total\.")
 
 
 class WslLoggedRunner:
@@ -3030,6 +3046,16 @@ def _build_gui():
             # step count isn't known yet); set to n_batches+1 once it is, and cleared again
             # once a run's own "done" line snaps the bar to full.
             self._gen_step_total = None
+            # Multi-iteration Exploration-mode loop state, same lazy None-between-runs
+            # lifecycle as _gen_step_total above -- see _update_shared_progress_from_
+            # generation_chunk()'s own docstring for why these exist (without them, the
+            # bar only ever reflects ONE iteration's own progress, not the whole
+            # Iterations x Width request). Both None whenever the currently-running engine
+            # isn't orchestrator_loop_v2.py (primesieve/orchestrator-direct/constellation-
+            # finder launches never set these, so the single-run progress logic below
+            # applies to them unchanged).
+            self._gen_loop_run_count = None
+            self._gen_loop_iteration = None
 
             self.reload_primes_tree()  # this ALSO kicks off the floor-totals scan for every
                                         # floor -- see reload_primes_tree()'s docstring
@@ -8920,8 +8946,61 @@ def _build_gui():
             generation dominates while it's actually running, since these lines repeat every
             couple of seconds -- far more often than search's one-shot "searching..."
             message or the totals scan's own periodic updates -- without needing a priority
-            flag to enforce that."""
+            flag to enforce that.
+
+            Multi-iteration Exploration-mode loop (self._gen_loop_run_count/_gen_loop_
+            iteration, both None outside a loop run): orchestrator_loop_v2.py launches
+            run_count separate orchestrator_v3.py subprocesses back to back, one per
+            iteration, and each one prints its OWN independent prep/batch-progress/done
+            lines as if it were a lone single-window-range run. Without loop-awareness the
+            bar would snap to "done" after iteration 1 of N (see _LOOP_SESSION_START_RE's
+            own module-level comment). While _gen_loop_run_count is set, the per-iteration
+            step count from the sieve-pipeline model above is treated as one slice of a
+            wider run_count-slice bar: overall maximum = run_count * that iteration's own
+            step_total, overall value = completed-iterations-worth of steps + the current
+            iteration's own progress into its slice. Only _LOOP_SESSION_DONE_RE -- the
+            line orchestrator_loop_v2.py itself prints once ALL iterations are over --
+            snaps the bar to full and clears _gen_loop_run_count/_gen_loop_iteration back
+            to None; the per-iteration "[*] TOTAL PRIMES FOUND..." line just marks that
+            iteration's slice as complete and keeps waiting."""
+            if _LOOP_SESSION_DONE_RE.search(chunk):
+                total = self._gen_step_total or 1
+                self.totals_progress.stop()
+                self.totals_progress.configure(mode="determinate", maximum=total, value=total)
+                self.status.set(T("gen.status_progress_done"))
+                self._gen_step_total = None
+                self._gen_loop_run_count = None
+                self._gen_loop_iteration = None
+                return
+
+            loop_start_match = _LOOP_SESSION_START_RE.search(chunk)
+            if loop_start_match:
+                self._gen_loop_run_count = int(loop_start_match.group(1))
+                self._gen_loop_iteration = 1
+
+            iter_start_matches = _LOOP_ITERATION_START_RE.findall(chunk)
+            if iter_start_matches:
+                iteration_str, _run_count_str = iter_start_matches[-1]
+                self._gen_loop_iteration = int(iteration_str)
+                self._gen_step_total = None  # fresh subprocess -- real total not known
+                                              # until its own first batch-progress line
+
             if _GEN_SIEVE_DONE_RE.search(chunk) or _GEN_CONST_DONE_RE.search(chunk):
+                if self._gen_loop_run_count is not None:
+                    # One iteration of a multi-iteration run just finished -- NOT the whole
+                    # session. Only _LOOP_SESSION_DONE_RE (checked above) snaps the bar to
+                    # full/clears loop state; here just mark this iteration's own slice as
+                    # complete and keep the loop state alive for the next iteration.
+                    run_count = self._gen_loop_run_count
+                    iteration = self._gen_loop_iteration or 1
+                    step_total = self._gen_step_total or 1
+                    self.totals_progress.stop()
+                    self.totals_progress.configure(
+                        mode="determinate", maximum=run_count * step_total,
+                        value=min(iteration, run_count) * step_total)
+                    self.status.set(T("gen.status_progress_loop_iteration_done",
+                                       iteration=iteration, run_count=run_count))
+                    return
                 total = self._gen_step_total or 1
                 self.totals_progress.stop()
                 self.totals_progress.configure(mode="determinate", maximum=total, value=total)
@@ -8935,10 +9014,20 @@ def _build_gui():
                 done, n_batches = int(done_str), int(total_str)
                 self._gen_step_total = n_batches + 1  # +1 for the prep step already done
                 self.totals_progress.stop()
-                self.totals_progress.configure(mode="determinate", maximum=self._gen_step_total,
-                                                value=done + 1)
-                self.status.set(T("gen.status_progress_sieve", percent=percent_str,
-                                   done=done, total=n_batches))
+                if self._gen_loop_run_count is not None:
+                    run_count = self._gen_loop_run_count
+                    iteration = self._gen_loop_iteration or 1
+                    self.totals_progress.configure(
+                        mode="determinate", maximum=run_count * self._gen_step_total,
+                        value=(iteration - 1) * self._gen_step_total + (done + 1))
+                    self.status.set(T("gen.status_progress_loop_sieve", iteration=iteration,
+                                       run_count=run_count, percent=percent_str,
+                                       done=done, total=n_batches))
+                else:
+                    self.totals_progress.configure(mode="determinate",
+                                                    maximum=self._gen_step_total, value=done + 1)
+                    self.status.set(T("gen.status_progress_sieve", percent=percent_str,
+                                       done=done, total=n_batches))
                 return
 
             const_matches = _GEN_CONST_PROGRESS_RE.findall(chunk)
@@ -8955,8 +9044,16 @@ def _build_gui():
                 self._gen_step_total = None  # real total not known until the first
                                               # batch-progress line -- see docstring above
                 self.totals_progress.stop()
-                self.totals_progress.configure(mode="determinate", maximum=2, value=1)
-                self.status.set(T("gen.status_progress_prep"))
+                if self._gen_loop_run_count is not None:
+                    run_count = self._gen_loop_run_count
+                    iteration = self._gen_loop_iteration or 1
+                    self.totals_progress.configure(
+                        mode="determinate", maximum=run_count * 2, value=(iteration - 1) * 2 + 1)
+                    self.status.set(T("gen.status_progress_loop_prep", iteration=iteration,
+                                       run_count=run_count))
+                else:
+                    self.totals_progress.configure(mode="determinate", maximum=2, value=1)
+                    self.status.set(T("gen.status_progress_prep"))
 
         # --- Tab 5: Settings -----------------------------------------------------
 
