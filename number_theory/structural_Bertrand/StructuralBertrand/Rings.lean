@@ -764,20 +764,20 @@ theorem fullCoverage_iff_sum_eq {Pk : ℕ} (hPk : Nat.Prime Pk) (hPk3 : 2 < Pk) 
 /-! ## Base cases by computation — the sieve as an oracle
 
 `coveredCount` is computable, so non-emptiness of the window for small `Pk` is closed by
-`native_decide`, which literally runs the sieve inside the proof — INDEPENDENTLY of the atom
+`decide`, which literally runs the sieve inside the proof — INDEPENDENTLY of the atom
 `dense_sieve_survivor`. Here the practical generator (`sieve_bertrand_check`) enters the formal
 proof as a base-case tactic. Each such line is one base case closed with no `sorry`. -/
 
 theorem windowHasVoid_3  : windowHasVoid 3  := by
-  rw [windowHasVoid_iff_coveredCount_lt]; native_decide
+  rw [windowHasVoid_iff_coveredCount_lt]; decide
 theorem windowHasVoid_5  : windowHasVoid 5  := by
-  rw [windowHasVoid_iff_coveredCount_lt]; native_decide
+  rw [windowHasVoid_iff_coveredCount_lt]; decide
 theorem windowHasVoid_7  : windowHasVoid 7  := by
-  rw [windowHasVoid_iff_coveredCount_lt]; native_decide
+  rw [windowHasVoid_iff_coveredCount_lt]; decide
 theorem windowHasVoid_11 : windowHasVoid 11 := by
-  rw [windowHasVoid_iff_coveredCount_lt]; native_decide
+  rw [windowHasVoid_iff_coveredCount_lt]; decide
 theorem windowHasVoid_13 : windowHasVoid 13 := by
-  rw [windowHasVoid_iff_coveredCount_lt]; native_decide
+  rw [windowHasVoid_iff_coveredCount_lt]; decide
 
 /-- These base windows are closed INDEPENDENTLY of the atom — by computing the sieve.
     This is the lower part of the family `Pmin = 2`, closed by machine. -/
@@ -948,11 +948,11 @@ theorem windowHasVoid_of_trunc30 {Pk : ℕ} (hPk3 : 2 < Pk) (h6 : 6 ≤ Pk)
     `25 ≤ 2Pk < 49`, plus the edge `2·13 ≥ 25`): one Jacobsthal inequality instead of four
     sieve computations. -/
 theorem windowHasVoid_17 : windowHasVoid 17 :=
-  windowHasVoid_of_trunc30 (by norm_num) (by norm_num) (by native_decide)
+  windowHasVoid_of_trunc30 (by norm_num) (by norm_num) (by decide)
 theorem windowHasVoid_19 : windowHasVoid 19 :=
-  windowHasVoid_of_trunc30 (by norm_num) (by norm_num) (by native_decide)
+  windowHasVoid_of_trunc30 (by norm_num) (by norm_num) (by decide)
 theorem windowHasVoid_23 : windowHasVoid 23 :=
-  windowHasVoid_of_trunc30 (by norm_num) (by norm_num) (by native_decide)
+  windowHasVoid_of_trunc30 (by norm_num) (by norm_num) (by decide)
 
 /-! ## The deterministic zone Pk² — formalized
 
@@ -997,7 +997,9 @@ theorem void_iff_prime_in_deterministic_zone {Pk n : ℕ} (hPk3 : 2 < Pk)
 /-! ## The staircase of regimes — each truncated-base regime closed by ONE period
 
 The pattern of `windowHasVoid_of_trunc30` generalized: the gap law `g(M) ≤ g` checked on one
-period `M` (decide/native_decide) + periodicity = a void in ALL windows of the regime
+period `M` (`decide`, kernel-checked -- windows here are never at an arbitrary position, so
+Jacobsthal's worst-case bound doesn't apply and the periodic check needs no `native_decide`
+hedge) + periodicity = a void in ALL windows of the regime
 `truncPrimorial Pk = M`, without looking into the window. The staircase (computed):
   {2,3,5}    → g(30)   = 6  → Pk = 13, 17, 19, 23          (margin ×2.2)
   {2,3,5,7}  → g(210)  = 10 → Pk = 29, 31, 37, 41, 43, 47, 53, 59   (×2.9)
@@ -1029,47 +1031,47 @@ theorem windowHasVoid_of_trunc_gap {Pk M g : ℕ} (hPk3 : 2 < Pk) (hg : g ≤ Pk
   rw [Finset.mem_Ioc] at hn
   exact ⟨n, Finset.mem_Ioc.mpr ⟨hn.1, by omega⟩, by rw [htr]; exact hcop⟩
 
-/-- **g(210) = 10** (truncated base {2,3,5,7}): one period by `native_decide`. -/
+/-- **g(210) = 10** (truncated base {2,3,5,7}): one period by `decide`. -/
 lemma jacobsthal_210 : ∀ a : ℕ, ∃ n ∈ Finset.Ioc a (a + 10), Nat.Coprime n 210 :=
   jacobsthal_of_period (by norm_num) (by norm_num)
-    (by native_decide)
+    (by decide)
 
-/-- **g(2310) = 14** (truncated base {2,3,5,7,11}): one period by `native_decide`. -/
+/-- **g(2310) = 14** (truncated base {2,3,5,7,11}): one period by `decide`. -/
 lemma jacobsthal_2310 : ∀ a : ℕ, ∃ n ∈ Finset.Ioc a (a + 14), Nat.Coprime n 2310 :=
   jacobsthal_of_period (by norm_num) (by norm_num)
-    (by native_decide)
+    (by decide)
 
 /-- Regime {2,3,5,7} (`49 ≤ 2Pk < 121`): eight windows by the single law g(210)=10. -/
 theorem windowHasVoid_29 : windowHasVoid 29 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_210
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_210
 theorem windowHasVoid_31 : windowHasVoid 31 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_210
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_210
 theorem windowHasVoid_37 : windowHasVoid 37 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_210
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_210
 theorem windowHasVoid_41 : windowHasVoid 41 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_210
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_210
 theorem windowHasVoid_43 : windowHasVoid 43 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_210
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_210
 theorem windowHasVoid_47 : windowHasVoid 47 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_210
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_210
 theorem windowHasVoid_53 : windowHasVoid 53 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_210
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_210
 theorem windowHasVoid_59 : windowHasVoid 59 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_210
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_210
 
 /-- Regime {2,3,5,7,11} (`121 ≤ 2Pk < 169`): six windows by the single law g(2310)=14. -/
 theorem windowHasVoid_61 : windowHasVoid 61 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_2310
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_2310
 theorem windowHasVoid_67 : windowHasVoid 67 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_2310
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_2310
 theorem windowHasVoid_71 : windowHasVoid 71 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_2310
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_2310
 theorem windowHasVoid_73 : windowHasVoid 73 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_2310
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_2310
 theorem windowHasVoid_79 : windowHasVoid 79 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_2310
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_2310
 theorem windowHasVoid_83 : windowHasVoid 83 :=
-  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by native_decide) jacobsthal_2310
+  windowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by decide) jacobsthal_2310
 
 /-- The staircase 13–83 in one place: all windows of the three regimes closed by gap geometry,
     without counting primes, without the window's position. -/
@@ -1187,31 +1189,31 @@ theorem gwindowHasVoid_of_trunc_gap {Pmin Pmax M g : ℕ} (hPmax : 0 < Pmax)
     (11,33], (13,39], (9,36], (7,35]. The descent in Pmin works on a shared mechanism. -/
 theorem gwindowHasVoid_3_11 : gwindowHasVoid 3 11 :=
   gwindowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by norm_num)
-    (by native_decide) jacobsthal_thirty
+    (by decide) jacobsthal_thirty
 theorem gwindowHasVoid_3_13 : gwindowHasVoid 3 13 :=
   gwindowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by norm_num)
-    (by native_decide) jacobsthal_thirty
+    (by decide) jacobsthal_thirty
 theorem gwindowHasVoid_4_9 : gwindowHasVoid 4 9 :=
   gwindowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by norm_num)
-    (by native_decide) jacobsthal_thirty
+    (by decide) jacobsthal_thirty
 theorem gwindowHasVoid_5_7 : gwindowHasVoid 5 7 :=
   gwindowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by norm_num)
-    (by native_decide) jacobsthal_thirty
+    (by decide) jacobsthal_thirty
 
 /-- Family {2,3,5,7}: g(210)=10 closes e.g. (29,87] and (37,111] at `Pmin = 3`. -/
 theorem gwindowHasVoid_3_29 : gwindowHasVoid 3 29 :=
   gwindowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by norm_num)
-    (by native_decide) jacobsthal_210
+    (by decide) jacobsthal_210
 theorem gwindowHasVoid_3_37 : gwindowHasVoid 3 37 :=
   gwindowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by norm_num)
-    (by native_decide) jacobsthal_210
+    (by decide) jacobsthal_210
 
 /-- Consistency with the kernel: at `Pmin = 2` the family atom coincides with the Bertrand atom
     (`gtruncPrimorial 2 Pk = truncPrimorial Pk` by definition, via `2 * Pk = Pk * 2`; here in
     theorem form for a concrete case). -/
 example : gwindowHasVoid 2 17 :=
   gwindowHasVoid_of_trunc_gap (by norm_num) (by norm_num) (by norm_num)
-    (by native_decide) jacobsthal_thirty
+    (by decide) jacobsthal_thirty
 
 /-! ## Inclusion–exclusion (Legendre) identity
 
