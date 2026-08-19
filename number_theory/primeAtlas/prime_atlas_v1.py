@@ -1955,18 +1955,22 @@ DEFAULT_GENERATION_SETTINGS = {
         "variant_id": "",
         "n_locations": "1000",
         "window_m": "10000000",
-        "strategy": "concentrated",  # see ktuple_sieve_v1.select_locations()'s own
-                                      # docstring for what each strategy means
+        "strategy": "concentrated",  # see ktuple_sieve_v1.py's own module docstring for
+                                      # what each strategy means
+        "step": "",  # blank = auto-computed per strategy (required for manual_step)
         "fragment_width": "",  # blank = auto-sized from Hardy-Littlewood density
-        "fragment_start": "0",
-        "manual_offsets": "",  # space/comma-separated ints, only used by strategy=manual
+        "fragment_start": "0",  # only used the first time (no checkpoint yet) or after
+                                 # a reset -- every run after that continues from the
+                                 # checkpoint regardless of this field
+        "manual_offsets": "",  # space/comma-separated ints, strategy=manual_list only
         "deep_prime_limit": "2000",
         "mr_rounds": "40",
+        "reset_checkpoint": False,
     },
 }
 
 
-_KTUPLE_STRATEGY_KEYS = ["concentrated", "even", "manual"]
+_KTUPLE_STRATEGY_KEYS = ["even", "concentrated", "manual_list", "manual_step"]
 
 
 def _generation_settings_path(portal_folder):
@@ -7610,13 +7614,23 @@ def _build_gui():
                 row=1, column=2, sticky="w", padx=(0, 4), pady=2)
             self.ktuple_strategy_combo = ttk.Combobox(
                 ktuple_form, state="readonly", width=16,
-                values=[T("gen.ktuple_strategy_concentrated"), T("gen.ktuple_strategy_even"),
-                        T("gen.ktuple_strategy_manual")])
+                values=[T("gen.ktuple_strategy_even"), T("gen.ktuple_strategy_concentrated"),
+                        T("gen.ktuple_strategy_manual_list"), T("gen.ktuple_strategy_manual_step")])
             self.ktuple_strategy_combo.grid(row=1, column=3, sticky="w", padx=(0, 20), pady=2)
             _saved_strategy = ktuple_settings.get("strategy", "concentrated")
             self.ktuple_strategy_combo.current(
                 _KTUPLE_STRATEGY_KEYS.index(_saved_strategy)
-                if _saved_strategy in _KTUPLE_STRATEGY_KEYS else 0)
+                if _saved_strategy in _KTUPLE_STRATEGY_KEYS else 1)
+
+            # "step": optional override for even/concentrated (both auto-compute their
+            # own step otherwise -- see ktuple_sieve_v1.step_for_even()/
+            # step_for_concentrated()), REQUIRED for manual_step. Visible in the
+            # primary form (not tucked behind Advanced) since it's central to how
+            # every non-manual_list strategy now behaves -- see the checkpoint/step
+            # design added 2026-08-19 at Artur's request, after his first real run
+            # showed every Run re-scanning the same locations with nothing persisted
+            # in between.
+            add_ktuple_field(2, 0, "step", T("gen.ktuple_field_step"), width=14)
 
             ktuple_advanced_row = ttk.Frame(ktuple_outer)
             ktuple_advanced_row.pack(fill="x", padx=8)
@@ -7657,8 +7671,18 @@ def _build_gui():
             ktuple_btn_row = ttk.Frame(ktuple_outer)
             ktuple_btn_row.pack(fill="x", padx=8, pady=(4, 4))
             self.ktuple_run_btn = ttk.Button(
-                ktuple_btn_row, text=T("common.run"), command=self._on_run_ktuple)
+                ktuple_btn_row, text=T("common.run"),
+                command=lambda: self._launch_ktuple(auto=False))
             self.ktuple_run_btn.pack(side="left")
+            # "Auto": same launch path as Run, only auto=True differs -- keeps looping
+            # batch after batch (checkpointing after each, see ktuple_sieve_v1.
+            # run_ktuple_job()'s own docstring) inside the SAME WSL process until a
+            # confirmed hit, Stop, or the floor is exhausted, rather than requiring a
+            # fresh Run click per batch.
+            self.ktuple_auto_btn = ttk.Button(
+                ktuple_btn_row, text=T("gen.ktuple_auto_button"),
+                command=lambda: self._launch_ktuple(auto=True))
+            self.ktuple_auto_btn.pack(side="left", padx=(6, 0))
             self.ktuple_stop_btn = ttk.Button(
                 ktuple_btn_row, text=T("common.stop"), command=self._on_stop_ktuple,
                 state="disabled")
@@ -7666,6 +7690,19 @@ def _build_gui():
             self.ktuple_status_label = tk.StringVar(value=T("common.ready"))
             ttk.Label(ktuple_btn_row, textvariable=self.ktuple_status_label).pack(
                 side="left", padx=(12, 0))
+
+            # Reset-checkpoint: a plain checkbox rather than its own button/action --
+            # checked, it adds --reset-checkpoint to whichever of Run/Auto is clicked
+            # next (see _launch_ktuple), so resetting never needs its own separate WSL
+            # round trip just to delete one small text file. Left checked afterward
+            # (not auto-unchecked) -- deliberately, so a person who wants to restart a
+            # SEQUENCE of runs from scratch doesn't have to re-check it before every
+            # click.
+            self._ktuple_reset_checkpoint_var = tk.BooleanVar(
+                value=bool(ktuple_settings.get("reset_checkpoint", False)))
+            ttk.Checkbutton(
+                ktuple_outer, text=T("gen.ktuple_check_reset_checkpoint"),
+                variable=self._ktuple_reset_checkpoint_var).pack(anchor="w", padx=8, pady=(0, 4))
 
             self.ktuple_console = GenerationConsole(ktuple_outer, TRANSLATOR, height=10)
             self.ktuple_output = self.ktuple_console.text
@@ -9240,7 +9277,13 @@ def _build_gui():
         def _show_ktuple_terminal(self):
             self.ktuple_console.show()
 
-        def _on_run_ktuple(self):
+        def _launch_ktuple(self, auto):
+            """Shared by both the Run button (auto=False -- one batch, checkpointed,
+            per click) and the Auto button (auto=True -- ktuple_sieve_v1.py itself
+            keeps looping batch after batch inside this one WSL process until a
+            confirmed hit, Stop, or the floor is exhausted -- see
+            ktuple_sieve_v1.run_ktuple_job()'s own docstring). Everything below the
+            auto-specific argv flag is identical between the two."""
             if self._ktuple_runner is not None and self._ktuple_runner.is_running():
                 return
             base_exponent = self._ktuple_vars["base_exponent"].get().strip()
@@ -9257,6 +9300,7 @@ def _build_gui():
 
             n_locations = self._ktuple_vars["n_locations"].get().strip()
             window_m = self._ktuple_vars["window_m"].get().strip()
+            step = self._ktuple_vars["step"].get().strip()
             fragment_width = self._ktuple_vars["fragment_width"].get().strip()
             fragment_start = self._ktuple_vars["fragment_start"].get().strip() or "0"
             deep_prime_limit = self._ktuple_vars["deep_prime_limit"].get().strip() or "2000"
@@ -9266,7 +9310,8 @@ def _build_gui():
             numeric_ok = (
                 n_locations.isdigit() and window_m.isdigit() and fragment_start.isdigit()
                 and deep_prime_limit.isdigit() and mr_rounds.isdigit()
-                and (not fragment_width or fragment_width.isdigit()))
+                and (not fragment_width or fragment_width.isdigit())
+                and (not step or step.isdigit()))
             if not numeric_ok:
                 messagebox.showerror(T("gen.dialog_title"), T("gen.ktuple_error_numeric_fields"))
                 return
@@ -9276,7 +9321,7 @@ def _build_gui():
                         if 0 <= strategy_idx < len(_KTUPLE_STRATEGY_KEYS) else "concentrated")
 
             manual_offsets = None
-            if strategy == "manual":
+            if strategy == "manual_list":
                 try:
                     manual_offsets = [int(tok) for tok in manual_offsets_str.replace(",", " ").split()]
                 except ValueError:
@@ -9284,23 +9329,30 @@ def _build_gui():
                 if not manual_offsets:
                     messagebox.showerror(T("gen.dialog_title"), T("gen.ktuple_error_manual_offsets"))
                     return
+            elif strategy == "manual_step" and not step:
+                messagebox.showerror(T("gen.dialog_title"), T("gen.ktuple_error_manual_step_needs_step"))
+                return
+
+            reset_checkpoint = self._ktuple_reset_checkpoint_var.get()
 
             self._generation_settings["ktuple"] = {
                 "base_exponent": base_exponent, "k": str(pattern["k"]),
                 "variant_id": str(pattern["id"]), "n_locations": n_locations,
-                "window_m": window_m, "strategy": strategy,
+                "window_m": window_m, "strategy": strategy, "step": step,
                 "fragment_width": fragment_width, "fragment_start": fragment_start,
                 "manual_offsets": manual_offsets_str, "deep_prime_limit": deep_prime_limit,
-                "mr_rounds": mr_rounds,
+                "mr_rounds": mr_rounds, "reset_checkpoint": reset_checkpoint,
             }
             save_generation_settings(PORTAL_FOLDER, self._generation_settings)
 
             argv = build_ktuple_sieve_argv(
                 base_exponent, pattern["k"], pattern["id"],
                 n_locations=int(n_locations), window_m=int(window_m), strategy=strategy,
+                step=int(step) if step else None,
                 fragment_width=int(fragment_width) if fragment_width else None,
-                fragment_start=int(fragment_start), manual_offsets=manual_offsets,
-                deep_prime_limit=int(deep_prime_limit), mr_rounds=int(mr_rounds))
+                fragment_start=int(fragment_start) if strategy != "manual_list" else None,
+                manual_offsets=manual_offsets, deep_prime_limit=int(deep_prime_limit),
+                mr_rounds=int(mr_rounds), auto=auto, reset_checkpoint=reset_checkpoint)
             log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "ktuple")
             cmd = build_wsl_logged_command(argv, log_path, exit_path)
 
@@ -9311,6 +9363,7 @@ def _build_gui():
                 kill_pattern="ktuple_sieve_v1.py")
             self._ktuple_runner.start()
             self.ktuple_run_btn.configure(state="disabled")
+            self.ktuple_auto_btn.configure(state="disabled")
             self.ktuple_stop_btn.configure(state="normal")
             self.ktuple_status_label.set(T("common.running"))
             self._show_ktuple_terminal()
@@ -9323,8 +9376,12 @@ def _build_gui():
         def _on_ktuple_finished(self):
             """Mirrors _on_constellation_finished() -- confirmed hits land in the same
             per-(k,variant) hit files Section B writes to, so the Constellations tab
-            needs the same post-run refresh."""
+            needs the same post-run refresh. Also re-enables ktuple_auto_btn --
+            _drain_output_queue() only knows about the plain run_btn/stop_btn pair
+            shared with every other section, not this section's own extra Auto
+            button, so that one is reset here instead."""
             self.reload_constellations_tree()
+            self.ktuple_auto_btn.configure(state="normal")
 
         def _poll_ktuple_output(self):
             self._drain_output_queue(self._ktuple_output_queue, self.ktuple_console,

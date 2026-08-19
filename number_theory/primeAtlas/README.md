@@ -114,17 +114,29 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     at this project's own measured floor-25 sieve throughput -- the bottleneck there
     isn't the per-window sieve cost (genuinely cheap on its own), it's that there
     are simply too many windows to visit at all. The pattern picker reuses the same
-    k-then-variant catalog cascade as the Constellation calculator; three location
-    strategies choose where the (by default 1000) window locations for one run go:
-    concentrated (spread across a single fragment, auto-sized from the pattern's own
-    Hardy-Littlewood density so the fragment's expected hit count is roughly 1 --
-    editable, or an explicit fragment width can be given instead), even (spread
-    across the whole floor), or manual (an explicit offset list). Confirmed hits are
-    written into the exact same per-`(k, variant)` hit file the constellation finder
-    itself writes to, so the Constellations tab needs no changes at all to pick them
-    up, and this mode never touches the constellation finder's own `CHECKPOINT.txt`
-    (these locations are not tied to any pre-existing prime window at all -- see
-    `ktuple_sieve_v1.py`'s own module docstring).
+    k-then-variant catalog cascade as the Constellation calculator. Four location
+    strategies choose the (by default 1000) window locations one batch scans, three
+    of which share a common checkpoint: even, concentrated, and manual (step) all
+    reduce to the same window-spacing mechanism (n windows, `step` apart, starting
+    from wherever the LAST batch for this exact floor+pattern left off, persisted in
+    its own `KTUPLE_CHECKPOINT_*.txt` file next to that pattern's hit file) --
+    differing only in how `step` itself is picked: even uses the window width
+    (dense, contiguous), concentrated auto-sizes it from the pattern's own
+    Hardy-Littlewood density so the batch's expected hit count is roughly 1 (editable,
+    or an explicit fragment width/step can be given instead), and manual (step) takes
+    a caller-given step directly. The fourth strategy, manual (list), is a one-off
+    explicit offset list with no checkpoint, for precisely-chosen positions a fixed
+    step can't express. A plain Run scans exactly one batch and updates the
+    checkpoint, so clicking Run again continues rather than re-scanning; the Auto
+    button instead keeps the same WSL process scanning batch after batch,
+    checkpointing after each, until a confirmed hit, Stop, or the floor is exhausted
+    -- a "Resetuj checkpoint" checkbox restarts from the Fragment-start field instead
+    of continuing. Confirmed hits are written into the exact same per-`(k, variant)`
+    hit file the constellation finder itself writes to, so the Constellations tab
+    needs no changes at all to pick them up, and this mode never touches the
+    constellation finder's own `CHECKPOINT.txt` -- its own checkpoint is a completely
+    separate file, since these locations are not tied to any pre-existing prime
+    window at all (see `ktuple_sieve_v1.py`'s own module docstring).
 - **Benchmark** -- a throughput chart (numbers generated per second vs. floor depth),
   plus a second chart (sieve speed and write speed per floor) whenever the active
   engine reports that level of phase timing (see `prime_sieve_v4_1.py` under
