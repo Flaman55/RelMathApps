@@ -1949,7 +1949,24 @@ DEFAULT_GENERATION_SETTINGS = {
         "base_exponent": "",  # blank = auto (every floor with source data -- see
                                # constellation_finder_v1.list_pietra_with_data())
     },
+    "ktuple": {
+        "base_exponent": "",
+        "k": "",
+        "variant_id": "",
+        "n_locations": "1000",
+        "window_m": "10000000",
+        "strategy": "concentrated",  # see ktuple_sieve_v1.select_locations()'s own
+                                      # docstring for what each strategy means
+        "fragment_width": "",  # blank = auto-sized from Hardy-Littlewood density
+        "fragment_start": "0",
+        "manual_offsets": "",  # space/comma-separated ints, only used by strategy=manual
+        "deep_prime_limit": "2000",
+        "mr_rounds": "40",
+    },
 }
+
+
+_KTUPLE_STRATEGY_KEYS = ["concentrated", "even", "manual"]
 
 
 def _generation_settings_path(portal_folder):
@@ -7519,8 +7536,139 @@ def _build_gui():
             self._const_runner = None
             self._const_output_queue = queue.Queue()
 
+            # --- Section C: ktuple_sieve_v1.py (targeted k-tuple candidate sieve) -----
+            # Complementary to Section B: that one pattern-matches against windows
+            # already fully sieved by prime_sieve; this one hunts a single, sparse
+            # pattern (e.g. k=15) directly, via a residue wheel + trial division +
+            # Miller-Rabin, across scattered window locations -- see ktuple_sieve_v1.py's
+            # own module docstring for why that's a fundamentally different (and, for a
+            # sparse-enough pattern, far cheaper) approach than fully sieving a wide
+            # enough span for Section B to find the same thing.
+            ktuple_outer = ttk.Labelframe(paned, text=T("gen.section_ktuple"))
+            paned.add(ktuple_outer, weight=1)
+
+            ktuple_settings = self._generation_settings["ktuple"]
+
+            ktuple_pattern_row = ttk.Frame(ktuple_outer)
+            ktuple_pattern_row.pack(fill="x", padx=8, pady=(6, 0))
+            ttk.Label(ktuple_pattern_row, text=T("gen.ktuple_field_k")).pack(side="left")
+            self._ktuple_k_values = pattern_catalog_v1.all_k()
+            self.ktuple_k_combo = ttk.Combobox(
+                ktuple_pattern_row, state="readonly", width=6,
+                values=[str(k) for k in self._ktuple_k_values])
+            self.ktuple_k_combo.pack(side="left", padx=(6, 16))
+            self.ktuple_k_combo.bind("<<ComboboxSelected>>", self._on_ktuple_k_changed)
+
+            ttk.Label(ktuple_pattern_row, text=T("gen.ktuple_field_variant")).pack(side="left")
+            self._ktuple_variants = []
+            self.ktuple_variant_combo = ttk.Combobox(ktuple_pattern_row, state="readonly", width=10)
+            self.ktuple_variant_combo.pack(side="left", padx=(6, 0))
+            self.ktuple_variant_combo.bind(
+                "<<ComboboxSelected>>", self._on_ktuple_variant_changed)
+
+            self.ktuple_pattern_info_var = tk.StringVar(value="")
+            ttk.Label(ktuple_outer, textvariable=self.ktuple_pattern_info_var,
+                      wraplength=760, justify="left", foreground="#555").pack(
+                anchor="w", padx=8, pady=(0, 4))
+
+            ktuple_form = ttk.Frame(ktuple_outer)
+            ktuple_form.pack(fill="x", padx=8, pady=(0, 4))
+
+            self._ktuple_vars = {}
+
+            def add_ktuple_field(row, col, key, label, width=10):
+                ttk.Label(ktuple_form, text=label).grid(
+                    row=row, column=col * 2, sticky="w", padx=(0, 4), pady=2)
+                var = tk.StringVar(value=str(ktuple_settings.get(key, "")))
+                ttk.Entry(ktuple_form, textvariable=var, width=width).grid(
+                    row=row, column=col * 2 + 1, sticky="w", padx=(0, 20), pady=2)
+                self._ktuple_vars[key] = var
+
+            add_ktuple_field(0, 0, "base_exponent", T("gen.ktuple_field_base_exponent"))
+            add_ktuple_field(0, 1, "n_locations", T("gen.ktuple_field_n_locations"))
+            add_ktuple_field(1, 0, "window_m", T("gen.ktuple_field_window_m"), width=14)
+
+            ttk.Label(ktuple_form, text=T("gen.ktuple_field_strategy")).grid(
+                row=1, column=2, sticky="w", padx=(0, 4), pady=2)
+            self.ktuple_strategy_combo = ttk.Combobox(
+                ktuple_form, state="readonly", width=16,
+                values=[T("gen.ktuple_strategy_concentrated"), T("gen.ktuple_strategy_even"),
+                        T("gen.ktuple_strategy_manual")])
+            self.ktuple_strategy_combo.grid(row=1, column=3, sticky="w", padx=(0, 20), pady=2)
+            _saved_strategy = ktuple_settings.get("strategy", "concentrated")
+            self.ktuple_strategy_combo.current(
+                _KTUPLE_STRATEGY_KEYS.index(_saved_strategy)
+                if _saved_strategy in _KTUPLE_STRATEGY_KEYS else 0)
+
+            ktuple_advanced_row = ttk.Frame(ktuple_outer)
+            ktuple_advanced_row.pack(fill="x", padx=8)
+            self._ktuple_advanced_visible = False
+            self.ktuple_advanced_toggle_btn = ttk.Button(
+                ktuple_advanced_row, text=T("gen.advanced_show"),
+                command=self._on_toggle_ktuple_advanced)
+            self.ktuple_advanced_toggle_btn.pack(side="left")
+
+            ktuple_advanced_content = ttk.Frame(ktuple_outer)
+            self._ktuple_advanced_content = ktuple_advanced_content
+            # NOT packed here -- starts collapsed, see _on_toggle_ktuple_advanced().
+
+            ktuple_advanced_form = ttk.Frame(ktuple_advanced_content)
+            ktuple_advanced_form.pack(fill="x")
+
+            def add_ktuple_advanced_field(row, col, key, label, width=10):
+                ttk.Label(ktuple_advanced_form, text=label).grid(
+                    row=row, column=col * 2, sticky="w", padx=(0, 4), pady=2)
+                var = tk.StringVar(value=str(ktuple_settings.get(key, "")))
+                ttk.Entry(ktuple_advanced_form, textvariable=var, width=width).grid(
+                    row=row, column=col * 2 + 1, sticky="w", padx=(0, 20), pady=2)
+                self._ktuple_vars[key] = var
+
+            add_ktuple_advanced_field(
+                0, 0, "fragment_width", T("gen.ktuple_field_fragment_width"), width=18)
+            add_ktuple_advanced_field(
+                0, 1, "fragment_start", T("gen.ktuple_field_fragment_start"), width=18)
+            add_ktuple_advanced_field(1, 0, "deep_prime_limit", T("gen.ktuple_field_deep_prime_limit"))
+            add_ktuple_advanced_field(1, 1, "mr_rounds", T("gen.ktuple_field_mr_rounds"))
+            ttk.Label(ktuple_advanced_form, text=T("gen.ktuple_field_manual_offsets")).grid(
+                row=2, column=0, sticky="w", padx=(0, 4), pady=2)
+            _manual_offsets_var = tk.StringVar(value=str(ktuple_settings.get("manual_offsets", "")))
+            ttk.Entry(ktuple_advanced_form, textvariable=_manual_offsets_var, width=50).grid(
+                row=2, column=1, columnspan=3, sticky="w", padx=(0, 20), pady=2)
+            self._ktuple_vars["manual_offsets"] = _manual_offsets_var
+
+            ktuple_btn_row = ttk.Frame(ktuple_outer)
+            ktuple_btn_row.pack(fill="x", padx=8, pady=(4, 4))
+            self.ktuple_run_btn = ttk.Button(
+                ktuple_btn_row, text=T("common.run"), command=self._on_run_ktuple)
+            self.ktuple_run_btn.pack(side="left")
+            self.ktuple_stop_btn = ttk.Button(
+                ktuple_btn_row, text=T("common.stop"), command=self._on_stop_ktuple,
+                state="disabled")
+            self.ktuple_stop_btn.pack(side="left", padx=(6, 0))
+            self.ktuple_status_label = tk.StringVar(value=T("common.ready"))
+            ttk.Label(ktuple_btn_row, textvariable=self.ktuple_status_label).pack(
+                side="left", padx=(12, 0))
+
+            self.ktuple_console = GenerationConsole(ktuple_outer, TRANSLATOR, height=10)
+            self.ktuple_output = self.ktuple_console.text
+
+            self._ktuple_runner = None
+            self._ktuple_output_queue = queue.Queue()
+
+            if self._ktuple_k_values:
+                _saved_k = ktuple_settings.get("k", "")
+                try:
+                    _saved_k_int = int(_saved_k) if _saved_k else None
+                except ValueError:
+                    _saved_k_int = None
+                self.ktuple_k_combo.current(
+                    self._ktuple_k_values.index(_saved_k_int)
+                    if _saved_k_int in self._ktuple_k_values else 0)
+                self._on_ktuple_k_changed(restore_variant_id=ktuple_settings.get("variant_id"))
+
             self.after(150, self._poll_loop_output)
             self.after(150, self._poll_constellation_output)
+            self.after(150, self._poll_ktuple_output)
 
         def _on_toggle_loop_advanced(self):
             """Shows/hides loop_advanced_content -- the fields AND the raw Run/
@@ -9015,6 +9163,157 @@ def _build_gui():
                                       self.const_status_label,
                                       on_exit=self._on_constellation_finished)
             self.after(150, self._poll_constellation_output)
+
+        def _on_ktuple_k_changed(self, _event=None, restore_variant_id=None):
+            """Repopulates the variant combo for whichever k is now selected -- same
+            two-combo cascade as the Kalkulator konstelacji tab's own
+            _on_const_calc_k_changed(). `restore_variant_id`, given only on initial
+            build (see _build_generation_tab()'s own call), re-selects a persisted
+            variant instead of always defaulting to index 0, so the form reopens showing
+            whatever pattern was last used here."""
+            k_str = self.ktuple_k_combo.get()
+            if not k_str:
+                return
+            self._ktuple_variants = pattern_catalog_v1.patterns_for_k(int(k_str))
+            self.ktuple_variant_combo.configure(
+                values=[T("const_calc.variant_label", id=w["id"])
+                        for w in self._ktuple_variants])
+            if self._ktuple_variants:
+                idx = 0
+                if restore_variant_id not in (None, ""):
+                    for i, w in enumerate(self._ktuple_variants):
+                        if str(w["id"]) == str(restore_variant_id):
+                            idx = i
+                            break
+                self.ktuple_variant_combo.current(idx)
+            else:
+                self.ktuple_variant_combo.set("")
+            self._on_ktuple_variant_changed()
+
+        def _on_ktuple_variant_changed(self, _event=None):
+            idx = self.ktuple_variant_combo.current()
+            if idx < 0 or idx >= len(self._ktuple_variants):
+                self.ktuple_pattern_info_var.set("")
+                return
+            w = self._ktuple_variants[idx]
+            offsets_str = ", ".join(str(o) for o in w["offsets"])
+            if w["record_digits"] is not None:
+                self.ktuple_pattern_info_var.set(T(
+                    "const_calc.pattern_info", offsets=offsets_str,
+                    record_digits=w["record_digits"], discoverer=w["discoverer"],
+                    date=w["date"]))
+            else:
+                self.ktuple_pattern_info_var.set(
+                    T("const_calc.pattern_info_untracked", offsets=offsets_str))
+
+        def _on_toggle_ktuple_advanced(self):
+            """Same show/hide-together idiom as _on_toggle_loop_advanced() -- see that
+            method's own docstring."""
+            if self._ktuple_advanced_visible:
+                self._ktuple_advanced_content.pack_forget()
+                self._ktuple_advanced_visible = False
+                self.ktuple_advanced_toggle_btn.configure(text=T("gen.advanced_show"))
+            else:
+                self._ktuple_advanced_content.pack(
+                    fill="x", padx=8, pady=(0, 4), before=self.ktuple_console.toggle_row)
+                self._ktuple_advanced_visible = True
+                self.ktuple_advanced_toggle_btn.configure(text=T("gen.advanced_hide"))
+
+        def _show_ktuple_terminal(self):
+            self.ktuple_console.show()
+
+        def _on_run_ktuple(self):
+            if self._ktuple_runner is not None and self._ktuple_runner.is_running():
+                return
+            base_exponent = self._ktuple_vars["base_exponent"].get().strip()
+            if not base_exponent.isdigit():
+                messagebox.showerror(T("gen.dialog_title"), T("gen.error_base_exponent_int"))
+                return
+
+            k_idx = self.ktuple_k_combo.current()
+            variant_idx = self.ktuple_variant_combo.current()
+            if k_idx < 0 or variant_idx < 0 or variant_idx >= len(self._ktuple_variants):
+                messagebox.showerror(T("gen.dialog_title"), T("gen.ktuple_error_no_pattern"))
+                return
+            pattern = self._ktuple_variants[variant_idx]
+
+            n_locations = self._ktuple_vars["n_locations"].get().strip()
+            window_m = self._ktuple_vars["window_m"].get().strip()
+            fragment_width = self._ktuple_vars["fragment_width"].get().strip()
+            fragment_start = self._ktuple_vars["fragment_start"].get().strip() or "0"
+            deep_prime_limit = self._ktuple_vars["deep_prime_limit"].get().strip() or "2000"
+            mr_rounds = self._ktuple_vars["mr_rounds"].get().strip() or "40"
+            manual_offsets_str = self._ktuple_vars["manual_offsets"].get().strip()
+
+            numeric_ok = (
+                n_locations.isdigit() and window_m.isdigit() and fragment_start.isdigit()
+                and deep_prime_limit.isdigit() and mr_rounds.isdigit()
+                and (not fragment_width or fragment_width.isdigit()))
+            if not numeric_ok:
+                messagebox.showerror(T("gen.dialog_title"), T("gen.ktuple_error_numeric_fields"))
+                return
+
+            strategy_idx = self.ktuple_strategy_combo.current()
+            strategy = (_KTUPLE_STRATEGY_KEYS[strategy_idx]
+                        if 0 <= strategy_idx < len(_KTUPLE_STRATEGY_KEYS) else "concentrated")
+
+            manual_offsets = None
+            if strategy == "manual":
+                try:
+                    manual_offsets = [int(tok) for tok in manual_offsets_str.replace(",", " ").split()]
+                except ValueError:
+                    manual_offsets = []
+                if not manual_offsets:
+                    messagebox.showerror(T("gen.dialog_title"), T("gen.ktuple_error_manual_offsets"))
+                    return
+
+            self._generation_settings["ktuple"] = {
+                "base_exponent": base_exponent, "k": str(pattern["k"]),
+                "variant_id": str(pattern["id"]), "n_locations": n_locations,
+                "window_m": window_m, "strategy": strategy,
+                "fragment_width": fragment_width, "fragment_start": fragment_start,
+                "manual_offsets": manual_offsets_str, "deep_prime_limit": deep_prime_limit,
+                "mr_rounds": mr_rounds,
+            }
+            save_generation_settings(PORTAL_FOLDER, self._generation_settings)
+
+            argv = build_ktuple_sieve_argv(
+                base_exponent, pattern["k"], pattern["id"],
+                n_locations=int(n_locations), window_m=int(window_m), strategy=strategy,
+                fragment_width=int(fragment_width) if fragment_width else None,
+                fragment_start=int(fragment_start), manual_offsets=manual_offsets,
+                deep_prime_limit=int(deep_prime_limit), mr_rounds=int(mr_rounds))
+            log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "ktuple")
+            cmd = build_wsl_logged_command(argv, log_path, exit_path)
+
+            self.ktuple_console.append(self._new_run_separator())
+            self._ktuple_output_queue = queue.Queue()
+            self._ktuple_runner = WslLoggedRunner(
+                cmd, log_path, exit_path, self._ktuple_output_queue,
+                kill_pattern="ktuple_sieve_v1.py")
+            self._ktuple_runner.start()
+            self.ktuple_run_btn.configure(state="disabled")
+            self.ktuple_stop_btn.configure(state="normal")
+            self.ktuple_status_label.set(T("common.running"))
+            self._show_ktuple_terminal()
+
+        def _on_stop_ktuple(self):
+            if self._ktuple_runner is not None:
+                self._ktuple_runner.stop()
+                self.ktuple_status_label.set(T("common.stopping"))
+
+        def _on_ktuple_finished(self):
+            """Mirrors _on_constellation_finished() -- confirmed hits land in the same
+            per-(k,variant) hit files Section B writes to, so the Constellations tab
+            needs the same post-run refresh."""
+            self.reload_constellations_tree()
+
+        def _poll_ktuple_output(self):
+            self._drain_output_queue(self._ktuple_output_queue, self.ktuple_console,
+                                      self.ktuple_run_btn, self.ktuple_stop_btn,
+                                      self.ktuple_status_label,
+                                      on_exit=self._on_ktuple_finished)
+            self.after(150, self._poll_ktuple_output)
 
         def _drain_output_queue(self, q, console, run_btn, stop_btn, status_var, on_exit=None):
             """Shared by both Generation sections: drains whatever output
