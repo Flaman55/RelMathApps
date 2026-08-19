@@ -134,10 +134,15 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     11100, 11200, ..., within the "1"/"11" branches); any window budget left over
     after one sample per digit value at a position is spent as a contiguous block
     right at that digit's own offset, densifying rather than widening coverage
-    there. Between batches (Auto, or repeated Run clicks) the whole pattern shifts
-    by the finest position's own place value, so successive batches explore shifted
-    neighborhoods while still spanning the floor's full magnitude range every single
-    batch. The fifth strategy, manual (list), is a one-off explicit offset list with
+    there. Its anchor never shifts by a raw offset the way the other three do (that
+    corrupted the digit alignment -- a leftover nonzero digit at a swept position
+    would add on top of that position's own 0..9 sweep and overflow past a single
+    digit); instead, between batches (Auto, or repeated Run clicks) the committed
+    branch itself cycles through every digit 1..9 in turn, so each batch drills a
+    genuinely different, previously only shallowly-sampled branch all the way down
+    from a permanently clean starting point, still spanning the floor's full
+    magnitude range every single batch. The fifth strategy, manual (list), is a
+    one-off explicit offset list with
     no checkpoint, for precisely-chosen positions a fixed step can't express. A
     plain Run scans exactly one batch and updates the
     checkpoint, so clicking Run again continues rather than re-scanning; the Auto
