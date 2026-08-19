@@ -2016,6 +2016,8 @@ ORCHESTRATOR_DIRECT_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "prime_sieve", "orchestrator_v3.py"))
 CONSTELLATION_FINDER_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "constellation", "constellation_finder_v1.py"))
+KTUPLE_SIEVE_SCRIPT = os.path.abspath(
+    os.path.join(_SCRIPT_DIR, "constellation", "ktuple_sieve_v1.py"))
 PRIMESIEVE_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "prime_sieve", "prime_sieve_primesieve.py"))
 PRIMESIEVE_QUERY_SCRIPT = os.path.abspath(
@@ -2220,6 +2222,34 @@ def build_constellation_finder_argv(base_exponent=None, script_path=None):
     argv = ["python3", "-u", script_wsl]
     if base_exponent not in (None, ""):
         argv.append(str(base_exponent))
+    return argv
+
+
+def build_ktuple_sieve_argv(base_exponent, k, variant_id, n_locations=1000, window_m=10_000_000,
+                             strategy="concentrated", fragment_width=None, fragment_start=0,
+                             manual_offsets=None, deep_prime_limit=2000, mr_rounds=40,
+                             script_path=None):
+    """Returns the LINUX-side argv for ktuple_sieve_v1.py -- see that script's own
+    argparse block for the exact CLI shape (three required positionals: base_exponent,
+    k, variant_id; the rest are optional flags with the same defaults this function
+    uses). `-u` for the same unbuffered-stdout reason build_constellation_finder_argv()
+    uses -- this script's per-location print volume is lower still (each location does
+    real work: wheel-stride + trial-division + Miller-Rabin, not just a window read), so
+    buffering would hide live progress even more than that script's own case did.
+
+    Unlike build_constellation_finder_argv(), base_exponent/k/variant_id are all
+    REQUIRED here (ktuple_sieve_v1.py has no auto-detect-every-floor mode -- a k-tuple
+    hunt is always FOR one specific pattern, at a caller-chosen floor, never implicit)."""
+    script = script_path if script_path is not None else KTUPLE_SIEVE_SCRIPT
+    script_wsl = windows_path_to_wsl(script)
+    argv = ["python3", "-u", script_wsl, str(base_exponent), str(k), str(variant_id),
+            "--n-locations", str(n_locations), "--window-m", str(window_m),
+            "--strategy", strategy, "--fragment-start", str(fragment_start),
+            "--deep-prime-limit", str(deep_prime_limit), "--mr-rounds", str(mr_rounds)]
+    if fragment_width is not None:
+        argv += ["--fragment-width", str(fragment_width)]
+    if manual_offsets:
+        argv += ["--manual-offsets"] + [str(o) for o in manual_offsets]
     return argv
 
 
