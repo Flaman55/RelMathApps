@@ -141,8 +141,13 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     branch itself cycles through every digit 1..9 in turn, so each batch drills a
     genuinely different, previously only shallowly-sampled branch all the way down
     from a permanently clean starting point, still spanning the floor's full
-    magnitude range every single batch. The fifth strategy, manual (list), is a
-    one-off explicit offset list with
+    magnitude range every single batch. Because n_locations is shared across all
+    five strategies, the default (1000) leaves each individual digit branch only a
+    few windows deep for digit_sweep specifically -- an Auto button next to the
+    field computes a floor-and-window_m-aware recommendation (enough windows for
+    every branch at every position to get roughly 40 windows of depth) without
+    disturbing the field's default for the other four strategies. The fifth
+    strategy, manual (list), is a one-off explicit offset list with
     no checkpoint, for precisely-chosen positions a fixed step can't express. A
     plain Run scans exactly one batch and updates the
     checkpoint, so clicking Run again continues rather than re-scanning; the Auto

@@ -2041,6 +2041,39 @@ CONSTELLATION_FINDER_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "constellation", "constellation_finder_v1.py"))
 KTUPLE_SIEVE_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "constellation", "ktuple_sieve_v1.py"))
+
+
+def recommended_digit_sweep_n_locations(base_exponent, window_m, target_windows_per_branch=40):
+    """Mirrors ktuple_sieve_v1.digit_sweep_positions()'s own p_min search (duplicated,
+    not imported -- that module runs standalone inside WSL, this native-Windows GUI
+    process must not depend on it, same "duplicated rather than imported" pattern
+    already used elsewhere in this file, e.g. LOW_FLOOR_CUTOFF/QUICK_GEN_MAX_WINDOW_WIDTH
+    right below).
+
+    Added 2026-08-19 after Artur pointed out that the shared 1000-window default left
+    each individual digit branch only ~4-5 windows deep (40M numbers) when he'd
+    pictured each branch getting close to the ~40-window (400M number) depth his own
+    "1000 windows / 25 positions = 40 per position" mental model implied per BRANCH,
+    not per POSITION split across its ~10 branches. Rather than silently reinterpret
+    what n_locations means, this just recommends an n_locations big enough that BOTH
+    readings coincide: every position still gets swept in the SAME batch (matching
+    his explicit goal of the whole floor's magnitude range examined at once), and
+    every digit branch within it gets close to `target_windows_per_branch` windows.
+
+    Returns the recommended n_locations (an int) -- a plain suggestion, like every
+    other Auto button in this app; the field stays freely editable afterward."""
+    p_min = 0
+    while 10 ** p_min < window_m:
+        p_min += 1
+    positions = [p for p in ([base_exponent] + list(range(base_exponent - 1, p_min - 1, -1)))
+                 if p >= 0]
+    total = 0
+    for p in positions:
+        n_digit_values = 9 if p == base_exponent else 10
+        total += n_digit_values * target_windows_per_branch
+    return total
+
+
 PRIMESIEVE_SCRIPT = os.path.abspath(
     os.path.join(_SCRIPT_DIR, "prime_sieve", "prime_sieve_primesieve.py"))
 PRIMESIEVE_QUERY_SCRIPT = os.path.abspath(
@@ -7614,6 +7647,16 @@ def _build_gui():
 
             add_ktuple_field(0, 0, "base_exponent", T("gen.ktuple_field_base_exponent"))
             add_ktuple_field(0, 1, "n_locations", T("gen.ktuple_field_n_locations"))
+            # Auto button: recommended_digit_sweep_n_locations()'s own suggestion --
+            # see _on_ktuple_n_locations_auto_clicked()'s docstring for why this
+            # exists (a shared n_locations field left digit_sweep's per-branch depth
+            # much thinner than Artur had pictured). Occupies the free grid slot right
+            # after n_locations's own entry (columns 2/3), same "Auto button right
+            # next to the field it fills" placement as the loop pipeline's own
+            # workers Auto button above.
+            ttk.Button(ktuple_form, text=T("quick.auto_button"), width=6,
+                       command=self._on_ktuple_n_locations_auto_clicked).grid(
+                row=0, column=4, sticky="w", padx=(0, 8), pady=2)
             add_ktuple_field(1, 0, "window_m", T("gen.ktuple_field_window_m"), width=14)
 
             ttk.Label(ktuple_form, text=T("gen.ktuple_field_strategy")).grid(
@@ -9272,6 +9315,32 @@ def _build_gui():
             else:
                 self.ktuple_pattern_info_var.set(
                     T("const_calc.pattern_info_untracked", offsets=offsets_str))
+
+        def _on_ktuple_n_locations_auto_clicked(self):
+            """Auto button for the shared "n_locations" field -- primarily meant for
+            strategy=digit_sweep (see recommended_digit_sweep_n_locations()'s own
+            docstring for why it exists: the field is shared across all five
+            strategies, so a single static default couldn't fit digit_sweep's
+            per-branch-depth needs without either being far too small for it or far
+            too large for the other four). Reads base_exponent/window_m straight from
+            their own fields (both already on screen, no WSL round-trip needed --
+            unlike _on_workers_auto_clicked's CPU probe, this is pure arithmetic), and
+            fills n_locations with the recommendation. Like every other Auto button in
+            this app, only ever SUGGESTS a value -- the field stays freely editable
+            afterward."""
+            base_exponent_str = self._ktuple_vars["base_exponent"].get().strip()
+            window_m_str = self._ktuple_vars["window_m"].get().strip()
+            if not base_exponent_str.isdigit() or not window_m_str.isdigit():
+                messagebox.showerror(T("gen.dialog_title"), T("gen.error_base_exponent_int"))
+                return
+            base_exponent = int(base_exponent_str)
+            window_m = int(window_m_str)
+            recommended = recommended_digit_sweep_n_locations(base_exponent, window_m)
+            self._ktuple_vars["n_locations"].set(str(recommended))
+            numbers_total = recommended * window_m
+            messagebox.showinfo(T("quick.dialog_title"), T(
+                "gen.ktuple_auto_n_locations_result",
+                recommended=f"{recommended:,}", numbers_total=f"{numbers_total:,}"))
 
         def _on_toggle_ktuple_advanced(self):
             """Same show/hide-together idiom as _on_toggle_loop_advanced() -- see that

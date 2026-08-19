@@ -286,6 +286,7 @@
   "gen.ktuple_strategy_digit_sweep": "Digit sweep (nested drill)",
   "gen.ktuple_field_step": "Step (blank = auto per strategy):",
   "gen.ktuple_auto_button": "Auto (until a hit)",
+  "gen.ktuple_auto_n_locations_result": "Recommended n_locations: {recommended} (= {numbers_total} numbers in one batch).\n\nThis estimate targets the digit_sweep strategy -- enough windows for EVERY digit value at EVERY position of the floor to get ~40 windows of depth, while one batch still covers the floor's entire magnitude range at once. For the other strategies this is usually far too much -- edit the field by hand if you're using a different one.",
   "gen.ktuple_check_reset_checkpoint": "Reset checkpoint (start from 'Fragment start')",
   "gen.ktuple_error_manual_step_needs_step": "The 'Manual -- step' strategy requires a Step value.",
   "gen.ktuple_field_base_exponent": "Floor (base_exponent):",

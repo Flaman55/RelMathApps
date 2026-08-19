@@ -286,6 +286,7 @@
   "gen.ktuple_strategy_digit_sweep": "Wiercenie po cyfrach",
   "gen.ktuple_field_step": "Krok (puste = auto wg strategii):",
   "gen.ktuple_auto_button": "Auto (aż do trafienia)",
+  "gen.ktuple_auto_n_locations_result": "Zalecane n_locations: {recommended} (= {numbers_total} liczb w jednej porcji).\n\nTo szacunek pod strategię digit_sweep -- tyle okien wystarczy, by KAŻDA wartość cyfry na KAŻDEJ pozycji piętra dostała ~40 okien głębi, a jedna porcja wciąż objęła całą rozpiętość piętra naraz. Dla pozostałych strategii to zwykle zbyt dużo -- zmień pole ręcznie, jeśli używasz innej strategii.",
   "gen.ktuple_check_reset_checkpoint": "Resetuj checkpoint (start od 'Start fragmentu')",
   "gen.ktuple_error_manual_step_needs_step": "Strategia 'Manualna -- krok' wymaga podania wartości Krok.",
   "gen.ktuple_field_base_exponent": "Piętro (base_exponent):",
