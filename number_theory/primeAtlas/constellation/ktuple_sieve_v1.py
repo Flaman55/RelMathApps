@@ -382,10 +382,19 @@ def manual_list_locations(base_exponent, manual_offsets):
 
 def digit_sweep_positions(base_exponent, window_m):
     """Digit positions to sweep, coarsest (base_exponent itself -- the place where
-    floor_base's own leading digit lives) down to the finest position whose place
-    value (10**p) is still >= window_m. Returns a descending list of positions,
-    e.g. base_exponent=25, window_m=10_000_000 -> [25, 24, 23, ..., 7] (19 positions)."""
-    p_min = max(0, len(str(window_m)) - 1)
+    floor_base's own leading digit lives) down to the finest position p_min whose
+    place value (10**p_min) is the smallest power of ten still >= window_m. Returns a
+    descending list of positions, e.g. base_exponent=25, window_m=10_000_000 ->
+    [25, 24, 23, ..., 7] (19 positions).
+
+    p_min found by direct search (not log10 -- avoids float-precision edge cases
+    right at a power of ten) so that 10**p_min is GUARANTEED >= window_m -- this
+    matters for digit_sweep_locations()'s own overlap guard (place // window_m must
+    never floor to 0 for a swept position, or a digit's own contiguous block could
+    spill into the next digit's territory)."""
+    p_min = 0
+    while 10 ** p_min < window_m:
+        p_min += 1
     positions = [base_exponent] + list(range(base_exponent - 1, p_min - 1, -1))
     return [p for p in positions if p >= 0]
 
@@ -402,7 +411,28 @@ def digit_sweep_locations(base_exponent, n_locations, window_m, anchor_offset=0,
     the next batch's pattern is shifted slightly while still spanning the floor's full
     magnitude range on every single batch.
     `commit_digit` -- the digit value each swept position is fixed at before drilling
-    into the next, finer one (default 1, matching Artur's own worked example)."""
+    into the next, finer one (default 1, matching Artur's own worked example).
+
+    BUG FIXED 2026-08-19, TWO PARTS (found by Artur from a real run's log tail):
+    (1) a digit value's own sub-interval is exactly `place` (=10**p) wide -- at the
+    FINEST swept position, place == window_m, so at most ONE window fits per digit
+    value at all; without a cap, extra budget there produced a contiguous block that
+    ran straight past the digit's own single-window sub-interval and into the NEXT
+    digit value's territory, so the tail of a batch silently degenerated from a 0..9
+    digit sweep into a plain linear crawl (an offset contribution of "23" at a
+    position that can only ever hold a single digit 0..9). Fixed by capping
+    windows_per_digit at `place // window_m` (always >= 1 for every position
+    digit_sweep_positions() returns, by that function's own p_min search).
+    (2) even with (1) fixed, the position's OWN committed branch (digit_value ==
+    commit_digit) still starts at EXACTLY the offset the next, finer position's own
+    digit=commit_digit branch starts at too (that's the whole point of "committing" --
+    the next position continues from there) -- so if that branch got more than one
+    contiguous window at THIS level, those extra windows silently duplicated ones the
+    NEXT level was about to explore anyway (and in more depth). Fixed by capping the
+    committed branch to exactly one window (the anchor point itself, matching Artur's
+    own worked example, which explicitly re-lists it) at every position except the
+    LAST -- only the finest position, with nothing deeper to hand off to, spends its
+    full per-digit budget on every digit value including its own commit_digit."""
     floor_base = 10 ** base_exponent
     width = floor_width(base_exponent)
     positions = digit_sweep_positions(base_exponent, window_m)
@@ -417,14 +447,22 @@ def digit_sweep_locations(base_exponent, n_locations, window_m, anchor_offset=0,
     locations = []
     committed = anchor_offset
     for idx, p in enumerate(positions):
+        is_last = (idx == n_positions - 1)
         is_leading = (p == base_exponent)
         digit_values = range(1, 10) if is_leading else range(0, 10)
         place = 10 ** p
-        windows_per_digit = max(1, per_position[idx] // len(digit_values))
+        max_fit = max(1, place // window_m)  # windows that fit in ONE digit's own
+                                              # place-wide sub-interval without
+                                              # spilling into the next digit's
+        windows_per_digit = max(1, min(per_position[idx] // len(digit_values), max_fit))
         for digit_value in digit_values:
             d = digit_value - 1 if is_leading else digit_value  # d=0 at the leading
             digit_offset = committed + d * place                # position IS digit "1"
-            for i in range(windows_per_digit):                  # -- floor_base's own
+            this_branch_windows = windows_per_digit
+            if not is_last and digit_value == commit_digit:
+                this_branch_windows = 1  # deferred to the next, finer position --
+                                          # see part (2) of the docstring note above
+            for i in range(this_branch_windows):                # -- floor_base's own
                 off = digit_offset + i * window_m                # leading digit, free
                 if off + window_m <= width:
                     locations.append(floor_base + off)
