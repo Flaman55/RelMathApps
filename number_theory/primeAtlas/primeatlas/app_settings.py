@@ -21,6 +21,7 @@ import os
 import json
 
 from .i18n import DEFAULT_LANGUAGE, LOCALES_DIR, load_saved_language, save_language
+from .theme import DEFAULT_THEME
 
 SETTINGS_FILENAME = "app_settings.json"
 LEGACY_SETTINGS_FILENAME = ".portal_app_settings.json"  # earlier location, next to the
@@ -96,6 +97,22 @@ class AppSettings:
 
     def set_language(self, language):
         save_language(language)
+
+    @property
+    def theme(self):
+        """Visual theme ("light" or "dark") -- see primeatlas/theme.py for the two
+        color palettes. Read once at startup (PortalBrowserApp._apply_theme(), same
+        restart-required pattern as `language` above -- Settings > Ogolne's theme
+        picker only writes the choice here, it does not attempt to re-theme the
+        already-built app). Stored directly in THIS file's own JSON
+        (_data["theme"]), unlike `language` above -- theme has nothing to do with
+        i18n.py's translation machinery, so it doesn't need that indirection.
+        Defaults to DEFAULT_THEME ("light") if unset or unrecognized."""
+        return self._data.get("theme") or DEFAULT_THEME
+
+    def set_theme(self, theme_name):
+        self._data["theme"] = theme_name or DEFAULT_THEME
+        self.save()
 
     def load(self):
         if not os.path.exists(self._path):

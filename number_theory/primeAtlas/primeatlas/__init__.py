@@ -1,12 +1,16 @@
 """
 primeatlas -- pure-logic (no tkinter) backend package for prime_atlas_v1.py's Settings
 tab: configurable storage path, backup/restore (as lightweight manifests, not raw data
-copies), full-database delete, and PL/EN language switching. See each module's own
-docstring for details. Every class here is independently unit-testable without a
-display -- settings_tab.py is the only place in this package that imports tkinter,
-wiring these into actual widgets.
+copies), full-database delete, PL/EN language switching, and light/dark theme color
+palettes (theme.py -- pure data only; the actual ttk.Style()/option_add() application
+lives in prime_atlas_v1.py's PortalBrowserApp._apply_theme(), which needs a live Tk
+root this package deliberately never touches). See each module's own docstring for
+details. Every class here is independently unit-testable without a display --
+settings_tab.py is the only place in this package that imports tkinter, wiring these
+into actual widgets.
 """
 from .app_settings import AppSettings
+from .theme import THEMES, DEFAULT_THEME, palette_for
 from .manifest import PietroSnapshot, ConstellationSnapshot, BackupManifest
 from .backup_store import BackupStore
 from .restore_job import (
@@ -30,6 +34,7 @@ from .goldbach_window import (
 
 __all__ = [
     "AppSettings",
+    "THEMES", "DEFAULT_THEME", "palette_for",
     "PietroSnapshot", "ConstellationSnapshot", "BackupManifest",
     "BackupStore",
     "RestoreJob", "RestoreStep", "restore_checkpoint_path", "prune_empty_pietro_dirs",

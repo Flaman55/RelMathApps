@@ -1,6 +1,6 @@
 """
 settings_tab.py -- SettingsTab, the tkinter widgets for the Settings tab: language
-switch, storage-path configuration, backup create/list, restore (diff-against-disk ->
+switch, light/dark theme switch, storage-path configuration, backup create/list, restore (diff-against-disk ->
 confirm -> checkpointed, pausable/resumable/cancellable regeneration job), the
 full-database delete button, two narrower per-floor delete actions (one floor's
 prime+constellation data, or just that floor's constellations -- see FloorWiper in
@@ -173,6 +173,21 @@ class SettingsTab(ttk.Frame):
         target_t = Translator(code).t
         messagebox.showinfo(target_t("settings.dialog_title"),
                              target_t("settings.language_restart_note"))
+
+    # ---- theme ----------------------------------------------------------------------
+
+    def _on_theme_selected(self, _event=None):
+        label = self.theme_var.get()
+        code = self._theme_codes_by_label.get(label)
+        if code is None or code == self.app_settings.theme:
+            return
+        self.app_settings.set_theme(code)
+        # Unlike the language switch above, the restart note itself can stay in
+        # self.T's CURRENT language -- picking a theme doesn't affect what language
+        # the person reads, so there's no need for language's throwaway-Translator
+        # trick here.
+        messagebox.showinfo(self.T("settings.dialog_title"),
+                             self.T("settings.theme_restart_note"))
 
     # ---- storage path -----------------------------------------------------------------
 
@@ -1575,6 +1590,31 @@ class SettingsTab(ttk.Frame):
         language_combo.grid(row=0, column=1, sticky="w", padx=(0, 12), pady=6)
         language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
         ttk.Label(lang_frame, text=self.T("settings.language_restart_note"),
+                  foreground="#555555").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=6)
+
+        # Theme picker -- same restart-required pattern as language above (see
+        # prime_atlas_v1.py's PortalBrowserApp._apply_theme() docstring for why a
+        # live re-theme of every already-built widget is a much larger, riskier
+        # change than re-applying colors once at the next startup). Only two
+        # options, so no need for language's available()-style discovery list --
+        # the (code, label) pairs are just written out directly here.
+        theme_frame = ttk.Labelframe(outer, text=self.T("settings.theme_frame"))
+        theme_frame.pack(fill="x", pady=(0, 8))
+        ttk.Label(theme_frame, text=self.T("settings.theme_label")).grid(
+            row=0, column=0, sticky="w", padx=6, pady=6)
+        theme_options = [("light", self.T("settings.theme_light")),
+                          ("dark", self.T("settings.theme_dark"))]
+        self._theme_codes_by_label = {label: code for code, label in theme_options}
+        self._theme_labels_by_code = {code: label for code, label in theme_options}
+        current_theme_label = self._theme_labels_by_code.get(
+            self.app_settings.theme, self._theme_labels_by_code["light"])
+        self.theme_var = tk.StringVar(value=current_theme_label)
+        theme_combo = ttk.Combobox(
+            theme_frame, textvariable=self.theme_var, state="readonly",
+            values=[label for _code, label in theme_options], width=20)
+        theme_combo.grid(row=0, column=1, sticky="w", padx=(0, 12), pady=6)
+        theme_combo.bind("<<ComboboxSelected>>", self._on_theme_selected)
+        ttk.Label(theme_frame, text=self.T("settings.theme_restart_note"),
                   foreground="#555555").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=6)
 
         path_frame = ttk.Labelframe(outer, text=self.T("settings.path_frame"))

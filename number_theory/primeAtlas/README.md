@@ -196,7 +196,8 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
 - **Settings** -- laid out as three vertically-scrollable sub-tabs (backup + restore +
   delete together run taller than a non-maximized window, so each sub-tab scrolls
   independently):
-  - **Ogolne** -- language switch and storage-location configuration.
+  - **Ogolne** -- language switch, light/dark theme switch, and storage-location
+    configuration.
   - **Backup** -- backup create/list/delete, restore (manifest-based drift detection
     against what is actually on disk, then a checkpointed, pausable/resumable/
     cancellable regeneration job -- see "Restore" below for ordering and engine
@@ -587,7 +588,8 @@ errors) or `Run_PrimeAtlas_Hidden.vbs` (no console window). Equivalently:
 python prime_atlas_v1.py
 ```
 
-Language (English/Polish) is set from the Settings tab and takes effect on restart.
+Language (English/Polish) and theme (light/dark, light by default) are both set from
+the Settings tab and both take effect on restart.
 
 ## License
 
