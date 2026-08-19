@@ -7433,6 +7433,72 @@ def _build_gui():
 
         # --- Tab 3: Generation (launch orchestrator_loop_v2 / constellation_finder) --
 
+        def _build_scrollable_container(self, parent):
+            """Wraps `parent` in a vertically-scrollable canvas+frame and returns the
+            inner ttk.Frame -- pack the tab's REAL content into that returned frame
+            instead of into `parent` directly; everything else (canvas, scrollbar,
+            width sync, mousewheel binding) is handled here. Added 2026-08-19 because
+            the Generation tab's three sections (A: pipeline, B: constellation search,
+            C: k-tuple search -- each with its own Advanced-fields block and its own
+            GenerationConsole terminal) together need more vertical space than the
+            1050x680 main window has, and a plain pack()/Panedwindow layout has no way
+            to reach whatever falls below the visible area -- Section C being added
+            last effectively pushed A/B's terminals and advanced fields (write_files,
+            compute_sieving_primes_count, etc.) out of reach even though nothing was
+            actually removed. This is a pure ADDITIVE wrapper (same rule as
+            digit_sweep/pass_counter above: extend, don't replace) -- it changes
+            nothing about what's inside, only how it's reached once it doesn't fit.
+
+            Standard canvas-scrollregion idiom: an inner frame is placed on a canvas
+            via create_window; the inner frame's own <Configure> (fires whenever its
+            packed children change its natural size) updates the canvas' scrollregion
+            to match, and the canvas' own <Configure> (fires on window resize) keeps
+            the inner frame exactly as WIDE as the visible canvas so fill="x" widgets
+            inside it still span the full width like they did before this wrapper
+            existed, instead of collapsing to their minimum content width. Mousewheel
+            scrolling is bound only while the pointer is actually over this canvas
+            (bound on <Enter>, unbound on <Leave>) so it doesn't steal wheel events
+            from Treeviews or other scrollable widgets on other tabs. <MouseWheel>
+            covers Windows/Mac; <Button-4>/<Button-5> cover X11 (Linux) which reports
+            the wheel as button clicks instead of a delta."""
+            outer = ttk.Frame(parent)
+            outer.pack(fill="both", expand=True)
+
+            canvas = tk.Canvas(outer, highlightthickness=0)
+            vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=vsb.set)
+            canvas.pack(side="left", fill="both", expand=True)
+            vsb.pack(side="right", fill="y")
+
+            inner = ttk.Frame(canvas)
+            inner_window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+            def _on_inner_configure(_event):
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            inner.bind("<Configure>", _on_inner_configure)
+
+            def _on_canvas_configure(event):
+                canvas.itemconfigure(inner_window, width=event.width)
+            canvas.bind("<Configure>", _on_canvas_configure)
+
+            def _on_mousewheel(event):
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+            def _bind_mousewheel(_event):
+                canvas.bind_all("<MouseWheel>", _on_mousewheel)
+                canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+                canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+            def _unbind_mousewheel(_event):
+                canvas.unbind_all("<MouseWheel>")
+                canvas.unbind_all("<Button-4>")
+                canvas.unbind_all("<Button-5>")
+
+            canvas.bind("<Enter>", _bind_mousewheel)
+            canvas.bind("<Leave>", _unbind_mousewheel)
+
+            return inner
+
         def _build_generation_tab(self):
             """Two independent sections ("Separate calls and parameterization"):
             orchestrator_loop_v2.py's full generation pipeline on
@@ -7447,12 +7513,19 @@ def _build_gui():
             whatever was last used, no re-typing needed."""
             self._generation_settings = load_generation_settings(PORTAL_FOLDER)
 
+            # Scrollable wrapper (see _build_scrollable_container's own docstring) --
+            # everything below packs into `generation_body`, not into
+            # self.generation_tab directly, so the tab as a whole gains a vertical
+            # scrollbar/mousewheel once Sections A+B+C together exceed the window's
+            # visible height, instead of silently cutting off whatever doesn't fit.
+            generation_body = self._build_scrollable_container(self.generation_tab)
+
             self._init_quick_generation_state()
-            quick_outer = ttk.Labelframe(self.generation_tab, text=T("quick.section_title"))
+            quick_outer = ttk.Labelframe(generation_body, text=T("quick.section_title"))
             quick_outer.pack(fill="x", padx=6, pady=(6, 0))
             self._build_quick_generation_panel(quick_outer)
 
-            paned = ttk.Panedwindow(self.generation_tab, orient="vertical")
+            paned = ttk.Panedwindow(generation_body, orient="vertical")
             paned.pack(fill="both", expand=True, padx=6, pady=6)
 
             # --- Section A: orchestrator_loop_v2.py (generation pipeline) ------------
