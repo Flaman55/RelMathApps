@@ -114,19 +114,32 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     at this project's own measured floor-25 sieve throughput -- the bottleneck there
     isn't the per-window sieve cost (genuinely cheap on its own), it's that there
     are simply too many windows to visit at all. The pattern picker reuses the same
-    k-then-variant catalog cascade as the Constellation calculator. Four location
-    strategies choose the (by default 1000) window locations one batch scans, three
-    of which share a common checkpoint: even, concentrated, and manual (step) all
-    reduce to the same window-spacing mechanism (n windows, `step` apart, starting
-    from wherever the LAST batch for this exact floor+pattern left off, persisted in
-    its own `KTUPLE_CHECKPOINT_*.txt` file next to that pattern's hit file) --
-    differing only in how `step` itself is picked: even uses the window width
-    (dense, contiguous), concentrated auto-sizes it from the pattern's own
-    Hardy-Littlewood density so the batch's expected hit count is roughly 1 (editable,
-    or an explicit fragment width/step can be given instead), and manual (step) takes
-    a caller-given step directly. The fourth strategy, manual (list), is a one-off
-    explicit offset list with no checkpoint, for precisely-chosen positions a fixed
-    step can't express. A plain Run scans exactly one batch and updates the
+    k-then-variant catalog cascade as the Constellation calculator. Five location
+    strategies choose the (by default 1000) window locations one batch scans. Three
+    of them -- even, concentrated, manual (step) -- share one linear checkpointed
+    mechanism (n windows, `step` apart, starting from wherever the LAST batch for
+    this exact floor+pattern left off, persisted in its own `KTUPLE_CHECKPOINT_*.txt`
+    file next to that pattern's hit file), differing only in how `step` itself is
+    picked: even uses the window width (dense, contiguous), concentrated auto-sizes
+    it from the pattern's own Hardy-Littlewood density so the batch's expected hit
+    count is roughly 1 (editable, or an explicit fragment width/step can be given
+    instead), and manual (step) takes a caller-given step directly. Digit sweep is a
+    fourth, also checkpointed, strategy but with its own mechanism instead of linear
+    striding: it drills through the floor's own digit positions, coarsest (the
+    floor's own leading digit) first, so a single batch already samples every
+    magnitude neighborhood of the floor at once rather than crawling linearly
+    through one -- at each position it nests into ONE committed digit branch
+    (default "1") before drilling into the next, finer position, mirroring a manual
+    worked example (10000, 20000, ..., 90000, then 11000, 12000, ..., 19000, then
+    11100, 11200, ..., within the "1"/"11" branches); any window budget left over
+    after one sample per digit value at a position is spent as a contiguous block
+    right at that digit's own offset, densifying rather than widening coverage
+    there. Between batches (Auto, or repeated Run clicks) the whole pattern shifts
+    by the finest position's own place value, so successive batches explore shifted
+    neighborhoods while still spanning the floor's full magnitude range every single
+    batch. The fifth strategy, manual (list), is a one-off explicit offset list with
+    no checkpoint, for precisely-chosen positions a fixed step can't express. A
+    plain Run scans exactly one batch and updates the
     checkpoint, so clicking Run again continues rather than re-scanning; the Auto
     button instead keeps the same WSL process scanning batch after batch,
     checkpointing after each, until a confirmed hit, Stop, or the floor is exhausted

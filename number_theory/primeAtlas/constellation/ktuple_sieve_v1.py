@@ -50,6 +50,17 @@ write_ktuple_checkpoint()). A plain run (auto=False) scans one batch and updates
 checkpoint, so the next run continues rather than re-scanning; run_ktuple_job(auto=True)
 keeps looping batch after batch, checkpointing after each, until a confirmed hit turns
 up, the caller's should_stop() fires, or the floor is exhausted.
+
+DIGIT SWEEP (added 2026-08-19, at Artur's request): a 5th location strategy alongside
+even/concentrated/manual_step/manual_list -- see digit_sweep_locations() for the full
+design note. In one sentence: instead of crawling the floor linearly, it drills through
+the floor's own digit positions (coarsest first) so a single n_locations-sized batch
+samples the ENTIRE magnitude range of the floor at once, nesting deeper into one
+committed digit branch (default: always "...1") at each successive, finer position --
+exactly mirroring Artur's own worked example (10000, 20000, ..., 90000, then 11000,
+12000, ..., 19000, then 11100, 11200, ..., 11900, ...). Extra per-position budget beyond
+one window per digit value is spent as a CONTIGUOUS block right at that digit's own
+offset (denser, not wider, coverage there), per his own follow-up clarification.
 """
 import math
 import random
@@ -335,6 +346,95 @@ def manual_list_locations(base_exponent, manual_offsets):
 
 
 # ------------------------------------------------------------------------------------------
+# Digit sweep -- strategy=digit_sweep. A floor N (== [10**N, 10**(N+1))) is N+1 digits
+# wide. A linear crawl (even/concentrated/manual_step, however wide a step) only ever
+# examines numbers that share the SAME leading digits as wherever the crawl currently
+# is -- reaching a genuinely different magnitude neighborhood (e.g. one starting with a
+# "7" instead of a "1") takes an enormous number of steps. Artur's own proposal: since a
+# batch already has ~1000 windows of budget, split that budget across the floor's own
+# digit POSITIONS instead of across one linear span, so a single batch's ~1000 windows
+# touch every magnitude neighborhood of the floor at once.
+#
+# Mechanics, worked through on his own example (floor = 5-digit numbers, 10000..99999,
+# base_exponent=4):
+#   position p=4 (the floor's own leading digit, values 1..9): sample near 10000,
+#       20000, ..., 90000 -- one sub-scan per leading digit.
+#   position p=3 (values 0..9): NOT independent of the first position -- his example
+#       continues from 11000, 12000, ..., 19000, i.e. it STAYS inside the branch it
+#       already committed to at position 4 (leading digit "1") and only varies position
+#       3. This is nested drilling into ONE path, not an independent sweep of every
+#       position from the floor's own base (that alternative was proposed and
+#       explicitly rejected in favor of this one, 2026-08-19) -- so after position p is
+#       swept, it gets FIXED at `commit_digit` (default 1, matching his own example
+#       verbatim) before the next, finer position is swept.
+#   position p=2: 11100, 11200, ..., 11900 -- same pattern, now inside the "11" branch.
+#   ...continues down to the finest position whose place value is still >= window_m
+#       (see digit_sweep_positions()) -- below that a single window already covers
+#       everything remaining, drilling further would add positions but no coverage.
+#
+# Budget per position beyond one window per digit value: Artur's own follow-up
+# ("rozkladamy rownomiernie az skoncza sie okna a jesli jest ich wiecej niz
+# poszczegolnych cyfr do obsadzenia to tworza spojna szerokosc zwiekszajac predkosc na
+# danym fragmencie", 2026-08-19) -- extra windows are placed back-to-back (no gaps)
+# starting right at that digit's own offset, densifying coverage at the START of that
+# fragment rather than spreading thin across its whole width.
+# ------------------------------------------------------------------------------------------
+
+def digit_sweep_positions(base_exponent, window_m):
+    """Digit positions to sweep, coarsest (base_exponent itself -- the place where
+    floor_base's own leading digit lives) down to the finest position whose place
+    value (10**p) is still >= window_m. Returns a descending list of positions,
+    e.g. base_exponent=25, window_m=10_000_000 -> [25, 24, 23, ..., 7] (19 positions)."""
+    p_min = max(0, len(str(window_m)) - 1)
+    positions = [base_exponent] + list(range(base_exponent - 1, p_min - 1, -1))
+    return [p for p in positions if p >= 0]
+
+
+def digit_sweep_locations(base_exponent, n_locations, window_m, anchor_offset=0, commit_digit=1):
+    """strategy=digit_sweep -- see the module-section docstring above for the full
+    design. Returns a list of absolute base positions (floor_base + offset), coarsest
+    position's sub-scans first, already clipped to the floor's own upper boundary.
+
+    `anchor_offset` shifts the WHOLE nested pattern by a fixed floor-relative amount --
+    used by run_ktuple_job() so successive batches (auto=True, or repeated plain Run
+    clicks) don't re-scan the identical ~1000 positions forever: after a batch with no
+    hit, the anchor advances by the finest position's own place value (10**p_min), so
+    the next batch's pattern is shifted slightly while still spanning the floor's full
+    magnitude range on every single batch.
+    `commit_digit` -- the digit value each swept position is fixed at before drilling
+    into the next, finer one (default 1, matching Artur's own worked example)."""
+    floor_base = 10 ** base_exponent
+    width = floor_width(base_exponent)
+    positions = digit_sweep_positions(base_exponent, window_m)
+    if not positions:
+        return []
+
+    n_positions = len(positions)
+    per_position = [n_locations // n_positions] * n_positions
+    for i in range(n_locations % n_positions):
+        per_position[i] += 1  # remainder spread across the coarsest positions first
+
+    locations = []
+    committed = anchor_offset
+    for idx, p in enumerate(positions):
+        is_leading = (p == base_exponent)
+        digit_values = range(1, 10) if is_leading else range(0, 10)
+        place = 10 ** p
+        windows_per_digit = max(1, per_position[idx] // len(digit_values))
+        for digit_value in digit_values:
+            d = digit_value - 1 if is_leading else digit_value  # d=0 at the leading
+            digit_offset = committed + d * place                # position IS digit "1"
+            for i in range(windows_per_digit):                  # -- floor_base's own
+                off = digit_offset + i * window_m                # leading digit, free
+                if off + window_m <= width:
+                    locations.append(floor_base + off)
+        d_commit = commit_digit - 1 if is_leading else commit_digit
+        committed += d_commit * place
+
+    return locations
+
+
+# ------------------------------------------------------------------------------------------
 # Checkpoint -- one file per (floor, k, variant), living alongside that pattern's own
 # hit file (constellation_finder_v1.hit_file_path's own folder), storing only where the
 # NEXT batch should start plus enough context to show in a status line. Never blocks on
@@ -452,16 +552,18 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
                     step=None, start_offset=None, fragment_width=None,
                     target_expected=1.0, hl_limit=200_000, wheel_primes=None,
                     deep_prime_limit=2000, mr_rounds=40, auto=False,
-                    reset_checkpoint=False, progress_cb=None, should_stop=None):
-    """Checkpointed driver for strategy in ("even", "concentrated", "manual_step") --
-    manual_list has no checkpoint concept, see manual_list_locations()/scan_locations()
-    above instead.
+                    reset_checkpoint=False, commit_digit=1, progress_cb=None, should_stop=None):
+    """Checkpointed driver for strategy in ("even", "concentrated", "manual_step",
+    "digit_sweep") -- manual_list has no checkpoint concept, see
+    manual_list_locations()/scan_locations() above instead.
 
-    `step`, if given, overrides the strategy's own formula for ALL three strategies
-    (manual_step has no formula of its own -- an explicit step is required for it).
+    `step`, if given, overrides the strategy's own formula for even/concentrated/
+    manual_step (manual_step has no formula of its own -- an explicit step is required
+    for it; digit_sweep ignores `step` entirely, see digit_sweep_locations() instead).
     `start_offset`, if given, is only used the very FIRST time (no checkpoint exists
     yet, or reset_checkpoint=True) -- every batch after that continues from the
-    checkpoint regardless of what was passed in here.
+    checkpoint regardless of what was passed in here. `commit_digit` only applies to
+    digit_sweep (default 1) -- see digit_sweep_locations().
 
     auto=False (default): scans exactly one batch of up to n_locations windows, updates
     the checkpoint, and returns -- the shape a plain "Run" click wants (repeat by
@@ -473,10 +575,10 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
 
     Returns {"batches_done", "locations_scanned", "total_candidates",
     "total_confirmed", "stop_reason", "next_offset"}."""
-    if strategy not in ("even", "concentrated", "manual_step"):
-        raise ValueError(f"run_ktuple_job() strategy must be 'even', 'concentrated', or "
-                          f"'manual_step' (got {strategy!r}) -- use manual_list_locations()"
-                          f"+scan_locations() for strategy='manual_list'")
+    if strategy not in ("even", "concentrated", "manual_step", "digit_sweep"):
+        raise ValueError(f"run_ktuple_job() strategy must be 'even', 'concentrated', "
+                          f"'manual_step', or 'digit_sweep' (got {strategy!r}) -- use "
+                          f"manual_list_locations()+scan_locations() for strategy='manual_list'")
 
     offsets = pattern["offsets"]
     k = pattern["k"]
@@ -490,7 +592,14 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
     checkpoint = None if reset_checkpoint else read_ktuple_checkpoint(base_exponent, k, variant_id)
     current_offset = checkpoint["next_offset"] if checkpoint is not None else (start_offset or 0)
 
-    if step is None:
+    digit_sweep_shift = None
+    if strategy == "digit_sweep":
+        drill_positions = digit_sweep_positions(base_exponent, window_m)
+        if not drill_positions:
+            raise ValueError("window_m leaves no digit positions to sweep at this floor "
+                              "-- window_m is too wide relative to the floor's own width")
+        digit_sweep_shift = 10 ** drill_positions[-1]
+    elif step is None:
         if strategy == "even":
             step = step_for_even(window_m)
         elif strategy == "concentrated":
@@ -507,8 +616,14 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
     stop_reason = "single_batch_done"
 
     while True:
-        locations, next_offset = stride_locations(
-            base_exponent, n_locations, window_m, current_offset, step)
+        if strategy == "digit_sweep":
+            locations = digit_sweep_locations(
+                base_exponent, n_locations, window_m,
+                anchor_offset=current_offset, commit_digit=commit_digit)
+            next_offset = current_offset + digit_sweep_shift
+        else:
+            locations, next_offset = stride_locations(
+                base_exponent, n_locations, window_m, current_offset, step)
         if not locations:
             stop_reason = "floor_exhausted"
             break
@@ -533,7 +648,8 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
 
         batches_done += 1
         current_offset = next_offset
-        write_ktuple_checkpoint(base_exponent, k, variant_id, current_offset, step, window_m, strategy)
+        checkpoint_step = digit_sweep_shift if strategy == "digit_sweep" else step
+        write_ktuple_checkpoint(base_exponent, k, variant_id, current_offset, checkpoint_step, window_m, strategy)
 
         if batch_cancelled:
             stop_reason = "cancelled"
@@ -561,17 +677,21 @@ if __name__ == "__main__":
     parser.add_argument("variant_id", type=int, help="pattern variant id within k (see pattern_catalog_v1.py)")
     parser.add_argument("--n-locations", type=int, default=1000)
     parser.add_argument("--window-m", type=int, default=10_000_000)
-    parser.add_argument("--strategy", choices=["even", "concentrated", "manual_list", "manual_step"],
+    parser.add_argument("--strategy",
+                         choices=["even", "concentrated", "manual_list", "manual_step", "digit_sweep"],
                          default="concentrated")
     parser.add_argument("--step", type=int, default=None,
                          help="explicit stride override for even/concentrated/manual_step "
-                              "(required for manual_step)")
+                              "(required for manual_step; ignored by digit_sweep)")
     parser.add_argument("--fragment-width", type=int, default=None)
     parser.add_argument("--fragment-start", type=int, default=None,
                          help="initial offset used only when no checkpoint exists yet "
                               "(or --reset-checkpoint) -- default 0")
     parser.add_argument("--manual-offsets", type=int, nargs="*", default=None,
                          help="strategy=manual_list only")
+    parser.add_argument("--commit-digit", type=int, default=1,
+                         help="strategy=digit_sweep only -- digit value each drilled "
+                              "position is fixed at before drilling deeper (default 1)")
     parser.add_argument("--deep-prime-limit", type=int, default=2000)
     parser.add_argument("--mr-rounds", type=int, default=40)
     parser.add_argument("--auto", action="store_true",
