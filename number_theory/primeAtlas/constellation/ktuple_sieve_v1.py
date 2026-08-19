@@ -41,6 +41,15 @@ generation pipeline and CHECKPOINT.txt -- confirmed hits are written into the SA
 per-(k,variant) hit-file format constellation_finder_v1.py uses (via that module's own
 hit_file_path()/_append_hits_deduped()), so the rest of the portal (browsing, search)
 needs no changes at all to pick these up.
+
+CHECKPOINTING (added 2026-08-19, at Artur's request): every strategy except manual_list
+reduces to the same striding mechanism (see stride_locations()) -- n_locations windows
+spaced `step` apart, starting at a floor-relative offset persisted per (floor, k,
+variant) in its own KTUPLE_CHECKPOINT_*.txt file (read_ktuple_checkpoint()/
+write_ktuple_checkpoint()). A plain run (auto=False) scans one batch and updates the
+checkpoint, so the next run continues rather than re-scanning; run_ktuple_job(auto=True)
+keeps looping batch after batch, checkpointing after each, until a confirmed hit turns
+up, the caller's should_stop() fires, or the floor is exhausted.
 """
 import math
 import random
@@ -236,98 +245,176 @@ def recommended_fragment_width(offsets, k, floor_exponent, target_expected=1.0, 
 
 
 # ------------------------------------------------------------------------------------------
-# Location selection -- WHERE to put the (up to) window_m-wide windows this run will
-# scan, as offsets from the floor's own start (10**base_exponent). Always returns
-# ABSOLUTE base positions (10**base_exponent + offset), sorted ascending.
-# ------------------------------------------------------------------------------------------
-
-def select_locations(base_exponent, n_locations, window_m, strategy="even",
-                      offsets=None, k=None, fragment_width=None, fragment_start=0,
-                      manual_offsets=None, target_expected=1.0, hl_limit=200_000):
-    """strategy:
-      "even"        -- n_locations windows spread evenly across the WHOLE floor
-                        (10**base_exponent .. 10**(base_exponent+1)) -- broad, sparse
-                        coverage, appropriate for casting a wide net over a floor with
-                        no fragment picked out yet.
-      "concentrated" -- n_locations windows spread evenly across a single, narrower
-                        fragment. `fragment_width` may be given explicitly, or left
-                        None to auto-size it via recommended_fragment_width() (needs
-                        `offsets` + `k`) so the fragment's own Hardy-Littlewood expected
-                        hit count is ~target_expected. `fragment_start` is an offset
-                        from the floor's own start (default 0 -- the floor's youngest
-                        edge, closest to any already-known record for this pattern).
-      "manual"      -- uses `manual_offsets` (ints, offsets from the floor's own start)
-                        directly, one window per entry -- n_locations is ignored.
-    Returns a sorted list of absolute base positions (Python big ints)."""
-    floor_base = 10 ** base_exponent
-    floor_width = 9 * floor_base
-
-    if strategy == "manual":
-        if not manual_offsets:
-            raise ValueError("strategy='manual' requires a non-empty manual_offsets list")
-        return sorted(floor_base + off for off in manual_offsets)
-
-    if strategy == "even":
-        if n_locations < 1:
-            raise ValueError("n_locations must be >= 1")
-        step = floor_width // n_locations
-        if step < window_m:
-            raise ValueError(
-                f"n_locations={n_locations} windows of width {window_m:,} would overlap "
-                f"across the floor's width ({floor_width:.3e}) -- reduce n_locations or "
-                f"window_m, or switch to strategy='concentrated'")
-        return [floor_base + i * step for i in range(n_locations)]
-
-    if strategy == "concentrated":
-        if fragment_width is None:
-            if offsets is None or k is None:
-                raise ValueError("strategy='concentrated' needs fragment_width, or both "
-                                  "offsets and k to auto-size one")
-            fragment_width = recommended_fragment_width(
-                offsets, k, base_exponent, target_expected=target_expected, limit=hl_limit)
-        if n_locations < 1:
-            raise ValueError("n_locations must be >= 1")
-        step = max(window_m, fragment_width // n_locations)
-        return [floor_base + fragment_start + i * step for i in range(n_locations)]
-
-    raise ValueError(f"unknown strategy {strategy!r} -- expected 'even', 'concentrated', or 'manual'")
-
-
-# ------------------------------------------------------------------------------------------
-# Top-level driver -- scans a list of locations for one catalog pattern, writing
-# confirmed hits into the SAME per-(k,variant) hit-file format constellation_finder_v1.py
-# uses, via that module's own storage functions (imported below, same sys.path pattern
-# constellation_finder_v1.py itself uses for prime_sieve_v1).
+# Imports that need this file's own location on disk (sys.path insertion), same pattern
+# constellation_finder_v1.py itself uses for prime_sieve_v1 -- placed here (not at the
+# top of the file) only because they're not needed by anything above this point.
 # ------------------------------------------------------------------------------------------
 
 import os  # noqa: E402
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 import sys  # noqa: E402
+import datetime  # noqa: E402
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)  # constellation_finder_v1.py, pattern_catalog_v1.py (same folder)
-from constellation_finder_v1 import _append_hits_deduped  # noqa: E402
+from constellation_finder_v1 import PORTAL_FOLDER, _append_hits_deduped  # noqa: E402
 from pattern_catalog_v1 import PATTERN_CATALOG  # noqa: E402
 
+
+# ------------------------------------------------------------------------------------------
+# Location striding -- every strategy except manual_list (a genuine one-shot, see
+# manual_list_locations() below) reduces to the SAME mechanism: n_locations windows,
+# window_m wide, spaced `step` apart, starting at a floor-relative `start_offset`. The
+# strategies differ only in how `step` is computed (see step_for_even()/
+# step_for_concentrated() below) and in that this offset/step pair is now CHECKPOINTED
+# (read_ktuple_checkpoint()/write_ktuple_checkpoint()) so a later run -- or another loop
+# of the SAME run under auto=True, see run_ktuple_job() -- continues from where the
+# last one left off instead of re-scanning the same span. Requested 2026-08-19 by
+# Artur, who noticed that without this, re-running always re-scanned the exact same
+# locations: "brakuje mi pliku ktory jest tworzony by zapisywal na danym pietrze co
+# bylo skanowane [...] niech przesuwa sie o jakas wartosc [step] [...] zeby [...]
+# przeczesywalo az cos znajdzie albo proces zostanie zatrzymany albo dojdzie do konca
+# pietra."
+# ------------------------------------------------------------------------------------------
+
+FLOOR_WIDTH_MULTIPLIER = 9  # floor N covers [10**N, 10**(N+1)) -- width = 9 * 10**N
+
+
+def floor_width(base_exponent):
+    return FLOOR_WIDTH_MULTIPLIER * 10 ** base_exponent
+
+
+def stride_locations(base_exponent, n_locations, window_m, start_offset, step):
+    """Up to n_locations absolute base positions
+    (10**base_exponent + start_offset + i*step, i = 0..n_locations-1), CLIPPED the
+    moment a window would no longer fully fit before the floor's own upper boundary
+    (10**(base_exponent+1)) -- so a caller can tell "ran out of floor" apart from
+    "scanned the requested count" just by comparing len(result) against n_locations,
+    without a separate exhaustion check. Returns (locations, next_offset) -- next_offset
+    is where the FOLLOWING batch should start (start_offset + len(locations)*step),
+    valid as a checkpoint value even when this batch came up short."""
+    floor_base = 10 ** base_exponent
+    width = floor_width(base_exponent)
+    locations = []
+    offset = start_offset
+    for _ in range(n_locations):
+        if offset < 0 or offset + window_m > width:
+            break
+        locations.append(floor_base + offset)
+        offset += step
+    return locations, offset
+
+
+def step_for_even(window_m):
+    """Dense, contiguous sweep -- no gaps, no overlap between successive windows."""
+    return window_m
+
+
+def step_for_concentrated(offsets, k, base_exponent, n_locations, window_m,
+                           target_expected=1.0, hl_limit=200_000, fragment_width=None):
+    """Spacing wide enough that n_locations samples spread this way cover a span whose
+    Hardy-Littlewood expected hit count is ~target_expected (see
+    recommended_fragment_width()) -- this shapes the SPACING only, not a cap on how far
+    scanning eventually goes: once a batch is done, the next one just keeps striding by
+    this same step past that original span (see run_ktuple_job()), for as many batches
+    as auto=True keeps running."""
+    if fragment_width is None:
+        fragment_width = recommended_fragment_width(
+            offsets, k, base_exponent, target_expected=target_expected, limit=hl_limit)
+    return max(window_m, fragment_width // max(1, n_locations))
+
+
+def manual_list_locations(base_exponent, manual_offsets):
+    """strategy=manual_list: an explicit, one-shot list of offsets from the floor's own
+    start -- no checkpoint, no striding, exactly what was there before this module
+    grew the checkpoint/step mechanism (kept as its own strategy alongside
+    manual_step, at Artur's request, for precisely-chosen/irregular positions that a
+    fixed step can't express)."""
+    if not manual_offsets:
+        raise ValueError("manual_list strategy requires a non-empty manual_offsets list")
+    floor_base = 10 ** base_exponent
+    return sorted(floor_base + off for off in manual_offsets)
+
+
+# ------------------------------------------------------------------------------------------
+# Checkpoint -- one file per (floor, k, variant), living alongside that pattern's own
+# hit file (constellation_finder_v1.hit_file_path's own folder), storing only where the
+# NEXT batch should start plus enough context to show in a status line. Never blocks on
+# a strategy/window_m/step mismatch against a previous run (same "informational, not a
+# hard stop" philosophy as constellation_finder_v1.check_floor_boundary's own
+# unresolved-boundary note) -- next_offset alone is authoritative; the rest is just
+# provenance for whoever's watching the log.
+# ------------------------------------------------------------------------------------------
+
+def _ktuple_checkpoint_path(base_exponent, k, variant_id):
+    return os.path.join(
+        PORTAL_FOLDER, f"10p{base_exponent}", "constellations", f"k{k}", f"variant{variant_id}",
+        f"KTUPLE_CHECKPOINT_10p{base_exponent}_k{k}_v{variant_id}.txt")
+
+
+def read_ktuple_checkpoint(base_exponent, k, variant_id):
+    """Returns {"next_offset", "step", "window_m", "strategy"} (ints/str) or None if no
+    checkpoint exists yet, or if the file is missing/corrupt -- treated as "start
+    fresh" either way, never raises."""
+    path = _ktuple_checkpoint_path(base_exponent, k, variant_id)
+    if not os.path.exists(path):
+        return None
+    values = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if "=" not in line:
+                    continue
+                key, _, val = line.strip().partition("=")
+                values[key] = val
+        return {"next_offset": int(values["next_offset"]), "step": int(values["step"]),
+                "window_m": int(values["window_m"]), "strategy": values.get("strategy", "")}
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def write_ktuple_checkpoint(base_exponent, k, variant_id, next_offset, step, window_m, strategy):
+    path = _ktuple_checkpoint_path(base_exponent, k, variant_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(f"next_offset={next_offset}\n")
+        f.write(f"step={step}\n")
+        f.write(f"window_m={window_m}\n")
+        f.write(f"strategy={strategy}\n")
+        f.write(f"updated_at={datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+    os.replace(tmp_path, path)
+
+
+def clear_ktuple_checkpoint(base_exponent, k, variant_id):
+    """Explicit reset -- also reachable via run_ktuple_job(reset_checkpoint=True),
+    which ignores rather than deletes an existing checkpoint (deleting only matters if
+    something else wants to observe "no checkpoint" afterward, e.g. a UI's own status
+    line -- run_ktuple_job's own in-process ignore-and-overwrite is enough for its own
+    correctness either way)."""
+    try:
+        os.remove(_ktuple_checkpoint_path(base_exponent, k, variant_id))
+    except OSError:
+        pass
+
+
+# ------------------------------------------------------------------------------------------
+# Top-level drivers.
+# ------------------------------------------------------------------------------------------
 
 def scan_locations(base_exponent, pattern, locations, window_m,
                     wheel_primes=None, deep_prime_limit=2000, mr_rounds=40,
                     progress_cb=None, should_stop=None):
     """Scans each of `locations` (absolute base positions, each a window_m-wide range)
     for pattern's k-tuple, writing confirmed hits into the pattern's own cumulative hit
-    file (constellation_finder_v1.hit_file_path/_append_hits_deduped -- same format and
-    same dedup-safety the sequential finder uses, so this is safe to re-run over
-    overlapping/previously-scanned locations without risk of duplicate or crashed
-    writes).
+    file (constellation_finder_v1.hit_file_path/_append_hits_deduped). Used directly
+    (no checkpoint) for strategy=manual_list; run_ktuple_job() below builds its own
+    locations per batch via stride_locations() and calls the same per-window scan-and-
+    verify logic inline (needs to inspect per-location hits to decide whether to keep
+    auto-looping, which a single boolean return here doesn't expose).
 
-    `pattern` -- one entry from PATTERN_CATALOG (dict with "k", "id", "offsets").
     `progress_cb(index, total, location, candidates_found, confirmed_count)` -- called
-    after each location finishes.
-    `should_stop()` -- checked before each location; returns
-    {"locations_done": n, "cancelled": bool, "total_candidates": n, "total_confirmed": n}.
-
-    Note: unlike constellation_finder_v1.process_floor(), this never touches
-    CHECKPOINT.txt -- these locations aren't tied to pre-existing PRIME_WINDOW_*.bin
-    files at all (see this module's own docstring), so there is no sequential
-    "last processed window" concept here to track."""
+    after each location finishes. `should_stop()` -- checked before each location.
+    Returns {"locations_done": n, "cancelled": bool, "total_candidates": n,
+    "total_confirmed": n}."""
     offsets = pattern["offsets"]
     k = pattern["k"]
     variant_id = pattern["id"]
@@ -361,22 +448,136 @@ def scan_locations(base_exponent, pattern, locations, window_m,
             "total_candidates": total_candidates, "total_confirmed": total_confirmed}
 
 
+def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
+                    step=None, start_offset=None, fragment_width=None,
+                    target_expected=1.0, hl_limit=200_000, wheel_primes=None,
+                    deep_prime_limit=2000, mr_rounds=40, auto=False,
+                    reset_checkpoint=False, progress_cb=None, should_stop=None):
+    """Checkpointed driver for strategy in ("even", "concentrated", "manual_step") --
+    manual_list has no checkpoint concept, see manual_list_locations()/scan_locations()
+    above instead.
+
+    `step`, if given, overrides the strategy's own formula for ALL three strategies
+    (manual_step has no formula of its own -- an explicit step is required for it).
+    `start_offset`, if given, is only used the very FIRST time (no checkpoint exists
+    yet, or reset_checkpoint=True) -- every batch after that continues from the
+    checkpoint regardless of what was passed in here.
+
+    auto=False (default): scans exactly one batch of up to n_locations windows, updates
+    the checkpoint, and returns -- the shape a plain "Run" click wants (repeat by
+    clicking Run again, each click a fresh continuation).
+    auto=True: keeps scanning batch after batch (checkpointing after each) until one
+    of -- a confirmed hit appears in some batch (stop_reason="hit_found"),
+    should_stop() returns True (stop_reason="cancelled"), or the next batch would have
+    zero locations because the floor is exhausted (stop_reason="floor_exhausted").
+
+    Returns {"batches_done", "locations_scanned", "total_candidates",
+    "total_confirmed", "stop_reason", "next_offset"}."""
+    if strategy not in ("even", "concentrated", "manual_step"):
+        raise ValueError(f"run_ktuple_job() strategy must be 'even', 'concentrated', or "
+                          f"'manual_step' (got {strategy!r}) -- use manual_list_locations()"
+                          f"+scan_locations() for strategy='manual_list'")
+
+    offsets = pattern["offsets"]
+    k = pattern["k"]
+    variant_id = pattern["id"]
+
+    if wheel_primes is None:
+        wheel_primes = default_wheel_primes(offsets)
+    wheel_M, wheel_residues = build_wheel(offsets, wheel_primes)
+    deep_primes = [p for p in primes_upto(deep_prime_limit) if p not in wheel_primes]
+
+    checkpoint = None if reset_checkpoint else read_ktuple_checkpoint(base_exponent, k, variant_id)
+    current_offset = checkpoint["next_offset"] if checkpoint is not None else (start_offset or 0)
+
+    if step is None:
+        if strategy == "even":
+            step = step_for_even(window_m)
+        elif strategy == "concentrated":
+            step = step_for_concentrated(
+                offsets, k, base_exponent, n_locations, window_m,
+                target_expected=target_expected, hl_limit=hl_limit, fragment_width=fragment_width)
+        else:  # manual_step
+            raise ValueError("strategy='manual_step' requires an explicit step")
+
+    total_candidates = 0
+    total_confirmed = 0
+    total_scanned = 0
+    batches_done = 0
+    stop_reason = "single_batch_done"
+
+    while True:
+        locations, next_offset = stride_locations(
+            base_exponent, n_locations, window_m, current_offset, step)
+        if not locations:
+            stop_reason = "floor_exhausted"
+            break
+
+        batch_confirmed_any = False
+        batch_cancelled = False
+        for i, base in enumerate(locations):
+            if should_stop is not None and should_stop():
+                batch_cancelled = True
+                break
+            candidates = scan_window_for_candidates(
+                base, window_m, offsets, wheel_M, wheel_residues, deep_primes)
+            confirmed = verify_candidates(candidates, offsets, rounds=mr_rounds)
+            if confirmed:
+                _append_hits_deduped(base_exponent, k, variant_id, sorted(confirmed))
+                batch_confirmed_any = True
+            total_candidates += len(candidates)
+            total_confirmed += len(confirmed)
+            total_scanned += 1
+            if progress_cb is not None:
+                progress_cb(batches_done, i, len(locations), base, len(candidates), len(confirmed))
+
+        batches_done += 1
+        current_offset = next_offset
+        write_ktuple_checkpoint(base_exponent, k, variant_id, current_offset, step, window_m, strategy)
+
+        if batch_cancelled:
+            stop_reason = "cancelled"
+            break
+        if batch_confirmed_any:
+            stop_reason = "hit_found"
+            break
+        if not auto:
+            stop_reason = "single_batch_done"
+            break
+        # auto=True, no hit this batch, not stopped, floor not exhausted -- loop again
+
+    return {"batches_done": batches_done, "locations_scanned": total_scanned,
+            "total_candidates": total_candidates, "total_confirmed": total_confirmed,
+            "stop_reason": stop_reason, "next_offset": current_offset}
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(
         description="Targeted k-tuple candidate sieve (wheel + trial division + Miller-Rabin) "
-                    "for a single catalog pattern over a set of scattered window locations.")
+                    "for a single catalog pattern, checkpointed per (floor, k, variant).")
     parser.add_argument("base_exponent", type=int, help="floor N (searches near 10**N)")
     parser.add_argument("k", type=int, help="pattern k (e.g. 15)")
     parser.add_argument("variant_id", type=int, help="pattern variant id within k (see pattern_catalog_v1.py)")
     parser.add_argument("--n-locations", type=int, default=1000)
     parser.add_argument("--window-m", type=int, default=10_000_000)
-    parser.add_argument("--strategy", choices=["even", "concentrated", "manual"], default="concentrated")
+    parser.add_argument("--strategy", choices=["even", "concentrated", "manual_list", "manual_step"],
+                         default="concentrated")
+    parser.add_argument("--step", type=int, default=None,
+                         help="explicit stride override for even/concentrated/manual_step "
+                              "(required for manual_step)")
     parser.add_argument("--fragment-width", type=int, default=None)
-    parser.add_argument("--fragment-start", type=int, default=0)
-    parser.add_argument("--manual-offsets", type=int, nargs="*", default=None)
+    parser.add_argument("--fragment-start", type=int, default=None,
+                         help="initial offset used only when no checkpoint exists yet "
+                              "(or --reset-checkpoint) -- default 0")
+    parser.add_argument("--manual-offsets", type=int, nargs="*", default=None,
+                         help="strategy=manual_list only")
     parser.add_argument("--deep-prime-limit", type=int, default=2000)
     parser.add_argument("--mr-rounds", type=int, default=40)
+    parser.add_argument("--auto", action="store_true",
+                         help="keep scanning batch after batch until a hit, --stop, or the floor is exhausted")
+    parser.add_argument("--reset-checkpoint", action="store_true",
+                         help="ignore any existing checkpoint and start from --fragment-start (default 0)")
     args = parser.parse_args()
 
     pattern = next((w for w in PATTERN_CATALOG if w["k"] == args.k and w["id"] == args.variant_id), None)
@@ -384,23 +585,43 @@ if __name__ == "__main__":
         print(f"[!] No pattern k={args.k} id={args.variant_id} in PATTERN_CATALOG.")
         sys.exit(1)
 
-    locations = select_locations(
-        args.base_exponent, args.n_locations, args.window_m, strategy=args.strategy,
-        offsets=pattern["offsets"], k=pattern["k"],
-        fragment_width=args.fragment_width, fragment_start=args.fragment_start,
-        manual_offsets=args.manual_offsets)
-
     print(f"[KTUPLE SIEVE v1] 10^{args.base_exponent} pattern k={args.k} v={args.variant_id} "
-          f"({pattern['discoverer']}, {pattern['date']}) -- {len(locations)} location(s), "
-          f"window_m={args.window_m:,}, strategy={args.strategy}")
+          f"({pattern['discoverer']}, {pattern['date']}) -- strategy={args.strategy}, "
+          f"n_locations={args.n_locations}, window_m={args.window_m:,}, auto={args.auto}")
 
-    def progress(i, total, base, n_cand, n_conf):
-        extra = f" -- {n_conf} CONFIRMED HIT(S)!" if n_conf else ""
-        print(f"[KTUPLE SIEVE v1] {i+1}/{total}: base={base} candidates={n_cand}{extra}")
+    if args.reset_checkpoint and args.strategy != "manual_list":
+        clear_ktuple_checkpoint(args.base_exponent, args.k, args.variant_id)
+        print("[KTUPLE SIEVE v1] Checkpoint reset -- starting from "
+              f"--fragment-start={args.fragment_start or 0}.")
 
-    result = scan_locations(args.base_exponent, pattern, locations, args.window_m,
-                             deep_prime_limit=args.deep_prime_limit, mr_rounds=args.mr_rounds,
-                             progress_cb=progress)
-    print(f"\n[KTUPLE SIEVE v1] Done. locations_done={result['locations_done']} "
-          f"total_candidates={result['total_candidates']} "
-          f"total_confirmed={result['total_confirmed']}")
+    if args.strategy == "manual_list":
+        locations = manual_list_locations(args.base_exponent, args.manual_offsets)
+        print(f"[KTUPLE SIEVE v1] {len(locations)} manual location(s) (one-shot, no checkpoint).")
+
+        def progress_list(i, total, base, n_cand, n_conf):
+            extra = f" -- {n_conf} CONFIRMED HIT(S)!" if n_conf else ""
+            print(f"[KTUPLE SIEVE v1] {i+1}/{total}: base={base} candidates={n_cand}{extra}")
+
+        result = scan_locations(args.base_exponent, pattern, locations, args.window_m,
+                                 deep_prime_limit=args.deep_prime_limit, mr_rounds=args.mr_rounds,
+                                 progress_cb=progress_list)
+        print(f"\n[KTUPLE SIEVE v1] Done. locations_done={result['locations_done']} "
+              f"total_candidates={result['total_candidates']} "
+              f"total_confirmed={result['total_confirmed']}")
+    else:
+        def progress_batch(batch_idx, i, total, base, n_cand, n_conf):
+            extra = f" -- {n_conf} CONFIRMED HIT(S)!" if n_conf else ""
+            print(f"[KTUPLE SIEVE v1] batch {batch_idx+1}, {i+1}/{total}: base={base} "
+                  f"candidates={n_cand}{extra}")
+
+        result = run_ktuple_job(
+            args.base_exponent, pattern, args.window_m, args.strategy, args.n_locations,
+            step=args.step, start_offset=args.fragment_start,
+            fragment_width=args.fragment_width, deep_prime_limit=args.deep_prime_limit,
+            mr_rounds=args.mr_rounds, auto=args.auto, reset_checkpoint=args.reset_checkpoint,
+            progress_cb=progress_batch)
+        print(f"\n[KTUPLE SIEVE v1] Done. batches_done={result['batches_done']} "
+              f"locations_scanned={result['locations_scanned']} "
+              f"total_candidates={result['total_candidates']} "
+              f"total_confirmed={result['total_confirmed']} "
+              f"stop_reason={result['stop_reason']} next_offset={result['next_offset']}")
