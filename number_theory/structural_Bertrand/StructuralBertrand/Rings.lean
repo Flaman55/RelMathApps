@@ -1031,12 +1031,22 @@ theorem windowHasVoid_of_trunc_gap {Pk M g : ℕ} (hPk3 : 2 < Pk) (hg : g ≤ Pk
   rw [Finset.mem_Ioc] at hn
   exact ⟨n, Finset.mem_Ioc.mpr ⟨hn.1, by omega⟩, by rw [htr]; exact hcop⟩
 
-/-- **g(210) = 10** (truncated base {2,3,5,7}): one period by `decide`. -/
+/-- **g(210) = 10** (truncated base {2,3,5,7}): one period by `decide`.
+    `maxRecDepth` raised: kernel unfolding of `Nat.decidableBallLT` over 210 residues
+    exceeds the default (512) recursion depth even though the computation itself is
+    small — this is a stack-depth artifact of structural recursion on the bound,
+    not a sign the check is actually expensive. -/
+set_option maxRecDepth 4000 in
 lemma jacobsthal_210 : ∀ a : ℕ, ∃ n ∈ Finset.Ioc a (a + 10), Nat.Coprime n 210 :=
   jacobsthal_of_period (by norm_num) (by norm_num)
     (by decide)
 
-/-- **g(2310) = 14** (truncated base {2,3,5,7,11}): one period by `decide`. -/
+/-- **g(2310) = 14** (truncated base {2,3,5,7,11}): one period by `decide`.
+    `maxRecDepth` raised further than the 210 case since the bound (2310 residues)
+    is larger; if this still fails or is impractically slow to elaborate, that is
+    the concrete signal that this specific site should fall back to `native_decide`
+    rather than being forced through the kernel. -/
+set_option maxRecDepth 16000 in
 lemma jacobsthal_2310 : ∀ a : ℕ, ∃ n ∈ Finset.Ioc a (a + 14), Nat.Coprime n 2310 :=
   jacobsthal_of_period (by norm_num) (by norm_num)
     (by decide)
