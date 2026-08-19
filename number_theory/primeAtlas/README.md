@@ -99,6 +99,32 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     requesting more workers than available CPUs adds scheduling overhead without any
     real parallelism gain. The field stays freely editable afterward, same as every
     other field in this form.
+  - **Targeted k-tuple sieve** -- a third launcher, complementary to the
+    constellation finder above rather than a replacement for it: instead of pattern-
+    matching against windows `prime_sieve` has already fully sieved (every prime in
+    the window, via libprimesieve), this builds a small explicit residue wheel (CRT
+    over a handful of small primes) for a chosen pattern's own offsets, strides
+    directly to the positions that survive it -- skipping the overwhelming majority
+    without ever touching them -- filters further via incremental trial division,
+    and only primality-tests the tiny remainder (Miller-Rabin). This makes hunting a
+    single sparse pattern (e.g. a 15-tuple, whose singular-series density is on the
+    order of `1e-21` per integer at floor 25) across scattered window locations deep
+    in a wide floor tractable, where fully sieving a wide enough span for the
+    ordinary constellation finder to find the same thing would take centuries even
+    at this project's own measured floor-25 sieve throughput -- the bottleneck there
+    isn't the per-window sieve cost (genuinely cheap on its own), it's that there
+    are simply too many windows to visit at all. The pattern picker reuses the same
+    k-then-variant catalog cascade as the Constellation calculator; three location
+    strategies choose where the (by default 1000) window locations for one run go:
+    concentrated (spread across a single fragment, auto-sized from the pattern's own
+    Hardy-Littlewood density so the fragment's expected hit count is roughly 1 --
+    editable, or an explicit fragment width can be given instead), even (spread
+    across the whole floor), or manual (an explicit offset list). Confirmed hits are
+    written into the exact same per-`(k, variant)` hit file the constellation finder
+    itself writes to, so the Constellations tab needs no changes at all to pick them
+    up, and this mode never touches the constellation finder's own `CHECKPOINT.txt`
+    (these locations are not tied to any pre-existing prime window at all -- see
+    `ktuple_sieve_v1.py`'s own module docstring).
 - **Benchmark** -- a throughput chart (numbers generated per second vs. floor depth),
   plus a second chart (sieve speed and write speed per floor) whenever the active
   engine reports that level of phase timing (see `prime_sieve_v4_1.py` under
@@ -457,9 +483,12 @@ prime_sieve/                 sieve and orchestration pipeline (invoked via WSL)
   orchestrator_loop_helpers.py
 constellation/
   constellation_finder_v1.py  k-tuple pattern search over generated prime data
+  ktuple_sieve_v1.py          targeted k-tuple candidate sieve (wheel + trial
+                              division + Miller-Rabin) over scattered window
+                              locations -- see "Targeted k-tuple sieve" above
   pattern_catalog_v1.py       catalog of supported k-tuple patterns, shared by the
-                              constellation finder and by the Constellation
-                              calculator / Records table sub-tabs
+                              constellation finder, ktuple_sieve_v1.py, and the
+                              Constellation calculator / Records table sub-tabs
 Run_PrimeAtlas.bat           launches the GUI, visible console (errors surfaced directly)
 Run_PrimeAtlas_Hidden.vbs    launches the GUI with no console window
 ```
