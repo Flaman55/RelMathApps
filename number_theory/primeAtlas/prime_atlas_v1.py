@@ -2243,9 +2243,9 @@ def build_constellation_finder_argv(base_exponent=None, script_path=None):
 
 
 def build_ktuple_sieve_argv(base_exponent, k, variant_id, n_locations=1000, window_m=10_000_000,
-                             strategy="concentrated", fragment_width=None, fragment_start=0,
-                             manual_offsets=None, deep_prime_limit=2000, mr_rounds=40,
-                             script_path=None):
+                             strategy="concentrated", step=None, fragment_width=None,
+                             fragment_start=None, manual_offsets=None, deep_prime_limit=2000,
+                             mr_rounds=40, auto=False, reset_checkpoint=False, script_path=None):
     """Returns the LINUX-side argv for ktuple_sieve_v1.py -- see that script's own
     argparse block for the exact CLI shape (three required positionals: base_exponent,
     k, variant_id; the rest are optional flags with the same defaults this function
@@ -2256,17 +2256,35 @@ def build_ktuple_sieve_argv(base_exponent, k, variant_id, n_locations=1000, wind
 
     Unlike build_constellation_finder_argv(), base_exponent/k/variant_id are all
     REQUIRED here (ktuple_sieve_v1.py has no auto-detect-every-floor mode -- a k-tuple
-    hunt is always FOR one specific pattern, at a caller-chosen floor, never implicit)."""
+    hunt is always FOR one specific pattern, at a caller-chosen floor, never implicit).
+
+    `strategy` -- one of "even", "concentrated", "manual_list", "manual_step" (see
+    ktuple_sieve_v1.py's own module docstring for what each means; the first three
+    share a checkpoint-driven continuation mechanism, manual_list is a one-shot with
+    no checkpoint). `step`/`fragment_start` are left OUT of argv entirely when None --
+    ktuple_sieve_v1.py's own CLI defaults (auto-computed step per strategy,
+    fragment_start=0) then apply, same "don't pass what wasn't explicitly set" shape
+    as `fragment_width`/`manual_offsets` already had. `auto`/`reset_checkpoint` are
+    plain boolean flags (only appended when True -- argparse's own store_true default
+    is already False)."""
     script = script_path if script_path is not None else KTUPLE_SIEVE_SCRIPT
     script_wsl = windows_path_to_wsl(script)
     argv = ["python3", "-u", script_wsl, str(base_exponent), str(k), str(variant_id),
             "--n-locations", str(n_locations), "--window-m", str(window_m),
-            "--strategy", strategy, "--fragment-start", str(fragment_start),
+            "--strategy", strategy,
             "--deep-prime-limit", str(deep_prime_limit), "--mr-rounds", str(mr_rounds)]
+    if step is not None:
+        argv += ["--step", str(step)]
     if fragment_width is not None:
         argv += ["--fragment-width", str(fragment_width)]
+    if fragment_start is not None:
+        argv += ["--fragment-start", str(fragment_start)]
     if manual_offsets:
         argv += ["--manual-offsets"] + [str(o) for o in manual_offsets]
+    if auto:
+        argv.append("--auto")
+    if reset_checkpoint:
+        argv.append("--reset-checkpoint")
     return argv
 
 
