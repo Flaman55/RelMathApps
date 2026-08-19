@@ -300,7 +300,7 @@
   "gen.ktuple_field_deep_prime_limit": "Trial-division depth (up to this prime):",
   "gen.ktuple_field_mr_rounds": "Miller-Rabin rounds:",
   "gen.ktuple_field_manual_offsets": "Manual offsets (space- or comma-separated):",
-  "gen.ktuple_field_commit_digit": "Drill-down digit (digit_sweep):",
+  "gen.ktuple_field_pass_counter": "Pass number (digit_sweep):",
   "gen.ktuple_error_no_pattern": "Pick a pattern (k and variant) before running.",
   "gen.ktuple_error_numeric_fields": "Numeric fields (number of locations, window width, fragment start/width, trial-division depth, Miller-Rabin rounds) must be integers.",
   "gen.ktuple_error_manual_offsets": "The 'Manual' strategy needs at least one offset (space- or comma-separated integers).",

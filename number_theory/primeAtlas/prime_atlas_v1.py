@@ -1966,8 +1966,10 @@ DEFAULT_GENERATION_SETTINGS = {
         "deep_prime_limit": "2000",
         "mr_rounds": "40",
         "reset_checkpoint": False,
-        "commit_digit": "1",  # strategy=digit_sweep only -- see ktuple_sieve_v1.py's
-                               # digit_sweep_locations() docstring
+        "pass_counter": "0",  # strategy=digit_sweep only -- starting pass (0, 1, 2, ...)
+                               # used only when no checkpoint exists yet or after a
+                               # reset -- see ktuple_sieve_v1.py's digit_sweep_locations()
+                               # docstring (PATH VARIETY section)
     },
 }
 
@@ -2284,7 +2286,7 @@ def build_constellation_finder_argv(base_exponent=None, script_path=None):
 def build_ktuple_sieve_argv(base_exponent, k, variant_id, n_locations=1000, window_m=10_000_000,
                              strategy="concentrated", step=None, fragment_width=None,
                              fragment_start=None, manual_offsets=None, deep_prime_limit=2000,
-                             mr_rounds=40, auto=False, reset_checkpoint=False, commit_digit=None,
+                             mr_rounds=40, auto=False, reset_checkpoint=False, pass_counter=None,
                              script_path=None):
     """Returns the LINUX-side argv for ktuple_sieve_v1.py -- see that script's own
     argparse block for the exact CLI shape (three required positionals: base_exponent,
@@ -2304,10 +2306,12 @@ def build_ktuple_sieve_argv(base_exponent, k, variant_id, n_locations=1000, wind
     is a one-shot with no checkpoint). `step`/`fragment_start` are left OUT of argv
     entirely when None -- ktuple_sieve_v1.py's own CLI defaults (auto-computed step per
     strategy, fragment_start=0) then apply, same "don't pass what wasn't explicitly
-    set" shape as `fragment_width`/`manual_offsets`/`commit_digit` already had.
-    `commit_digit` only matters for strategy=digit_sweep (default 1 on the script side
-    when omitted). `auto`/`reset_checkpoint` are plain boolean flags (only appended
-    when True -- argparse's own store_true default is already False)."""
+    set" shape as `fragment_width`/`manual_offsets`/`pass_counter` already had.
+    `pass_counter` only matters for strategy=digit_sweep (default 0 on the script side
+    when omitted, and only used the first time -- once a checkpoint exists the script's
+    own next_offset field takes over and this starting value is ignored). `auto`/
+    `reset_checkpoint` are plain boolean flags (only appended when True -- argparse's
+    own store_true default is already False)."""
     script = script_path if script_path is not None else KTUPLE_SIEVE_SCRIPT
     script_wsl = windows_path_to_wsl(script)
     argv = ["python3", "-u", script_wsl, str(base_exponent), str(k), str(variant_id),
@@ -2322,8 +2326,8 @@ def build_ktuple_sieve_argv(base_exponent, k, variant_id, n_locations=1000, wind
         argv += ["--fragment-start", str(fragment_start)]
     if manual_offsets:
         argv += ["--manual-offsets"] + [str(o) for o in manual_offsets]
-    if commit_digit is not None:
-        argv += ["--commit-digit", str(commit_digit)]
+    if pass_counter is not None:
+        argv += ["--pass-counter", str(pass_counter)]
     if auto:
         argv.append("--auto")
     if reset_checkpoint:
@@ -7711,11 +7715,16 @@ def _build_gui():
                 0, 1, "fragment_start", T("gen.ktuple_field_fragment_start"), width=18)
             add_ktuple_advanced_field(1, 0, "deep_prime_limit", T("gen.ktuple_field_deep_prime_limit"))
             add_ktuple_advanced_field(1, 1, "mr_rounds", T("gen.ktuple_field_mr_rounds"))
-            # commit_digit: strategy=digit_sweep only -- the digit each drilled position
-            # is fixed at before drilling into the next, finer one (default 1, matching
-            # Artur's own worked example verbatim). Kept in Advanced alongside the other
-            # rarely-touched fields since the default already matches his intent.
-            add_ktuple_advanced_field(2, 0, "commit_digit", T("gen.ktuple_field_commit_digit"))
+            # pass_counter: strategy=digit_sweep only -- the starting pass number (only
+            # used the first time, before any checkpoint exists -- default 0 matches
+            # Artur's own worked example verbatim). Each pass sweeps the whole floor
+            # once more with every drilled position committing to a DIFFERENT digit
+            # than the pass before (a different rate per position, so the explored path
+            # looks scrambled/varied rather than a single repeated digit -- see
+            # ktuple_sieve_v1.py's digit_sweep_locations() PATH VARIETY note). Kept in
+            # Advanced alongside the other rarely-touched fields since the default
+            # already matches his intent.
+            add_ktuple_advanced_field(2, 0, "pass_counter", T("gen.ktuple_field_pass_counter"))
             ttk.Label(ktuple_advanced_form, text=T("gen.ktuple_field_manual_offsets")).grid(
                 row=3, column=0, sticky="w", padx=(0, 4), pady=2)
             _manual_offsets_var = tk.StringVar(value=str(ktuple_settings.get("manual_offsets", "")))
@@ -9387,11 +9396,11 @@ def _build_gui():
             deep_prime_limit = self._ktuple_vars["deep_prime_limit"].get().strip() or "2000"
             mr_rounds = self._ktuple_vars["mr_rounds"].get().strip() or "40"
             manual_offsets_str = self._ktuple_vars["manual_offsets"].get().strip()
-            commit_digit = self._ktuple_vars["commit_digit"].get().strip() or "1"
+            pass_counter = self._ktuple_vars["pass_counter"].get().strip() or "0"
 
             numeric_ok = (
                 n_locations.isdigit() and window_m.isdigit() and fragment_start.isdigit()
-                and deep_prime_limit.isdigit() and mr_rounds.isdigit() and commit_digit.isdigit()
+                and deep_prime_limit.isdigit() and mr_rounds.isdigit() and pass_counter.isdigit()
                 and (not fragment_width or fragment_width.isdigit())
                 and (not step or step.isdigit()))
             if not numeric_ok:
@@ -9424,7 +9433,7 @@ def _build_gui():
                 "fragment_width": fragment_width, "fragment_start": fragment_start,
                 "manual_offsets": manual_offsets_str, "deep_prime_limit": deep_prime_limit,
                 "mr_rounds": mr_rounds, "reset_checkpoint": reset_checkpoint,
-                "commit_digit": commit_digit,
+                "pass_counter": pass_counter,
             }
             save_generation_settings(PORTAL_FOLDER, self._generation_settings)
 
@@ -9436,7 +9445,7 @@ def _build_gui():
                 fragment_start=int(fragment_start) if strategy != "manual_list" else None,
                 manual_offsets=manual_offsets, deep_prime_limit=int(deep_prime_limit),
                 mr_rounds=int(mr_rounds), auto=auto, reset_checkpoint=reset_checkpoint,
-                commit_digit=int(commit_digit) if strategy == "digit_sweep" else None)
+                pass_counter=int(pass_counter) if strategy == "digit_sweep" else None)
             log_path, exit_path, _run_id = generation_log_paths(PORTAL_FOLDER, "ktuple")
             cmd = build_wsl_logged_command(argv, log_path, exit_path)
 

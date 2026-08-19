@@ -63,9 +63,11 @@ one window per digit value is spent as a CONTIGUOUS block right at that digit's 
 offset (denser, not wider, coverage there), per his own follow-up clarification.
 Continuation between batches does NOT shift a floor-relative offset the way the other
 three strategies do (that corrupted the digit alignment -- see run_ktuple_job()'s own
-docstring for the incident and fix) -- instead it cycles which digit gets committed to
-(1 -> 2 -> ... -> 9 -> 1 -> ...) so each batch drills a genuinely different, deep branch
-from a permanently clean, unshifted starting point.
+docstring for the incident and fix) -- instead a pass_counter increments by 1 each
+batch, and each position derives ITS OWN committed digit from it (a different small
+step per position -- see digit_sweep_locations()'s PATH VARIETY note), so the explored
+path looks mixed/scrambled (e.g. "53254553452543") rather than a single repeated digit,
+while staying fully deterministic and always starting from a clean, unshifted anchor.
 """
 import math
 import random
@@ -370,8 +372,10 @@ def manual_list_locations(base_exponent, manual_offsets):
 #       3. This is nested drilling into ONE path, not an independent sweep of every
 #       position from the floor's own base (that alternative was proposed and
 #       explicitly rejected in favor of this one, 2026-08-19) -- so after position p is
-#       swept, it gets FIXED at `commit_digit` (default 1, matching his own example
-#       verbatim) before the next, finer position is swept.
+#       swept, it gets FIXED at a committed digit (pass_counter=0 reproduces his own
+#       example verbatim, i.e. every position commits to "1") before the next, finer
+#       position is swept. See the PATH VARIETY note below for how later passes
+#       (pass_counter=1, 2, ...) vary this per position instead of repeating one digit.
 #   position p=2: 11100, 11200, ..., 11900 -- same pattern, now inside the "11" branch.
 #   ...continues down to the finest position whose place value is still >= window_m
 #       (see digit_sweep_positions()) -- below that a single window already covers
@@ -404,19 +408,53 @@ def digit_sweep_positions(base_exponent, window_m):
     return [p for p in positions if p >= 0]
 
 
-def digit_sweep_locations(base_exponent, n_locations, window_m, anchor_offset=0, commit_digit=1):
+# Per-position digit steps for the varied ("scrambled", not a repdigit) committed
+# path -- see digit_sweep_locations()'s own docstring, PATH VARIETY note, for why
+# this exists. Each position advances its own committed digit at a different pace
+# (its own coprime-ish step mod 9) as pass_counter increments, so the combined path
+# across many positions looks mixed (e.g. "53254553452543") rather than a single
+# digit repeated at every position. Plain ascending small primes (plus 1) -- nothing
+# deeper than "different small step per position" is needed here, this has no
+# bearing on correctness, only on which branches get explored deeper across
+# successive passes.
+_DIGIT_SWEEP_STEP_PRIMES = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
+                            53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109]
+
+
+def _commit_digit_for_position(pass_counter, position_index):
+    """The digit (1-9) position `position_index` commits to during pass
+    `pass_counter` -- see digit_sweep_locations()'s PATH VARIETY note."""
+    step = _DIGIT_SWEEP_STEP_PRIMES[position_index % len(_DIGIT_SWEEP_STEP_PRIMES)]
+    return ((pass_counter * step) % 9) + 1
+
+
+def digit_sweep_locations(base_exponent, n_locations, window_m, anchor_offset=0, pass_counter=0):
     """strategy=digit_sweep -- see the module-section docstring above for the full
     design. Returns a list of absolute base positions (floor_base + offset), coarsest
     position's sub-scans first, already clipped to the floor's own upper boundary.
 
-    `anchor_offset` shifts the WHOLE nested pattern by a fixed floor-relative amount --
-    used by run_ktuple_job() so successive batches (auto=True, or repeated plain Run
-    clicks) don't re-scan the identical ~1000 positions forever: after a batch with no
-    hit, the anchor advances by the finest position's own place value (10**p_min), so
-    the next batch's pattern is shifted slightly while still spanning the floor's full
-    magnitude range on every single batch.
-    `commit_digit` -- the digit value each swept position is fixed at before drilling
-    into the next, finer one (default 1, matching Artur's own worked example).
+    `anchor_offset` shifts the WHOLE nested pattern by a fixed floor-relative amount.
+    Always 0 in current use -- see CONTINUATION FIX in run_ktuple_job()'s own
+    docstring for why a floor-offset shift is unsafe for this strategy; kept as a
+    parameter only so a caller with its own use case can still express one.
+
+    `pass_counter` -- which pass this is (0, 1, 2, ...); drives the digit each
+    position commits to before drilling into the next, finer one -- see PATH
+    VARIETY below. pass_counter=0 reproduces Artur's own original worked example
+    exactly (every position commits to digit "1").
+
+    PATH VARIETY (added 2026-08-19, at Artur's request): the first version of this
+    continuation scheme committed EVERY position to the SAME digit for a whole pass
+    (pass 0 -> all "1"s, pass 1 -> all "2"s, ...), so the explored branches were
+    repdigit-shaped (111...1, 222...2, ...) -- Artur asked for genuinely mixed,
+    scrambled-looking paths instead (his own example: "53254553452543"), not a
+    symmetric ascending sequence. Each position now derives ITS OWN committed digit
+    from pass_counter via _commit_digit_for_position() -- a different small step per
+    position index means different positions cycle through 1..9 at different rates,
+    so as pass_counter increases the combined path across all positions looks mixed
+    rather than uniform, while staying fully deterministic (same pass_counter always
+    reproduces the same path -- useful for reasoning about what's already been
+    covered from a log).
 
     BUG FIXED 2026-08-19, TWO PARTS (found by Artur from a real run's log tail):
     (1) a digit value's own sub-interval is exactly `place` (=10**p) wide -- at the
@@ -428,16 +466,17 @@ def digit_sweep_locations(base_exponent, n_locations, window_m, anchor_offset=0,
     position that can only ever hold a single digit 0..9). Fixed by capping
     windows_per_digit at `place // window_m` (always >= 1 for every position
     digit_sweep_positions() returns, by that function's own p_min search).
-    (2) even with (1) fixed, the position's OWN committed branch (digit_value ==
-    commit_digit) still starts at EXACTLY the offset the next, finer position's own
-    digit=commit_digit branch starts at too (that's the whole point of "committing" --
-    the next position continues from there) -- so if that branch got more than one
-    contiguous window at THIS level, those extra windows silently duplicated ones the
-    NEXT level was about to explore anyway (and in more depth). Fixed by capping the
-    committed branch to exactly one window (the anchor point itself, matching Artur's
-    own worked example, which explicitly re-lists it) at every position except the
-    LAST -- only the finest position, with nothing deeper to hand off to, spends its
-    full per-digit budget on every digit value including its own commit_digit."""
+    (2) even with (1) fixed, a position's OWN committed branch (digit_value == that
+    position's own committed digit) still starts at EXACTLY the offset the next,
+    finer position's own committed-digit branch starts at too (that's the whole
+    point of "committing" -- the next position continues from there) -- so if that
+    branch got more than one contiguous window at THIS level, those extra windows
+    silently duplicated ones the NEXT level was about to explore anyway (and in more
+    depth). Fixed by capping the committed branch to exactly one window (the anchor
+    point itself, matching Artur's own worked example, which explicitly re-lists it)
+    at every position except the LAST -- only the finest position, with nothing
+    deeper to hand off to, spends its full per-digit budget on every digit value
+    including its own committed one."""
     floor_base = 10 ** base_exponent
     width = floor_width(base_exponent)
     positions = digit_sweep_positions(base_exponent, window_m)
@@ -460,18 +499,19 @@ def digit_sweep_locations(base_exponent, n_locations, window_m, anchor_offset=0,
                                               # place-wide sub-interval without
                                               # spilling into the next digit's
         windows_per_digit = max(1, min(per_position[idx] // len(digit_values), max_fit))
+        position_commit_digit = _commit_digit_for_position(pass_counter, idx)
         for digit_value in digit_values:
             d = digit_value - 1 if is_leading else digit_value  # d=0 at the leading
             digit_offset = committed + d * place                # position IS digit "1"
             this_branch_windows = windows_per_digit
-            if not is_last and digit_value == commit_digit:
+            if not is_last and digit_value == position_commit_digit:
                 this_branch_windows = 1  # deferred to the next, finer position --
                                           # see part (2) of the docstring note above
             for i in range(this_branch_windows):                # -- floor_base's own
                 off = digit_offset + i * window_m                # leading digit, free
                 if off + window_m <= width:
                     locations.append(floor_base + off)
-        d_commit = commit_digit - 1 if is_leading else commit_digit
+        d_commit = position_commit_digit - 1 if is_leading else position_commit_digit
         committed += d_commit * place
 
     return locations
@@ -595,7 +635,7 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
                     step=None, start_offset=None, fragment_width=None,
                     target_expected=1.0, hl_limit=200_000, wheel_primes=None,
                     deep_prime_limit=2000, mr_rounds=40, auto=False,
-                    reset_checkpoint=False, commit_digit=1, progress_cb=None, should_stop=None):
+                    reset_checkpoint=False, pass_counter=0, progress_cb=None, should_stop=None):
     """Checkpointed driver for strategy in ("even", "concentrated", "manual_step",
     "digit_sweep") -- manual_list has no checkpoint concept, see
     manual_list_locations()/scan_locations() above instead.
@@ -606,24 +646,31 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
     `start_offset`, if given, is only used the very FIRST time (no checkpoint exists
     yet, or reset_checkpoint=True) -- every batch after that continues from the
     checkpoint regardless of what was passed in here; digit_sweep ignores it too (see
-    `commit_digit` below instead -- a floor-relative offset has no meaning for it).
+    `pass_counter` below instead -- a floor-relative offset has no meaning for it).
 
-    `commit_digit` -- digit_sweep only, the STARTING branch (1-9, default 1) each
-    swept position is fixed at before drilling into the next, finer one, used only the
-    very first time (no checkpoint yet, or reset_checkpoint=True). CONTINUATION FIX
-    2026-08-19 (found by Artur -- a checkpointed anchor_offset that isn't a multiple of
-    10**base_exponent corrupts the digit sweep: every position's own d=0..9 loop
-    assumes committed starts CLEAN at that position, i.e. anchor's own digit there is
-    0, so a nonzero leftover from a previous "shift the whole pattern by 10**p_min"
-    scheme -- what this used to do -- add on TOP of that, overflowing past a single
-    digit and producing nonsense offsets, exactly like the tail-corruption bug fixed
-    earlier). Fixed by NEVER shifting the anchor at all for digit_sweep (it stays 0,
-    always clean) -- instead, each batch after the first CYCLES commit_digit itself
-    (1 -> 2 -> ... -> 9 -> 1 -> ...), persisted in the checkpoint's own next_offset
-    field (repurposed to hold the next commit_digit for this one strategy, since a
-    floor offset is meaningless here). Each of the 9 values drills a genuinely
-    different, previously only shallowly-sampled branch all the way down, so repeated
-    batches (Auto, or repeated Run clicks) still make real, non-overlapping progress.
+    `pass_counter` -- digit_sweep only, the STARTING pass (0, 1, 2, ..., default 0)
+    used only the very first time (no checkpoint yet, or reset_checkpoint=True); every
+    batch after that continues from the checkpoint's own pass_counter regardless of
+    what's passed in here. CONTINUATION FIX 2026-08-19 (found by Artur -- a
+    checkpointed anchor_offset that isn't a multiple of 10**base_exponent corrupts the
+    digit sweep: every position's own d=0..9 loop assumes committed starts CLEAN at
+    that position, i.e. anchor's own digit there is 0, so a nonzero leftover from a
+    previous "shift the whole pattern by 10**p_min" scheme -- what this used to do --
+    would add on TOP of that, overflowing past a single digit and producing nonsense
+    offsets, exactly like the tail-corruption bug fixed earlier). Fixed by NEVER
+    shifting the anchor at all for digit_sweep (it stays 0, always clean) -- instead,
+    each batch after the first just increments pass_counter by 1, persisted in the
+    checkpoint's own next_offset field (repurposed to hold the next pass_counter for
+    this one strategy, since a floor offset is meaningless here).
+
+    PATH VARIETY 2026-08-19 (also found/requested by Artur): pass_counter alone drove
+    ONE digit, shared by every swept position for the whole pass -- pass 0 explored
+    the "111...1" branch, pass 1 "222...2", etc., a repdigit progression Artur pointed
+    out looked nothing like the scrambled, "53254553452543"-style variety he actually
+    wanted. digit_sweep_locations() now derives a DIFFERENT digit per position from
+    the SAME pass_counter (see its own PATH VARIETY note) -- pass_counter itself still
+    just increments by 1 each batch, but the resulting explored path is mixed rather
+    than uniform.
 
     auto=False (default): scans exactly one batch of up to n_locations windows, updates
     the checkpoint, and returns -- the shape a plain "Run" click wants (repeat by
@@ -633,8 +680,8 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
     should_stop() returns True (stop_reason="cancelled"), or the next batch would have
     zero locations because the floor is exhausted (stop_reason="floor_exhausted" --
     for digit_sweep this can only happen if window_m itself leaves no positions to
-    sweep at all, checked up front below; a normal digit_sweep run simply cycles
-    commit_digit forever until a hit or should_stop()).
+    sweep at all, checked up front below; a normal digit_sweep run simply keeps
+    incrementing pass_counter forever until a hit or should_stop()).
 
     Returns {"batches_done", "locations_scanned", "total_candidates",
     "total_confirmed", "stop_reason", "next_offset"}."""
@@ -659,12 +706,12 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
         if not drill_positions:
             raise ValueError("window_m leaves no digit positions to sweep at this floor "
                               "-- window_m is too wide relative to the floor's own width")
-        # next_offset here holds the NEXT commit_digit (1-9), not a floor offset --
-        # see the docstring's CONTINUATION FIX note above. Falls back to the
-        # caller-given commit_digit if the checkpoint is missing/reset/out of range.
-        current_offset = checkpoint["next_offset"] if checkpoint is not None else commit_digit
-        if not (1 <= current_offset <= 9):
-            current_offset = commit_digit
+        # next_offset here holds the NEXT pass_counter, not a floor offset -- see
+        # the docstring's CONTINUATION FIX note above. Falls back to the
+        # caller-given pass_counter if the checkpoint is missing/reset/negative.
+        current_offset = checkpoint["next_offset"] if checkpoint is not None else pass_counter
+        if current_offset < 0:
+            current_offset = pass_counter
     else:
         current_offset = checkpoint["next_offset"] if checkpoint is not None else (start_offset or 0)
         if step is None:
@@ -687,8 +734,8 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
         if strategy == "digit_sweep":
             locations = digit_sweep_locations(
                 base_exponent, n_locations, window_m,
-                anchor_offset=0, commit_digit=current_offset)
-            next_offset = (current_offset % 9) + 1  # cycle 1..9
+                anchor_offset=0, pass_counter=current_offset)
+            next_offset = current_offset + 1  # next pass -- see PATH VARIETY note
         else:
             locations, next_offset = stride_locations(
                 base_exponent, n_locations, window_m, current_offset, step)
@@ -715,10 +762,10 @@ def run_ktuple_job(base_exponent, pattern, window_m, strategy, n_locations,
                 progress_cb(batches_done, i, len(locations), base, len(candidates), len(confirmed))
 
         batches_done += 1
-        # for digit_sweep, `current_offset` just used for this batch is the commit_digit
-        # ABOUT to be superseded -- record it as `step` too (informational only, so a
-        # status line can show which branch this batch just finished) before overwriting
-        # current_offset with the next commit_digit.
+        # for digit_sweep, `current_offset` just used for this batch is the
+        # pass_counter ABOUT to be superseded -- record it as `step` too
+        # (informational only, so a status line can show which pass this batch just
+        # finished) before overwriting current_offset with the next pass_counter.
         checkpoint_step = current_offset if strategy == "digit_sweep" else step
         current_offset = next_offset
         write_ktuple_checkpoint(base_exponent, k, variant_id, current_offset, checkpoint_step, window_m, strategy)
@@ -761,9 +808,10 @@ if __name__ == "__main__":
                               "(or --reset-checkpoint) -- default 0")
     parser.add_argument("--manual-offsets", type=int, nargs="*", default=None,
                          help="strategy=manual_list only")
-    parser.add_argument("--commit-digit", type=int, default=1,
-                         help="strategy=digit_sweep only -- digit value each drilled "
-                              "position is fixed at before drilling deeper (default 1)")
+    parser.add_argument("--pass-counter", type=int, default=0,
+                         help="strategy=digit_sweep only -- starting pass (0, 1, 2, ...) "
+                              "used only when no checkpoint exists yet or --reset-checkpoint "
+                              "(default 0 -- matches the original worked example exactly)")
     parser.add_argument("--deep-prime-limit", type=int, default=2000)
     parser.add_argument("--mr-rounds", type=int, default=40)
     parser.add_argument("--auto", action="store_true",
@@ -811,7 +859,7 @@ if __name__ == "__main__":
             step=args.step, start_offset=args.fragment_start,
             fragment_width=args.fragment_width, deep_prime_limit=args.deep_prime_limit,
             mr_rounds=args.mr_rounds, auto=args.auto, reset_checkpoint=args.reset_checkpoint,
-            progress_cb=progress_batch)
+            pass_counter=args.pass_counter, progress_cb=progress_batch)
         print(f"\n[KTUPLE SIEVE v1] Done. batches_done={result['batches_done']} "
               f"locations_scanned={result['locations_scanned']} "
               f"total_candidates={result['total_candidates']} "

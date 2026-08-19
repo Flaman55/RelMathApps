@@ -129,7 +129,7 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     floor's own leading digit) first, so a single batch already samples every
     magnitude neighborhood of the floor at once rather than crawling linearly
     through one -- at each position it nests into ONE committed digit branch
-    (default "1") before drilling into the next, finer position, mirroring a manual
+    (pass 0's default: "1") before drilling into the next, finer position, mirroring a manual
     worked example (10000, 20000, ..., 90000, then 11000, 12000, ..., 19000, then
     11100, 11200, ..., within the "1"/"11" branches); any window budget left over
     after one sample per digit value at a position is spent as a contiguous block
@@ -137,12 +137,18 @@ interchangeable engine generations, v3/v4/v4.1 -- see "Architecture" below).
     there. Its anchor never shifts by a raw offset the way the other three do (that
     corrupted the digit alignment -- a leftover nonzero digit at a swept position
     would add on top of that position's own 0..9 sweep and overflow past a single
-    digit); instead, between batches (Auto, or repeated Run clicks) the committed
-    branch itself cycles through every digit 1..9 in turn, so each batch drills a
-    genuinely different, previously only shallowly-sampled branch all the way down
-    from a permanently clean starting point, still spanning the floor's full
-    magnitude range every single batch. Because n_locations is shared across all
-    five strategies, the default (1000) leaves each individual digit branch only a
+    digit); instead, between batches (Auto, or repeated Run clicks) a pass counter
+    increments by one each time, and every drilled position derives its OWN
+    committed digit from it via a distinct small-prime step per position, so
+    different positions advance at different rates and the explored path looks
+    scrambled/varied (e.g. "53254553452543") rather than a single repeated digit --
+    pass 0 still reproduces the manual worked example exactly (every position
+    commits to "1"). Each batch still drills a genuinely different, previously only
+    shallowly-sampled path all the way down from a permanently clean starting point,
+    spanning the floor's full magnitude range every single batch. The starting pass
+    (default 0) is only used the first time, before any checkpoint exists -- an
+    Advanced field lets it be overridden for a fresh start. Because n_locations is
+    shared across all five strategies, the default (1000) leaves each individual digit branch only a
     few windows deep for digit_sweep specifically -- an Auto button next to the
     field computes a floor-and-window_m-aware recommendation (enough windows for
     every branch at every position to get roughly 40 windows of depth) without
