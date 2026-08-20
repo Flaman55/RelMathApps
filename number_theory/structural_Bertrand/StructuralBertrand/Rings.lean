@@ -1041,15 +1041,18 @@ lemma jacobsthal_210 : ∀ a : ℕ, ∃ n ∈ Finset.Ioc a (a + 10), Nat.Coprime
   jacobsthal_of_period (by norm_num) (by norm_num)
     (by decide)
 
-/-- **g(2310) = 14** (truncated base {2,3,5,7,11}): one period by `decide`.
-    `maxRecDepth` raised further than the 210 case since the bound (2310 residues)
-    is larger; if this still fails or is impractically slow to elaborate, that is
-    the concrete signal that this specific site should fall back to `native_decide`
-    rather than being forced through the kernel. -/
-set_option maxRecDepth 16000 in
+/-- **g(2310) = 14** (truncated base {2,3,5,7,11}): one period, `native_decide`.
+    Fallback triggered: raising `maxRecDepth` to 16000 was not enough — the kernel's
+    defeq/reduction check over 2310 residues crashes the native process stack itself
+    (`lean::stack_space_exception: deep recursion... at 'expression equality test'`,
+    exit code 3221226505 = Windows STATUS_STACK_OVERFLOW). That is a hard OS-level
+    limit, not a Lean-tracked counter, so `maxRecDepth` cannot fix it further — this
+    is exactly the concrete signal pre-flagged when the `decide` swap was made,
+    so this site falls back to `native_decide` while `jacobsthal_210` stays on
+    `decide` (10× smaller bound, plausibly still within the kernel's reach). -/
 lemma jacobsthal_2310 : ∀ a : ℕ, ∃ n ∈ Finset.Ioc a (a + 14), Nat.Coprime n 2310 :=
   jacobsthal_of_period (by norm_num) (by norm_num)
-    (by decide)
+    (by native_decide)
 
 /-- Regime {2,3,5,7} (`49 ≤ 2Pk < 121`): eight windows by the single law g(210)=10. -/
 theorem windowHasVoid_29 : windowHasVoid 29 :=
