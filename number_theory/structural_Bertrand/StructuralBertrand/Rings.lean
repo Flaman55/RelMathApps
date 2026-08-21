@@ -1041,18 +1041,102 @@ lemma jacobsthal_210 : ∀ a : ℕ, ∃ n ∈ Finset.Ioc a (a + 10), Nat.Coprime
   jacobsthal_of_period (by norm_num) (by norm_num)
     (by decide)
 
-/-- **g(2310) = 14** (truncated base {2,3,5,7,11}): one period, `native_decide`.
-    Fallback triggered: raising `maxRecDepth` to 16000 was not enough — the kernel's
-    defeq/reduction check over 2310 residues crashes the native process stack itself
-    (`lean::stack_space_exception: deep recursion... at 'expression equality test'`,
-    exit code 3221226505 = Windows STATUS_STACK_OVERFLOW). That is a hard OS-level
-    limit, not a Lean-tracked counter, so `maxRecDepth` cannot fix it further — this
-    is exactly the concrete signal pre-flagged when the `decide` swap was made,
-    so this site falls back to `native_decide` while `jacobsthal_210` stays on
-    `decide` (10× smaller bound, plausibly still within the kernel's reach). -/
+set_option maxRecDepth 4000 in
+/-- **g(2310) = 14** (truncated base {2,3,5,7,11}): one period, chunked `decide`.
+    Direct `decide` over all 2310 residues crashes the native process stack (a hard
+    OS-level limit `maxRecDepth` cannot touch, see history below); `native_decide`
+    was the earlier fallback. Same fix as `jacobsthal_210`, applied structurally:
+    split the period into eleven 210-wide chunks (each exactly the size that already
+    works for `jacobsthal_210`) and `decide` each chunk separately, so no single kernel
+    call ever unfolds `Nat.decidableBallLT` past 210 levels. `glue` reindexes a chunk
+    fact (stated on the local offset `j < 210`) back onto the real residue `r`. -/
+private lemma jacobsthal_2310_chunk0 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((0 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk1 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((210 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk2 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((420 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk3 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((630 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk4 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((840 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk5 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((1050 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk6 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((1260 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk7 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((1470 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk8 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((1680 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk9 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((1890 + j + d) % 2310) 2310 := by
+  decide
+
+set_option maxRecDepth 4000 in
+private lemma jacobsthal_2310_chunk10 :
+    ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((2100 + j + d) % 2310) 2310 := by
+  decide
+
+private lemma jacobsthal_2310_glue (k : ℕ)
+    (hk : ∀ j < 210, ∃ d < 15, 0 < d ∧ Nat.Coprime ((210 * k + j + d) % 2310) 2310)
+    (r : ℕ) (hlo : 210 * k ≤ r) (hhi : r < 210 * k + 210) :
+    ∃ d < 15, 0 < d ∧ Nat.Coprime ((r + d) % 2310) 2310 := by
+  obtain ⟨d, hd, hd0, hcop⟩ := hk (r - 210 * k) (by omega)
+  refine ⟨d, hd, hd0, ?_⟩
+  have hre : 210 * k + (r - 210 * k) = r := by omega
+  rwa [hre] at hcop
+
 lemma jacobsthal_2310 : ∀ a : ℕ, ∃ n ∈ Finset.Ioc a (a + 14), Nat.Coprime n 2310 :=
-  jacobsthal_of_period (by norm_num) (by norm_num)
-    (by native_decide)
+  jacobsthal_of_period (by norm_num) (by norm_num) (by
+    intro r hr
+    rcases lt_or_ge r 210 with h0 | h0
+    · exact jacobsthal_2310_glue 0 jacobsthal_2310_chunk0 r (by omega) (by omega)
+    rcases lt_or_ge r 420 with h1 | h1
+    · exact jacobsthal_2310_glue 1 jacobsthal_2310_chunk1 r (by omega) (by omega)
+    rcases lt_or_ge r 630 with h2 | h2
+    · exact jacobsthal_2310_glue 2 jacobsthal_2310_chunk2 r (by omega) (by omega)
+    rcases lt_or_ge r 840 with h3 | h3
+    · exact jacobsthal_2310_glue 3 jacobsthal_2310_chunk3 r (by omega) (by omega)
+    rcases lt_or_ge r 1050 with h4 | h4
+    · exact jacobsthal_2310_glue 4 jacobsthal_2310_chunk4 r (by omega) (by omega)
+    rcases lt_or_ge r 1260 with h5 | h5
+    · exact jacobsthal_2310_glue 5 jacobsthal_2310_chunk5 r (by omega) (by omega)
+    rcases lt_or_ge r 1470 with h6 | h6
+    · exact jacobsthal_2310_glue 6 jacobsthal_2310_chunk6 r (by omega) (by omega)
+    rcases lt_or_ge r 1680 with h7 | h7
+    · exact jacobsthal_2310_glue 7 jacobsthal_2310_chunk7 r (by omega) (by omega)
+    rcases lt_or_ge r 1890 with h8 | h8
+    · exact jacobsthal_2310_glue 8 jacobsthal_2310_chunk8 r (by omega) (by omega)
+    rcases lt_or_ge r 2100 with h9 | h9
+    · exact jacobsthal_2310_glue 9 jacobsthal_2310_chunk9 r (by omega) (by omega)
+    exact jacobsthal_2310_glue 10 jacobsthal_2310_chunk10 r (by omega) (by omega))
 
 /-- Regime {2,3,5,7} (`49 ≤ 2Pk < 121`): eight windows by the single law g(210)=10. -/
 theorem windowHasVoid_29 : windowHasVoid 29 :=
