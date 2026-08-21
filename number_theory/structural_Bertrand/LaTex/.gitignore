@@ -1,0 +1,15 @@
+# LaTeX build artifacts (keep only .tex, .bib, .pdf tracked)
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.fls
+*.fdb_latexmk
+*.nav
+*.snm
+*.vrb
