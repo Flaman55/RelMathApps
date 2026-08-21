@@ -1,0 +1,161 @@
+version: "v0.3"
+
+project:
+  name: "StructuralBertrand"
+  authors: ["Artur Flamandzki"]
+  license: "Apache-2.0"
+
+sources:
+  - title: "A Structural Sieve for Bertrand's Postulate"
+    authors: ["Artur Flamandzki"]
+    id: "https://github.com/Flaman55/RelMathApps/blob/main/number_theory/structural_Bertrand/LaTex/A%20Structural%20Sieve%20for%20Bertrands%20Postulate.pdf"
+    type: "preprint"
+    license: "Apache-2.0"
+    author_contacted: "n/a"
+    prior_work: ""
+    note: >
+      Authorship note: the mathematical content (the structural sieve, its strategy,
+      and all results) is the author's own original work. The LaTeX prose itself was
+      drafted by the AI agent under the author's direction, formatted to match
+      Ramanujan Journal conventions; the author reviewed the draft at the level of
+      overall structure, scope, and format compliance (not sentence-by-sentence) and
+      directed that no unnecessary content be included. See `automation` below for
+      the same disclosure applied to the Lean formalization.
+
+status:
+  scope: >
+    A from-scratch structural proof of Bertrand's postulate (Chebyshev's strengthened
+    form: for every N > 1 there is a prime p with N < p <= 2N), avoiding
+    Mathlib.NumberTheory.Bertrand entirely. The argument covers every window (P_k, 2*P_k]
+    for P_k prime via a coprimality sieve against the primorial of primes below P_k,
+    closed by an explicit Jacobsthal-function gap bound on small moduli (chunked,
+    kernel-checked `decide`, no `native_decide`) and a finite oracle over small windows
+    (n < 512, also chunked `decide`).
+  sorry_count: 0
+  sorry_in_definitions: 0
+  axioms: ["propext", "Classical.choice", "Quot.sound"]
+  main_results:
+    - declaration: "StructuralBertrand.bertrand_chebyshev"
+      file: "StructuralBertrand/Main.lean"
+      sorry_count: 0
+      axioms: ["propext", "Classical.choice", "Quot.sound"]
+      comparator_config: "comparator.json"
+      literature_dependencies: []
+
+automation:
+  methods:
+    - method: "agent"
+      models: ["claude-sonnet-5"]
+      framework: "Claude Code"
+      tool_setup: >
+        Single iterative agentic session (VS Code + Lean 4 infoview). Author directed
+        proof strategy and reviewed every Lean build; the agent wrote/edited Lean
+        source, diagnosed kernel stack-depth and elaboration-heartbeat failures on
+        native decision procedures, and restructured proofs into chunked `decide`
+        calls to eliminate all `native_decide` usages from the theorem's import
+        closure.
+      cost:
+        wall_time: "not tracked"
+        spend_usd: "not tracked (subscription-based usage)"
+        hardware: "author's laptop"
+      prompting_notes: >
+        Precise division of labor, disclosed for the record: the mathematical
+        strategy (the structural sieve itself: reduction against the primorial of
+        preceding primes, the Jacobsthal-gap argument, the extremal-window bounds) is
+        the author's original work, conceived and specified prior to and independent
+        of any AI assistance. The agent's contribution was implementation-level: (1)
+        translating already-specified mathematical statements into Lean 4 tactics and
+        syntax; (2) diagnosing and fixing Lean-specific technical failures (parser
+        errors, kernel stack-depth overflows, elaboration heartbeat timeouts); (3)
+        proposing and implementing the specific engineering technique of splitting
+        bounded-quantifier `decide` calls into sub-range chunks glued by an auxiliary
+        lemma, adopted to replace `native_decide` with kernel-checked `decide` after
+        empirically discovering the native stack-depth ceiling. Every Lean change was
+        build-verified and reviewed by the author before acceptance; per the author's
+        working principle, the agent translates mathematics into Lean/code but does
+        not itself judge mathematical correctness — the Lean kernel is the sole
+        arbiter of every proof step.
+    - method: "agent"
+      models: ["claude-sonnet-5"]
+      framework: "Claude Code"
+      tool_setup: >
+        Same session as the Lean work above, applied to drafting the accompanying
+        LaTeX paper.
+      cost:
+        wall_time: "not tracked"
+        spend_usd: "not tracked (subscription-based usage)"
+        hardware: "author's laptop"
+      prompting_notes: >
+        Disclosure for the paper text specifically: the author wrote none of the
+        LaTeX prose. The agent drafted the full paper, formatted to match Ramanujan
+        Journal conventions per the author's instruction. The author's review was at
+        the level of overall structure and scope (not sentence-by-sentence editing)
+        and consisted of directing that unnecessary content be omitted. The
+        mathematical content the paper describes is, independent of who wrote the
+        prose, the author's own original work (see the `sources` entry's authorship
+        note above). A separate, mechanical cross-check was performed matching every
+        `\lean{...}` citation in the paper against actual declaration names in this
+        repository, to verify paper-to-Lean fidelity.
+  spend_usd: "not tracked (subscription-based usage)"
+  notes: >
+    Development combined author-directed mathematical design (the structural sieve
+    itself, prior to and independent of any AI assistance) with agent-drafted LaTeX
+    prose and agent-assisted Lean formalization, debugging, and one specific
+    proof-engineering technique (chunked `decide` + glue lemma) proposed by the agent
+    to resolve native-decision-procedure resource limits.
+
+fidelity:
+  divergences: >
+    No known divergences between the LaTeX paper and the Lean development; all
+    \lean{...} citations in the paper were cross-checked against declaration names in
+    this repository. Note that the LaTeX prose itself was agent-drafted (see
+    `automation` above); this check verifies citation accuracy, not independent
+    authorship of the text.
+
+review:
+  status: "self-assessed"
+  reviewers: ["Artur Flamandzki"]
+  notes: >
+    Author directed the mathematical strategy throughout and verified every Lean
+    change via successful kernel-checked builds (including confirming
+    axiom-cleanliness of the main theorem via `#print axioms
+    StructuralBertrand.bertrand_chebyshev`), rather than by independent line-by-line
+    reading of agent-written Lean source. The LaTeX paper was reviewed by the author
+    at the level of overall structure, scope, and format compliance with Ramanujan
+    Journal conventions, not sentence-by-sentence; the paper-to-Lean citation mapping
+    was checked mechanically (see `fidelity`).
+
+alignment:
+  namespace: "StructuralBertrand"
+  statements:
+    - source: "Theorem 5.1 (Structural Bertrand-Chebyshev Bound)"
+      lean: "StructuralBertrand.structural_bertrand_chebyshev"
+      module: "StructuralBertrand/Main.lean"
+      status: "proved"
+      note: ""
+    - source: "Corollary 6.1 (Classical Bertrand-Chebyshev)"
+      lean: "StructuralBertrand.bertrand_chebyshev"
+      module: "StructuralBertrand/Main.lean"
+      status: "proved"
+      note: "Main result; also restated in Challenge.lean/Solution.lean as Submission.bertrand_chebyshev"
+    - source: "Jacobsthal gap bound, g(210) = 10"
+      lean: "StructuralBertrand.jacobsthal_210"
+      module: "StructuralBertrand/Rings.lean"
+      status: "proved"
+      note: "Chunked kernel-checked decide"
+    - source: "Jacobsthal gap bound, g(2310) = 14"
+      lean: "StructuralBertrand.jacobsthal_2310"
+      module: "StructuralBertrand/Rings.lean"
+      status: "proved"
+      note: "11 chunks of width 210, glued; replaces an earlier native_decide"
+    - source: "Small-window oracle (n < 512)"
+      lean: "StructuralBertrand.small_window_oracle"
+      module: "StructuralBertrand/BinomialCertificate.lean"
+      status: "proved"
+      note: "16 chunks of width 32, each closed by explicit witness search; replaces an earlier native_decide"
+
+acknowledgements: >
+  This work builds on the classical results of Bertrand (1845), Chebyshev (1852),
+  Ramanujan (1919), Erdos (1932), and Nair (1982), cited throughout the accompanying
+  paper for historical and comparative context; none of their original texts were
+  themselves formalized here.

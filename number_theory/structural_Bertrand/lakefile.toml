@@ -1,9 +1,17 @@
 name = "StructuralBertrand"
 version = "0.1.0"
-defaultTargets = ["StructuralBertrand"]
+defaultTargets = ["StructuralBertrand", "Challenge", "Solution"]
 
 [[lean_lib]]
 name = "StructuralBertrand"
+
+[[lean_lib]]
+name = "Challenge"
+roots = ["Challenge"]
+
+[[lean_lib]]
+name = "Solution"
+roots = ["Solution"]
 
 [[require]]
 name = "mathlib"
