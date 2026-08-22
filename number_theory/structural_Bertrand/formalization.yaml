@@ -2,15 +2,25 @@ version: "v0.3"
 
 project:
   name: "StructuralBertrand"
+  description: >
+    A from-scratch structural proof of Bertrand's postulate (Chebyshev's strengthened
+    form: for every N > 1 there is a prime p with N < p <= 2N) in Lean 4, avoiding
+    Mathlib's existing Bertrand development entirely. The argument sieves every window
+    (P_k, 2*P_k] against the primorial of primes below P_k, closed by an explicit
+    Jacobsthal-gap bound and a finite small-window oracle, both via kernel-checked
+    `decide` (no `native_decide`). Zero sorries; depends only on the three standard
+    Lean axioms.
   authors: ["Artur Flamandzki"]
   license: "PolyForm-Noncommercial-1.0.0"
-  maintainers: ["Artur Flamandzki"]
+  responsible_maintainers: ["Artur Flamandzki"]
   result_type: "original"
   repository_role: >
     Substantive development: this repository (this project subdirectory) contains the
     complete, self-contained proof development. It is not a thin wrapper pointing to
     formalization work hosted elsewhere.
-  arxiv_categories: ["math.NT", "cs.LO"]
+
+classification:
+  arxiv: ["math.NT", "cs.LO"]
   msc2020: ["11A41", "11N05", "03B35"]
 
 sources:
@@ -21,6 +31,7 @@ sources:
     license: "PolyForm-Noncommercial-1.0.0"
     author_contacted: "n/a"
     prior_work: ""
+    relationship: "independently-proves"
     note: >
       Authorship note: the mathematical content (the structural sieve, its strategy,
       and all results) is the author's own original work — not a formalization of any

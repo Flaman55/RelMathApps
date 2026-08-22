@@ -135,7 +135,7 @@ private lemma weight_ge_one_aux :
       have hs'_card : s'.card = n := by
         -- avoid ℕ subtraction: show s'.card + 1 = s.card via insert_erase
         have h : s'.card + 1 = s.card := by
-          rw [← Finset.card_insert_of_not_mem (Finset.not_mem_erase _ _),
+          rw [← Finset.card_insert_of_notMem (Finset.notMem_erase _ _),
               Finset.insert_erase hp_mem]
         omega
       have hs'_ne   : s'.Nonempty            := Finset.card_pos.mp (by omega)
@@ -147,7 +147,7 @@ private lemma weight_ge_one_aux :
       -- Factoring: s.prod id = s'.prod id * s.max'
       have hprod : s.prod id = s'.prod id * s.max' hs := by
         conv_lhs => rw [← Finset.insert_erase hp_mem]
-        rw [Finset.prod_insert (Finset.not_mem_erase _ _), id_eq]; ring
+        rw [Finset.prod_insert (Finset.notMem_erase _ _), id_eq]; ring
       -- s'.max' < s.max' (every element of s' is strictly less than s.max')
       have hmax_lt : s'.max' hs'_ne < s.max' hs :=
         lt_of_le_of_ne

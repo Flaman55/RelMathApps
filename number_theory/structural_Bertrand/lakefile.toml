@@ -16,4 +16,4 @@ roots = ["Solution"]
 [[require]]
 name = "mathlib"
 git = "https://github.com/leanprover-community/mathlib4"
-rev = "v4.14.0"
+rev = "v4.28.0"

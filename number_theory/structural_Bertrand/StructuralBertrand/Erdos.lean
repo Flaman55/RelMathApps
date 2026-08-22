@@ -49,8 +49,12 @@ theorem erdos_contradiction {n : ℕ} (hn3 : 2 < n)
     obtain ⟨p, _, hlo, hhi, hp⟩ := small_window_prime n hsmall hn3
     exact h_no_prime p hlo hhi hp
   · -- large windows: combine the two bounds on C(2n,n)
-    have no_prime : ¬∃ p : ℕ, Nat.Prime p ∧ n < p ∧ p ≤ 2 * n := by
-      rintro ⟨p, hp, h1, h2⟩
+    -- (Mathlib bump to v4.28.0: `centralBinom_le_of_no_bertrand_prime` now takes the
+    -- no-witness hypothesis in ∀-form instead of ¬∃-form.)
+    have no_prime : ∀ p : ℕ, Nat.Prime p → n < p → 2 * n < p := by
+      intro p hp h1
+      by_contra h2
+      push_neg at h2
       exact h_no_prime p h1 h2 hp
     have hub := _root_.centralBinom_le_of_no_bertrand_prime n hn3 no_prime
     have hmain := _root_.bertrand_main_inequality hbig

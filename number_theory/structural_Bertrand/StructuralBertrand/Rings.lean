@@ -152,7 +152,7 @@ theorem exists_void_below_primorial (Pk : ℕ) :
   obtain ⟨q, hq_prime, hq_dvd⟩ := Nat.exists_prime_and_dvd (n := M + 1) (by omega)
   have hq_ndvd_M : ¬ q ∣ M := by
     intro h
-    have h1 : q ∣ 1 := by have := Nat.dvd_sub' hq_dvd h; simpa using this
+    have h1 : q ∣ 1 := by have := Nat.dvd_sub hq_dvd h; simpa using this
     exact hq_prime.one_lt.ne' (Nat.dvd_one.mp h1)
   have hq_gt : Pk < q := by
     by_contra h
@@ -490,9 +490,12 @@ theorem coveredCount_eq_sum_minFac_fiber {Pk : ℕ} (_hPk3 : 2 < Pk) :
   unfold coveredCount
   set base := (Finset.range Pk).filter Nat.Prime with hbase
   -- every covered position has minFac in the base (less than Pk and prime)
-  have hmem : ∀ n ∈ (gps_window Pk).filter (fun n => ¬ isVoid base n),
-      n.minFac ∈ base := by
+  -- (Mathlib bump to v4.28.0: `card_eq_sum_card_fiberwise` now wants this packaged as
+  -- `Set.MapsTo`, not the old `∀ n ∈ s, f n ∈ t` shape.)
+  have hmem : Set.MapsTo (fun n : ℕ => n.minFac)
+      (↑((gps_window Pk).filter (fun n => ¬ isVoid base n)) : Set ℕ) (↑base : Set ℕ) := by
     intro n hn
+    simp only [Finset.mem_coe] at hn ⊢
     rw [Finset.mem_filter] at hn
     obtain ⟨hnw, hcov⟩ := hn
     rw [gps_window, Finset.mem_Ioc] at hnw
@@ -1498,7 +1501,7 @@ theorem interference_formula (S : Finset ℕ) :
               * (↑(b / p / ∏ q ∈ T, q) - ↑(a / p / ∏ q ∈ T, q))) := by
         intro T hT
         have hpT : p ∉ T := fun hmem => hpS (Finset.mem_powerset.mp hT hmem)
-        rw [Finset.card_insert_of_not_mem hpT, Finset.prod_insert hpT, pow_succ,
+        rw [Finset.card_insert_of_notMem hpT, Finset.prod_insert hpT, pow_succ,
             ← Nat.div_div_eq_div_mul, ← Nat.div_div_eq_div_mul]
         ring
       rw [Finset.prod_insert hpS, hstepZ,

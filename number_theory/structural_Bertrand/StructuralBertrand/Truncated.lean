@@ -54,8 +54,12 @@ theorem exists_uncovered_of_card_lt
   have hClt : C.card < W.card := lt_of_le_of_lt hCle hcard
   -- since |C| < |W| and C ⊆ W, the set W \ C is nonempty
   have hne : (W \ C).Nonempty := by
-    rw [← Finset.card_pos, Finset.card_sdiff hCsub]
-    omega
+    rw [Finset.nonempty_iff_ne_empty]
+    intro hempty
+    have hWC : W ⊆ C := Finset.sdiff_eq_empty_iff_subset.mp hempty
+    have hWeqC : W = C := Finset.Subset.antisymm hWC hCsub
+    rw [hWeqC] at hClt
+    exact lt_irrefl _ hClt
   obtain ⟨n, hn⟩ := hne
   rw [Finset.mem_sdiff] at hn
   obtain ⟨hnW, hnC⟩ := hn

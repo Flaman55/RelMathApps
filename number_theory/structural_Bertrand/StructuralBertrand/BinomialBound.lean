@@ -37,14 +37,16 @@ theorem window_centralBinom_factorization_small (n : ℕ) (n_large : 2 < n)
     centralBinom n = ∏ p ∈ Finset.range (2 * n / 3 + 1), p ^ (centralBinom n).factorization p := by
   refine (Eq.trans ?_ n.prod_pow_factorization_centralBinom).symm
   apply Finset.prod_subset
-  · exact Finset.range_subset.2 (add_le_add_right (Nat.div_le_self _ _) _)
+  · intro x hx
+    simp only [Finset.mem_range] at hx ⊢
+    omega
   intro x hx h2x
   rw [Finset.mem_range, Nat.lt_succ_iff] at hx h2x
   rw [not_le, div_lt_iff_lt_mul three_pos, mul_comm x] at h2x
   replace no_prime := not_exists.mp no_prime x
   rw [← and_assoc, not_and', not_and_or, not_lt] at no_prime
   cases' no_prime hx with h h
-  · rw [factorization_eq_zero_of_non_prime n.centralBinom h, Nat.pow_zero]
+  · rw [factorization_eq_zero_of_not_prime n.centralBinom h, Nat.pow_zero]
   · rw [factorization_centralBinom_of_two_mul_self_lt_three_mul n_large h h2x, Nat.pow_zero]
 
 /-- **Empty-window upper bound (self-contained).** If `(n, 2n]` has no prime, then
@@ -61,7 +63,7 @@ theorem window_centralBinom_le (n : ℕ) (n_large : 2 < n)
   have hS : ∏ x ∈ S, f x = ∏ x ∈ Finset.range (2 * n / 3 + 1), f x := by
     refine Finset.prod_filter_of_ne fun p _ h => ?_
     contrapose! h; dsimp only [f]
-    rw [factorization_eq_zero_of_non_prime n.centralBinom h, _root_.pow_zero]
+    rw [factorization_eq_zero_of_not_prime n.centralBinom h, _root_.pow_zero]
   rw [window_centralBinom_factorization_small n n_large no_prime, ← hS, ←
     Finset.prod_filter_mul_prod_filter_not S (· ≤ sqrt (2 * n))]
   apply mul_le_mul'

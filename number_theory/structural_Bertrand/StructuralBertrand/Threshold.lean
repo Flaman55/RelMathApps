@@ -38,7 +38,7 @@ theorem real_threshold_inequality {x : ℝ} (x_large : (512 : ℝ) ≤ x) :
   have h5 : 0 < x := lt_of_lt_of_le (by norm_num1) x_large
   rw [← div_le_one (rpow_pos_of_pos four_pos x), ← div_div_eq_mul_div, ← rpow_sub four_pos, ←
     mul_div 2 x, mul_div_left_comm, ← mul_one_sub, (by norm_num1 : (1 : ℝ) - 2 / 3 = 1 / 3),
-    mul_one_div, ← log_nonpos_iff (hf' x h5), ← hf x h5]
+    mul_one_div, ← log_nonpos_iff (hf' x h5).le, ← hf x h5]
   have h : ConcaveOn ℝ (Set.Ioi 0.5) f := by
     apply ConcaveOn.sub
     · apply ConcaveOn.add
@@ -49,7 +49,7 @@ theorem real_threshold_inequality {x : ℝ} (x_large : (512 : ℝ) ≤ x) :
       ext x
       simp only [Set.mem_Ioi, Set.mem_preimage, LinearMap.smul_apply,
         LinearMap.id_coe, id_eq, smul_eq_mul]
-      rw [← mul_lt_mul_left (two_pos)]
+      rw [← mul_lt_mul_iff_of_pos_left (two_pos)]
       norm_num1
       rfl
     apply ConvexOn.smul
@@ -64,7 +64,7 @@ theorem real_threshold_inequality {x : ℝ} (x_large : (512 : ℝ) ≤ x) :
     norm_num1
   · have : √(2 * 512) = 32 :=
       (sqrt_eq_iff_mul_self_eq_of_pos (by norm_num1)).mpr (by norm_num1)
-    rw [hf _ (by norm_num1), log_nonpos_iff (hf' _ (by norm_num1)), this,
+    rw [hf _ (by norm_num1), log_nonpos_iff (hf' _ (by norm_num1)).le, this,
         div_le_one (by positivity)]
     conv in 512 => equals 2 ^ 9 => norm_num1
     conv in 2 * 512 => equals 2 ^ 10 => norm_num1
@@ -85,15 +85,28 @@ open Nat
     (Apache-2.0), placed here to avoid importing `Mathlib.NumberTheory.Bertrand`. -/
 theorem threshold_inequality {n : ℕ} (n_large : 512 ≤ n) :
     n * (2 * n) ^ sqrt (2 * n) * 4 ^ (2 * n / 3) ≤ 4 ^ n := by
-  rw [← @cast_le ℝ]
-  simp only [cast_add, cast_one, cast_mul, cast_pow, ← Real.rpow_natCast]
-  refine _root_.trans ?_ (real_threshold_inequality (by exact_mod_cast n_large))
-  gcongr
-  · have n2_pos : 0 < 2 * n := by positivity
-    exact mod_cast n2_pos
-  · exact_mod_cast Real.nat_sqrt_le_real_sqrt
-  · norm_num1
-  · exact cast_div_le.trans (by norm_cast)
+  -- Rebuilt (Mathlib bump to v4.28.0): the old `gcongr`-with-bullets proof relied on a goal
+  -- order/count that changed upstream. This version proves the two exponent-cast bridges
+  -- (`Nat`-pow vs `Real.rpow`) explicitly instead of leaning on `gcongr`'s auto-splitting.
+  have hn1 : (1 : ℝ) ≤ (2 * n : ℝ) := by exact_mod_cast (by omega : 1 ≤ 2 * n)
+  have h4 : (1 : ℝ) ≤ (4 : ℝ) := by norm_num1
+  have hexp1 : ((sqrt (2 * n) : ℕ) : ℝ) ≤ Real.sqrt (2 * n : ℝ) := by
+    exact_mod_cast Real.nat_sqrt_le_real_sqrt
+  have hexp2 : ((2 * n / 3 : ℕ) : ℝ) ≤ (2 * n : ℝ) / 3 := by
+    exact_mod_cast Nat.cast_div_le
+  have hpow1 : (2 * n : ℝ) ^ (sqrt (2 * n)) ≤ (2 * n : ℝ) ^ Real.sqrt (2 * n : ℝ) := by
+    rw [← Real.rpow_natCast (2 * n : ℝ) (sqrt (2 * n))]
+    exact Real.rpow_le_rpow_of_exponent_le hn1 hexp1
+  have hpow2 : (4 : ℝ) ^ (2 * n / 3) ≤ (4 : ℝ) ^ ((2 * n : ℝ) / 3) := by
+    rw [← Real.rpow_natCast (4 : ℝ) (2 * n / 3)]
+    exact Real.rpow_le_rpow_of_exponent_le h4 hexp2
+  rw [← @Nat.cast_le ℝ]
+  push_cast
+  calc (n : ℝ) * (2 * n : ℝ) ^ sqrt (2 * n) * (4 : ℝ) ^ (2 * n / 3)
+      ≤ (n : ℝ) * (2 * n : ℝ) ^ Real.sqrt (2 * n : ℝ) * (4 : ℝ) ^ ((2 * n : ℝ) / 3) := by
+        gcongr <;> first | exact hpow1 | exact hpow2
+    _ ≤ (4 : ℝ) ^ (n : ℝ) := real_threshold_inequality (by exact_mod_cast n_large)
+    _ = (4 : ℝ) ^ n := by rw [Real.rpow_natCast]
 
 end Nat
 

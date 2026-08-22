@@ -56,7 +56,7 @@ theorem dense_sieve_survivor_of_certificate (cert : WindowCertificate)
     simp only [gps_free, gps_window, Finset.mem_filter, Finset.mem_Ioc]
     exact ⟨⟨hlo, hhi⟩, hcop⟩
   rw [hempty] at hqmem
-  exact absurd hqmem (Finset.not_mem_empty q)
+  exact absurd hqmem (Finset.notMem_empty q)
 
 /-- **Consuming corollary, parameterized.** Any window certificate yields a prime in
     `(Pk, 2Pk]`. Plugging `erdos_certificate` recovers the existing `prime_in_window`. -/

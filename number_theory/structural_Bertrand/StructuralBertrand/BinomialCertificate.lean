@@ -206,6 +206,7 @@ macro "witness_search" : tactic => `(tactic| first
   )
 
 set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 8000 in
 /-- **Small windows (`2 < n < 512`).** A prime in `(n, 2n]`, no `native_decide`.
     Two earlier attempts both crashed the native kernel stack:
     (1) chunking only the outer `n`-range and leaving `∃ p < 1024` as one `decide` —

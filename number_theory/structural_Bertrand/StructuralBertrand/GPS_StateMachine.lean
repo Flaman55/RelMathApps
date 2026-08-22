@@ -204,7 +204,7 @@ theorem dense_sieve_survivor {Pk : ℕ} (_hPk : Nat.Prime Pk) (hPk3 : 2 < Pk)
     simp only [gps_free, gps_window, Finset.mem_filter, Finset.mem_Ioc]
     exact ⟨⟨hlo, hhi⟩, hcop⟩
   rw [hempty] at hqmem
-  exact absurd hqmem (Finset.not_mem_empty q)
+  exact absurd hqmem (Finset.notMem_empty q)
 
 /-- **Goal: closing the structural sieve.** The sieve over the window `(Pk, 2Pk]` always
     leaves a survivor. Regime dispatch: sparse closed structurally (`Truncated`), dense
@@ -268,8 +268,7 @@ theorem prime_factor_bound_for_window_start (P_max p_i c : Nat)
   -- 1. Parity block (P_max and P_max + 2 are both odd)
   have h_p_max_ne_2 : P_max ≠ 2 := by omega
   have h_p_max_odd : P_max % 2 = 1 := by
-    have : Fact (Nat.Prime P_max) := ⟨h_p_max⟩
-    rw [Nat.Prime.mod_two_eq_one_iff_ne_two]
+    rw [Nat.Prime.mod_two_eq_one_iff_ne_two h_p_max]
     exact h_p_max_ne_2
   have h_odd_left : (P_max + 2) % 2 = 1 := by omega
 
