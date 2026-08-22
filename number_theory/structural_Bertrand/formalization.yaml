@@ -3,24 +3,41 @@ version: "v0.3"
 project:
   name: "StructuralBertrand"
   authors: ["Artur Flamandzki"]
-  license: "Apache-2.0"
+  license: "PolyForm-Noncommercial-1.0.0"
+  maintainers: ["Artur Flamandzki"]
+  result_type: "original"
+  repository_role: >
+    Substantive development: this repository (this project subdirectory) contains the
+    complete, self-contained proof development. It is not a thin wrapper pointing to
+    formalization work hosted elsewhere.
+  arxiv_categories: ["math.NT", "cs.LO"]
+  msc2020: ["11A41", "11N05", "03B35"]
 
 sources:
   - title: "A Structural Sieve for Bertrand's Postulate"
     authors: ["Artur Flamandzki"]
     id: "https://github.com/Flaman55/RelMathApps/blob/main/number_theory/structural_Bertrand/LaTex/A%20Structural%20Sieve%20for%20Bertrands%20Postulate.pdf"
     type: "preprint"
-    license: "Apache-2.0"
+    license: "PolyForm-Noncommercial-1.0.0"
     author_contacted: "n/a"
     prior_work: ""
     note: >
       Authorship note: the mathematical content (the structural sieve, its strategy,
-      and all results) is the author's own original work. The LaTeX prose itself was
-      drafted by the AI agent under the author's direction, formatted to match
-      Ramanujan Journal conventions; the author reviewed the draft at the level of
-      overall structure, scope, and format compliance (not sentence-by-sentence) and
-      directed that no unnecessary content be included. See `automation` below for
-      the same disclosure applied to the Lean formalization.
+      and all results) is the author's own original work — not a formalization of any
+      one prior paper (see `result_type`/`repository_role` above). The LaTeX prose
+      itself was drafted by the AI agent under the author's direction, formatted to
+      match Ramanujan Journal conventions; the author reviewed the draft at the level
+      of overall structure, scope, and format compliance (not sentence-by-sentence)
+      and directed that no unnecessary content be included. See `automation` below
+      for the same disclosure applied to the Lean formalization.
+
+      Licensing note: this repository contains two license files. The governing
+      license for this submission is the repository-root `License`
+      (PolyForm-Noncommercial-1.0.0), per Palomar's policy that the repository-root
+      license covers the submitted snapshot even for a nested project. A separate
+      Apache-2.0 `LICENSE` file also exists inside this project subdirectory
+      (`number_theory/structural_Bertrand/LICENSE`); it does not override the
+      repository-root license for the purposes of this submission.
 
 status:
   scope: >
